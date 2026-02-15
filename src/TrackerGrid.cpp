@@ -43,6 +43,13 @@ void TrackerGrid::ensureCursorVisible()
         horizontalScrollOffset = cursorVisual - visibleTracks + 1;
 }
 
+void TrackerGrid::setScrollOffset (int offset)
+{
+    auto& pat = pattern.getCurrentPattern();
+    scrollOffset = juce::jlimit (0, juce::jmax (0, pat.numRows - getVisibleRowCount()), offset);
+    repaint();
+}
+
 void TrackerGrid::resized()
 {
     ensureCursorVisible();
@@ -417,8 +424,10 @@ juce::String TrackerGrid::noteToString (int note)
 {
     if (note < 0)
         return "---";
-    if (note == 255) // note-off
+    if (note == 255) // note-off (OFF)
         return "===";
+    if (note == 254) // note-kill (KILL)
+        return "^^^";
 
     static const char* noteNames[] = { "C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-" };
     int octave = note / 12;
@@ -864,12 +873,18 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
                     {
                         // Move group range by delta using moveVisualRange
                         int moveDir = (delta > 0) ? 1 : -1;
-                        for (int step = 0; step < std::abs (delta); ++step)
+                        for (int s = 0; s < std::abs (delta); ++s)
                         {
                             auto [curFirst, curLast] = trackLayout.getGroupVisualRange (dragGroupDragIndex);
                             trackLayout.moveVisualRange (curFirst, curLast, moveDir);
                         }
                         dragHeaderVisualIndex = visualIndex;
+
+                        // Update selection to follow the moved group
+                        auto [newFirst, newLast] = trackLayout.getGroupVisualRange (dragGroupDragIndex);
+                        selStartTrack = newFirst;
+                        selEndTrack = newLast;
+
                         repaint();
                     }
                 }
@@ -1150,20 +1165,25 @@ void TrackerGrid::filesDropped (const juce::StringArray& files, int x, int /*y*/
 
 void TrackerGrid::mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel)
 {
-    int delta = static_cast<int> (wheel.deltaY * -10.0f);
+    int deltaV = static_cast<int> (wheel.deltaY * -10.0f);
+    int deltaH = static_cast<int> (wheel.deltaX * -10.0f);
 
-    if (event.mods.isShiftDown())
+    // Horizontal scroll from touchpad deltaX or shift+scroll
+    if (deltaH != 0 || event.mods.isShiftDown())
     {
-        // Horizontal scroll
+        int hDelta = (deltaH != 0) ? deltaH : deltaV;
         horizontalScrollOffset = juce::jlimit (0, juce::jmax (0, kNumTracks - getVisibleTrackCount()),
-                                                horizontalScrollOffset + delta);
+                                                horizontalScrollOffset + hDelta);
     }
-    else
+
+    // Vertical scroll (only when not shift)
+    if (! event.mods.isShiftDown() && deltaV != 0)
     {
         auto& pat = pattern.getCurrentPattern();
         scrollOffset = juce::jlimit (0, juce::jmax (0, pat.numRows - getVisibleRowCount()),
-                                     scrollOffset + delta);
+                                     scrollOffset + deltaV);
     }
+
     repaint();
 }
 
@@ -1350,16 +1370,29 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Delete cell
+    // Delete cell(s)
     if (keyCode == juce::KeyPress::deleteKey || keyCode == juce::KeyPress::backspaceKey)
     {
-        Cell& cell = pattern.getCell (cursorRow, cursorTrack);
-        switch (cursorSubColumn)
+        if (hasSelection)
         {
-            case SubColumn::Note:       cell.clear(); break;
-            case SubColumn::Instrument: cell.instrument = -1; break;
-            case SubColumn::Volume:     cell.volume = -1; break;
-            case SubColumn::FX:         cell.fx = 0; cell.fxParam = 0; break;
+            // Clear all cells in selection (visual space)
+            int minRow, maxRow, minViTrack, maxViTrack;
+            getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
+            for (int r = minRow; r <= maxRow; ++r)
+                for (int vi = minViTrack; vi <= maxViTrack; ++vi)
+                    pattern.getCell (r, trackLayout.visualToPhysical (vi)).clear();
+            clearSelection();
+        }
+        else
+        {
+            Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+            switch (cursorSubColumn)
+            {
+                case SubColumn::Note:       cell.clear(); break;
+                case SubColumn::Instrument: cell.instrument = -1; break;
+                case SubColumn::Volume:     cell.volume = -1; break;
+                case SubColumn::FX:         cell.fx = 0; cell.fxParam = 0; break;
+            }
         }
         hexDigitCount = 0;
         hexAccumulator = 0;
@@ -1368,11 +1401,23 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Note-off with backtick
+    // Note-off with backtick (`)
     if (key.getTextCharacter() == '`' && cursorSubColumn == SubColumn::Note)
     {
         Cell& cell = pattern.getCell (cursorRow, cursorTrack);
-        cell.note = 255; // note-off marker
+        cell.note = 255; // note-off marker (OFF ===)
+        cell.instrument = currentInstrument;
+        if (onPatternDataChanged) onPatternDataChanged();
+        moveCursor (editStep, 0);
+        repaint();
+        return true;
+    }
+
+    // Note-kill with tilde (~)
+    if (key.getTextCharacter() == '~' && cursorSubColumn == SubColumn::Note)
+    {
+        Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+        cell.note = 254; // note-kill marker (KILL ^^^)
         cell.instrument = currentInstrument;
         if (onPatternDataChanged) onPatternDataChanged();
         moveCursor (editStep, 0);

@@ -82,10 +82,17 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern)
                 continue;
 
             double startBeat = static_cast<double> (row) / static_cast<double> (rowsPerBeat);
-            double endBeat = startBeat + (1.0 / static_cast<double> (rowsPerBeat));
 
-            // Convert beat positions to time
             auto noteStart = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
+
+            // OFF (255) or KILL (254) → all notes off
+            if (cell.note == 255 || cell.note == 254)
+            {
+                midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), noteStart.inSeconds());
+                continue;
+            }
+
+            double endBeat = startBeat + (1.0 / static_cast<double> (rowsPerBeat));
             auto noteEnd = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (endBeat));
 
             int velocity = cell.volume >= 0 ? cell.volume : 127;
@@ -147,9 +154,16 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         continue;
 
                     double startBeat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
-                    double endBeat = startBeat + (1.0 / static_cast<double> (rpb));
-
                     auto noteStart = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
+
+                    // OFF (255) or KILL (254) → all notes off
+                    if (cell.note == 255 || cell.note == 254)
+                    {
+                        midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), noteStart.inSeconds());
+                        continue;
+                    }
+
+                    double endBeat = startBeat + (1.0 / static_cast<double> (rpb));
                     auto noteEnd = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (endBeat));
 
                     int velocity = cell.volume >= 0 ? cell.volume : 127;
@@ -235,6 +249,15 @@ int TrackerEngine::getPlaybackRow (int numRows) const
     // Convert beats to row
     int row = static_cast<int> (beatPos.inBeats() * static_cast<double> (rowsPerBeat));
     return juce::jlimit (0, numRows - 1, row);
+}
+
+double TrackerEngine::getPlaybackBeatPosition() const
+{
+    if (edit == nullptr || ! isPlaying())
+        return -1.0;
+
+    auto pos = edit->getTransport().getPosition();
+    return edit->tempoSequence.toBeats (pos).inBeats();
 }
 
 void TrackerEngine::setBpm (double bpm)

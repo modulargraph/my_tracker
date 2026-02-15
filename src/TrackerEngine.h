@@ -30,6 +30,9 @@ public:
     // Returns current playback row (based on transport position)
     int getPlaybackRow (int numRows) const;
 
+    // Returns current beat position (for song mode tracking)
+    double getPlaybackBeatPosition() const;
+
     // Tempo
     void setBpm (double bpm);
     double getBpm() const;

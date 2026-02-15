@@ -30,6 +30,8 @@ public:
     // Panel toggle state
     void setArrangementVisible (bool v) { arrangementOn = v; repaint(); }
     void setInstrumentPanelVisible (bool v) { instrumentPanelOn = v; repaint(); }
+    // 0 = off, 1 = center, 2 = page
+    void setFollowMode (int mode) { followModeVal = mode; repaint(); }
 
     // Callbacks
     std::function<void()> onAddPattern;
@@ -45,6 +47,8 @@ public:
     std::function<void()> onToggleInstrumentPanel;
     std::function<void()> onNextPattern;
     std::function<void()> onPrevPattern;
+    std::function<void (int delta)> onInstrumentDrag;
+    std::function<void()> onFollowToggle;
 
     static constexpr int kToolbarHeight = 36;
 
@@ -64,14 +68,16 @@ private:
     juce::String sampleName;
     bool arrangementOn = false;
     bool instrumentPanelOn = true;
+    int followModeVal = 0; // 0=off, 1=center, 2=page
 
     // Hit areas
     juce::Rectangle<int> addPatBounds, removePatBounds;
     juce::Rectangle<int> lengthBounds, bpmBounds, stepBounds, octaveBounds, modeBounds, patNameBounds;
     juce::Rectangle<int> arrangementToggleBounds, instrumentToggleBounds, patSelectorBounds;
+    juce::Rectangle<int> instrumentBounds, followBounds;
 
     // Drag state
-    enum class DragTarget { None, Length, Bpm, Step, Octave };
+    enum class DragTarget { None, Length, Bpm, Step, Octave, Instrument };
     DragTarget dragTarget = DragTarget::None;
     int dragStartY = 0;
     int dragAccumulated = 0;

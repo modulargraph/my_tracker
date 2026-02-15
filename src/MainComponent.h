@@ -89,6 +89,17 @@ private:
     bool instrumentPanelVisible = true;
     bool sampleEditorVisible = false;
     bool songMode = false;
+    enum class FollowMode { Off, Center, Page };
+    FollowMode followMode = FollowMode::Off;
+
+    // Song mode arrangement playback tracking
+    struct ArrangementPlaybackInfo
+    {
+        int entryIndex = -1;
+        int patternIndex = -1;
+        int rowInPattern = -1;
+    };
+    ArrangementPlaybackInfo getArrangementPlaybackPosition (double beatPos) const;
 
     // Status bar info
     juce::Label statusLabel;

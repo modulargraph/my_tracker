@@ -71,10 +71,13 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.drawVerticalLine (x, 4.0f, static_cast<float> (kToolbarHeight - 4));
     x += 8;
 
-    // Instrument
+    // Instrument (draggable)
     auto instStr = juce::String::formatted ("Inst:%02X", instrument);
-    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId));
-    g.drawText (instStr, x, 0, 60, kToolbarHeight, juce::Justification::centredLeft);
+    instrumentBounds = { x, 0, 60, kToolbarHeight };
+    g.setColour (dragTarget == DragTarget::Instrument
+                     ? juce::Colour (0xff88aacc)
+                     : lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId));
+    g.drawText (instStr, instrumentBounds, juce::Justification::centredLeft);
     x += 64;
 
     // Sample name (if available)
@@ -125,6 +128,17 @@ void ToolbarComponent::paint (juce::Graphics& g)
     modeBounds = { x, 0, 50, kToolbarHeight };
     g.setColour (songMode ? juce::Colour (0xffd4a843) : textCol);
     g.drawText (modeStr, modeBounds, juce::Justification::centredLeft);
+    x += 50;
+
+    // Follow toggle (Off / CTR / PGE)
+    followBounds = { x, 6, 28, 24 };
+    g.setColour (followModeVal > 0 ? juce::Colour (0xff5cba5c) : juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (followBounds.toFloat(), 3.0f);
+    g.setColour (followModeVal > 0 ? juce::Colours::white : textCol);
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    auto folStr = followModeVal == 0 ? "FOL" : (followModeVal == 1 ? "CTR" : "PGE");
+    g.drawText (folStr, followBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
 
     // Instrument panel toggle (right-aligned)
     instrumentToggleBounds = { getWidth() - 32, 6, 24, 24 };
@@ -173,6 +187,11 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
         onModeToggle();
         return;
     }
+    if (followBounds.contains (pos) && onFollowToggle)
+    {
+        onFollowToggle();
+        return;
+    }
 
     // Start drag on draggable fields
     dragTarget = DragTarget::None;
@@ -187,6 +206,8 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
         dragTarget = DragTarget::Step;
     else if (octaveBounds.contains (pos))
         dragTarget = DragTarget::Octave;
+    else if (instrumentBounds.contains (pos))
+        dragTarget = DragTarget::Instrument;
 
     if (dragTarget != DragTarget::None)
         repaint();
@@ -218,6 +239,9 @@ void ToolbarComponent::mouseDrag (const juce::MouseEvent& event)
             break;
         case DragTarget::Octave:
             if (onOctaveDrag) onOctaveDrag (steps);
+            break;
+        case DragTarget::Instrument:
+            if (onInstrumentDrag) onInstrumentDrag (steps);
             break;
         case DragTarget::None: break;
     }

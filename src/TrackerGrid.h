@@ -37,6 +37,11 @@ public:
     int getPlaybackRow() const { return playbackRow; }
     void setPlaying (bool playing);
 
+    // Scroll access (for follow mode)
+    int getScrollOffset() const { return scrollOffset; }
+    void setScrollOffset (int offset);
+    int getVisibleRowCount() const;
+
     // Edit step (rows to advance after note entry)
     void setEditStep (int step) { editStep = step; }
     int getEditStep() const { return editStep; }
@@ -131,7 +136,6 @@ private:
     // Scrolling
     int scrollOffset = 0;
     int horizontalScrollOffset = 0;
-    int getVisibleRowCount() const;
     int getVisibleTrackCount() const;
     void ensureCursorVisible();
 

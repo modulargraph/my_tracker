@@ -148,6 +148,27 @@ MainComponent::MainComponent()
         resized();
     };
 
+    toolbar->onInstrumentDrag = [this] (int delta)
+    {
+        int inst = juce::jlimit (0, 255, trackerGrid->getCurrentInstrument() + delta);
+        trackerGrid->setCurrentInstrument (inst);
+        instrumentPanel->setSelectedInstrument (inst);
+        updateStatusBar();
+        updateToolbar();
+    };
+
+    toolbar->onFollowToggle = [this]
+    {
+        // Cycle: Off → Center → Page → Off
+        if (followMode == FollowMode::Off)
+            followMode = FollowMode::Center;
+        else if (followMode == FollowMode::Center)
+            followMode = FollowMode::Page;
+        else
+            followMode = FollowMode::Off;
+        toolbar->setFollowMode (static_cast<int> (followMode));
+    };
+
     // Create arrangement panel (hidden by default)
     arrangementComponent = std::make_unique<ArrangementComponent> (arrangement, patternData, trackerLookAndFeel);
     addChildComponent (*arrangementComponent);
@@ -228,7 +249,12 @@ MainComponent::MainComponent()
     trackerGrid->onPatternDataChanged = [this]
     {
         if (trackerEngine.isPlaying())
-            trackerEngine.syncPatternToEdit (patternData.getCurrentPattern());
+        {
+            if (songMode)
+                syncArrangementToEdit();
+            else
+                trackerEngine.syncPatternToEdit (patternData.getCurrentPattern());
+        }
         markDirty();
     };
 
@@ -794,14 +820,101 @@ void MainComponent::timerCallback()
 {
     if (trackerEngine.isPlaying())
     {
-        int row = trackerEngine.getPlaybackRow (patternData.getCurrentPattern().numRows);
-        trackerGrid->setPlaybackRow (row);
+        int playRow = -1;
+
+        if (songMode && arrangement.getNumEntries() > 0)
+        {
+            // Song mode: compute which pattern/row from the beat position
+            double beatPos = trackerEngine.getPlaybackBeatPosition();
+            auto info = getArrangementPlaybackPosition (beatPos);
+
+            if (info.entryIndex >= 0)
+            {
+                // Auto-switch pattern if needed
+                if (info.patternIndex != patternData.getCurrentPatternIndex())
+                    switchToPattern (info.patternIndex);
+
+                // Highlight current entry in arrangement panel
+                if (arrangementVisible)
+                    arrangementComponent->setPlayingEntry (info.entryIndex);
+
+                playRow = info.rowInPattern;
+            }
+        }
+        else
+        {
+            // Pattern mode: simple row from beat position
+            playRow = trackerEngine.getPlaybackRow (patternData.getCurrentPattern().numRows);
+        }
+
+        trackerGrid->setPlaybackRow (playRow);
         trackerGrid->setPlaying (true);
+
+        // Follow mode
+        if (followMode != FollowMode::Off && playRow >= 0)
+        {
+            int visibleRows = trackerGrid->getVisibleRowCount();
+
+            if (followMode == FollowMode::Center)
+            {
+                // Keep playback row centered
+                trackerGrid->setScrollOffset (playRow - visibleRows / 2);
+            }
+            else if (followMode == FollowMode::Page)
+            {
+                // Page-style: scroll when playback is near the bottom
+                int scrollOff = trackerGrid->getScrollOffset();
+                int margin = juce::jmax (4, visibleRows / 6);
+                if (playRow >= scrollOff + visibleRows - margin)
+                    trackerGrid->setScrollOffset (playRow - margin);
+                else if (playRow < scrollOff)
+                    trackerGrid->setScrollOffset (playRow - margin);
+            }
+        }
     }
     else
     {
         trackerGrid->setPlaying (false);
+        if (arrangementVisible)
+            arrangementComponent->setPlayingEntry (-1);
     }
+}
+
+MainComponent::ArrangementPlaybackInfo MainComponent::getArrangementPlaybackPosition (double beatPos) const
+{
+    ArrangementPlaybackInfo info;
+    if (beatPos < 0.0) return info;
+
+    int rpb = trackerEngine.getRowsPerBeat();
+    double accBeats = 0.0;
+
+    for (int i = 0; i < arrangement.getNumEntries(); ++i)
+    {
+        auto& entry = arrangement.getEntry (i);
+        if (entry.patternIndex < 0 || entry.patternIndex >= patternData.getNumPatterns())
+            continue;
+
+        auto& pat = patternData.getPattern (entry.patternIndex);
+        double patBeats = static_cast<double> (pat.numRows) / static_cast<double> (rpb);
+        double entryBeats = patBeats * entry.repeats;
+
+        if (beatPos < accBeats + entryBeats)
+        {
+            // We're in this entry
+            info.entryIndex = i;
+            info.patternIndex = entry.patternIndex;
+            double beatsIntoEntry = beatPos - accBeats;
+            // Handle repeats: get position within a single pattern
+            double beatsIntoPattern = std::fmod (beatsIntoEntry, patBeats);
+            info.rowInPattern = static_cast<int> (beatsIntoPattern * static_cast<double> (rpb));
+            info.rowInPattern = juce::jlimit (0, pat.numRows - 1, info.rowInPattern);
+            return info;
+        }
+
+        accBeats += entryBeats;
+    }
+
+    return info; // past the end
 }
 
 void MainComponent::updateStatusBar()
