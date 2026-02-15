@@ -10,6 +10,7 @@
 #include "ProjectSerializer.h"
 #include "Arrangement.h"
 #include "ArrangementComponent.h"
+#include "InstrumentPanel.h"
 
 class MainComponent : public juce::Component,
                       public juce::KeyListener,
@@ -75,7 +76,9 @@ private:
     juce::UndoManager undoManager;
     Arrangement arrangement;
     std::unique_ptr<ArrangementComponent> arrangementComponent;
+    std::unique_ptr<InstrumentPanel> instrumentPanel;
     bool arrangementVisible = false;
+    bool instrumentPanelVisible = true;
     bool songMode = false;
 
     // Status bar info
@@ -108,6 +111,8 @@ private:
     void toggleSongMode();
     void syncArrangementToEdit();
     void showHelpOverlay();
+    void updateInstrumentPanel();
+    void loadSampleForInstrument (int instrument);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

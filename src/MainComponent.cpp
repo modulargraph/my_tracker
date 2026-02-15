@@ -35,6 +35,20 @@ MainComponent::MainComponent()
         switchToPattern (patIdx);
     };
 
+    // Create instrument panel (right side, visible by default)
+    instrumentPanel = std::make_unique<InstrumentPanel> (trackerLookAndFeel);
+    addAndMakeVisible (*instrumentPanel);
+    instrumentPanel->onInstrumentSelected = [this] (int inst)
+    {
+        trackerGrid->setCurrentInstrument (inst);
+        updateStatusBar();
+        updateToolbar();
+    };
+    instrumentPanel->onLoadSampleRequested = [this] (int inst)
+    {
+        loadSampleForInstrument (inst);
+    };
+
     // Create the grid
     trackerGrid = std::make_unique<TrackerGrid> (patternData, trackerLookAndFeel);
     addAndMakeVisible (*trackerGrid);
@@ -47,7 +61,12 @@ MainComponent::MainComponent()
     };
 
     // Cursor moved callback
-    trackerGrid->onCursorMoved = [this] { updateStatusBar(); updateToolbar(); };
+    trackerGrid->onCursorMoved = [this]
+    {
+        updateStatusBar();
+        updateToolbar();
+        instrumentPanel->setSelectedInstrument (trackerGrid->getCurrentInstrument());
+    };
 
     // Track header right-click
     trackerGrid->onTrackHeaderRightClick = [this] (int track, juce::Point<int> screenPos)
@@ -66,6 +85,7 @@ MainComponent::MainComponent()
             trackerGrid->trackHasSample[static_cast<size_t> (track)] = true;
             trackerGrid->repaint();
             updateToolbar();
+            updateInstrumentPanel();
             markDirty();
         }
     };
@@ -153,6 +173,17 @@ void MainComponent::resized()
     else
     {
         arrangementComponent->setVisible (false);
+    }
+
+    // Instrument panel (right side)
+    if (instrumentPanelVisible)
+    {
+        instrumentPanel->setBounds (r.removeFromRight (InstrumentPanel::kPanelWidth));
+        instrumentPanel->setVisible (true);
+    }
+    else
+    {
+        instrumentPanel->setVisible (false);
     }
 
     // Grid fills the rest
@@ -562,6 +593,7 @@ void MainComponent::loadSampleForCurrentTrack()
                                       trackerGrid->trackHasSample[static_cast<size_t> (trackIdx)] = true;
                                       trackerGrid->repaint();
                                       updateToolbar();
+                                      updateInstrumentPanel();
                                   }
                               }
                           });
@@ -682,6 +714,7 @@ void MainComponent::newProject()
     updateWindowTitle();
     updateStatusBar();
     updateToolbar();
+    updateInstrumentPanel();
     trackerGrid->repaint();
 }
 
@@ -739,6 +772,7 @@ void MainComponent::openProject()
                               updateWindowTitle();
                               updateStatusBar();
                               updateToolbar();
+                              updateInstrumentPanel();
                               trackerGrid->repaint();
                           });
 }
@@ -958,6 +992,42 @@ void MainComponent::doCut()
     }
 
     trackerGrid->repaint();
+}
+
+void MainComponent::updateInstrumentPanel()
+{
+    instrumentPanel->updateSampleInfo (trackerEngine.getSampler().getLoadedSamples());
+    instrumentPanel->setSelectedInstrument (trackerGrid->getCurrentInstrument());
+}
+
+void MainComponent::loadSampleForInstrument (int instrument)
+{
+    auto chooser = std::make_shared<juce::FileChooser> (
+        "Load Sample for Instrument " + juce::String::formatted ("%02X", instrument),
+        juce::File::getSpecialLocation (juce::File::userHomeDirectory),
+        "*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3");
+
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [this, chooser, instrument] (const juce::FileChooser& fc)
+                          {
+                              auto file = fc.getResult();
+                              if (file.existsAsFile())
+                              {
+                                  auto error = trackerEngine.loadSampleForTrack (instrument, file);
+                                  if (error.isNotEmpty())
+                                      juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                                              "Load Error", error);
+                                  else
+                                  {
+                                      if (instrument < kNumTracks)
+                                          trackerGrid->trackHasSample[static_cast<size_t> (instrument)] = true;
+                                      trackerGrid->repaint();
+                                      updateToolbar();
+                                      updateInstrumentPanel();
+                                      markDirty();
+                                  }
+                              }
+                          });
 }
 
 void MainComponent::updateMuteSoloState()
