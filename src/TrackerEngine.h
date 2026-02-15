@@ -4,6 +4,7 @@
 #include <tracktion_engine/tracktion_engine.h>
 #include "PatternData.h"
 #include "SimpleSampler.h"
+#include "InstrumentEffectsPlugin.h"
 
 namespace te = tracktion;
 
@@ -16,10 +17,13 @@ public:
     void initialise();
 
     // Pattern → Edit conversion
-    void syncPatternToEdit (const Pattern& pattern);
+    // releaseMode: per-track flag; true = note sustains until next note/OFF (release envelope plays)
+    void syncPatternToEdit (const Pattern& pattern,
+                            const std::array<bool, kNumTracks>& releaseMode = {});
 
     // Song-mode: concatenate multiple patterns with repeats into one long edit
-    void syncArrangementToEdit (const std::vector<std::pair<const Pattern*, int>>& sequence, int rowsPerBeat);
+    void syncArrangementToEdit (const std::vector<std::pair<const Pattern*, int>>& sequence, int rowsPerBeat,
+                                const std::array<bool, kNumTracks>& releaseMode = {});
 
     // Transport control
     void play();
@@ -44,6 +48,15 @@ public:
     // Sample loading
     juce::String loadSampleForTrack (int trackIndex, const juce::File& sampleFile);
 
+    // Ensure correct instruments are loaded on each track based on pattern data
+    void prepareTracksForPattern (const Pattern& pattern);
+
+    // Query which instrument is currently loaded on a track
+    int getTrackInstrument (int trackIndex) const;
+
+    // Force re-load of instruments on next sync (call after loading a project)
+    void invalidateTrackInstruments();
+
     // Preview a note on a track
     void previewNote (int trackIndex, int midiNote);
 
@@ -61,6 +74,7 @@ private:
     std::unique_ptr<te::Edit> edit;
     SimpleSampler sampler;
     int rowsPerBeat = 4;
+    std::array<int, kNumTracks> currentTrackInstrument {};
 
     void changeListenerCallback (juce::ChangeBroadcaster* source) override;
 

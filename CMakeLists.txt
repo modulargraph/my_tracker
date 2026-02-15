@@ -34,7 +34,10 @@ target_sources(TrackerAdjust PRIVATE
     src/ProjectSerializer.cpp
     src/ArrangementComponent.cpp
     src/InstrumentPanel.cpp
-    src/SampleEditorComponent.cpp)
+    src/SampleEditorComponent.cpp
+    src/InstrumentEffectsPlugin.cpp
+    src/TabBarComponent.cpp
+    src/FileBrowserComponent.cpp)
 
 target_compile_features(TrackerAdjust PRIVATE cxx_std_20)
 
@@ -57,6 +60,7 @@ target_link_libraries(TrackerAdjust PRIVATE
     juce::juce_audio_devices
     juce::juce_audio_processors
     juce::juce_audio_utils
+    juce::juce_dsp
     juce::juce_recommended_warning_flags)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")

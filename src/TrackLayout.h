@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <numeric>
 
+// Per-track note trigger mode
+enum class NoteMode { Kill, Release };
+
 struct TrackGroup
 {
     juce::String name;
@@ -99,6 +102,25 @@ public:
 
     const std::array<juce::String, kNumTracks>& getTrackNames() const { return trackNames; }
 
+    // Per-track note mode (Kill = note-off at end of row, Release = note-off at next note)
+    NoteMode getTrackNoteMode (int physicalTrack) const
+    {
+        return trackNoteModes[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))];
+    }
+
+    void setTrackNoteMode (int physicalTrack, NoteMode mode)
+    {
+        trackNoteModes[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))] = mode;
+    }
+
+    void toggleTrackNoteMode (int physicalTrack)
+    {
+        auto& m = trackNoteModes[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))];
+        m = (m == NoteMode::Kill) ? NoteMode::Release : NoteMode::Kill;
+    }
+
+    const std::array<NoteMode, kNumTracks>& getTrackNoteModes() const { return trackNoteModes; }
+
     static juce::Colour getGroupPaletteColour (int index)
     {
         static const juce::Colour palette[] = {
@@ -192,6 +214,7 @@ public:
         std::iota (visualOrder.begin(), visualOrder.end(), 0);
         groups.clear();
         for (auto& n : trackNames) n.clear();
+        for (auto& m : trackNoteModes) m = NoteMode::Kill;
     }
 
     void clear() { resetToDefault(); }
@@ -200,4 +223,5 @@ private:
     std::array<int, kNumTracks> visualOrder {};
     std::vector<TrackGroup> groups;
     std::array<juce::String, kNumTracks> trackNames;
+    std::array<NoteMode, kNumTracks> trackNoteModes {};
 };

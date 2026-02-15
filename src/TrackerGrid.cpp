@@ -134,7 +134,19 @@ void TrackerGrid::drawHeaders (juce::Graphics& g)
         else
             g.setColour (textColour);
 
-        g.drawText (text, x, headerY, kCellWidth, kHeaderHeight, juce::Justification::centred);
+        // Draw track name (leave room for note mode indicator)
+        g.drawText (text, x, headerY, kCellWidth - 16, kHeaderHeight, juce::Justification::centred);
+
+        // Draw note mode toggle (K = kill, R = release) on right edge
+        auto noteMode = trackLayout.getTrackNoteMode (physTrack);
+        auto modeChar = (noteMode == NoteMode::Release) ? "R" : "K";
+        auto modeColour = (noteMode == NoteMode::Release)
+                              ? lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId).withAlpha (0.8f)
+                              : textColour.withAlpha (0.3f);
+        g.setFont (lookAndFeel.getMonoFont (9.0f));
+        g.setColour (modeColour);
+        g.drawText (modeChar, x + kCellWidth - 16, headerY, 14, kHeaderHeight, juce::Justification::centred);
+        g.setFont (lookAndFeel.getMonoFont (12.0f));
     }
 
     // Header bottom line
@@ -556,6 +568,21 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
         if (visualIndex >= kNumTracks) return;
 
         int physTrack = trackLayout.visualToPhysical (visualIndex);
+
+        // Click on note mode toggle (rightmost 16px of track header, below group header)
+        int headerY = trackLayout.hasGroups() ? kGroupHeaderHeight : 0;
+        if (event.y >= headerY && ! event.mods.isPopupMenu())
+        {
+            int pixelInCell = trackPixel % kCellWidth;
+            if (pixelInCell >= kCellWidth - 16)
+            {
+                trackLayout.toggleTrackNoteMode (physTrack);
+                if (onNoteModeToggled)
+                    onNoteModeToggled (physTrack);
+                repaint();
+                return;
+            }
+        }
 
         // Right-click → context menu
         if (event.mods.isPopupMenu())

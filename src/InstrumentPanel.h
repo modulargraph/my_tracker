@@ -10,8 +10,10 @@ public:
     InstrumentPanel (TrackerLookAndFeel& lnf);
 
     void paint (juce::Graphics& g) override;
+    bool keyPressed (const juce::KeyPress& key) override;
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDoubleClick (const juce::MouseEvent& event) override;
+    void mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
 
     void setSelectedInstrument (int inst) { selectedInstrument = inst; repaint(); }
     int getSelectedInstrument() const { return selectedInstrument; }

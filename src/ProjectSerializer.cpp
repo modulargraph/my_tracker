@@ -8,7 +8,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
                                             const TrackLayout& trackLayout)
 {
     juce::ValueTree root ("TrackerAdjustProject");
-    root.setProperty ("version", 1, nullptr);
+    root.setProperty ("version", 2, nullptr);
 
     // Settings
     juce::ValueTree settings ("Settings");
@@ -37,13 +37,71 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
 
         juce::ValueTree paramTree ("Param");
         paramTree.setProperty ("index", index, nullptr);
+
+        // General
+        paramTree.setProperty ("volume", params.volume, nullptr);
+        paramTree.setProperty ("panning", params.panning, nullptr);
+        paramTree.setProperty ("tune", params.tune, nullptr);
+        paramTree.setProperty ("finetune", params.finetune, nullptr);
+
+        // Filter
+        paramTree.setProperty ("filterType", static_cast<int> (params.filterType), nullptr);
+        paramTree.setProperty ("cutoff", params.cutoff, nullptr);
+        paramTree.setProperty ("resonance", params.resonance, nullptr);
+
+        // Effects
+        paramTree.setProperty ("overdrive", params.overdrive, nullptr);
+        paramTree.setProperty ("bitDepth", params.bitDepth, nullptr);
+        paramTree.setProperty ("reverbSend", params.reverbSend, nullptr);
+        paramTree.setProperty ("delaySend", params.delaySend, nullptr);
+
+        // Sample position
         paramTree.setProperty ("startPos", params.startPos, nullptr);
         paramTree.setProperty ("endPos", params.endPos, nullptr);
-        paramTree.setProperty ("attackMs", params.attackMs, nullptr);
-        paramTree.setProperty ("decayMs", params.decayMs, nullptr);
-        paramTree.setProperty ("sustainLevel", params.sustainLevel, nullptr);
-        paramTree.setProperty ("releaseMs", params.releaseMs, nullptr);
+        paramTree.setProperty ("loopStart", params.loopStart, nullptr);
+        paramTree.setProperty ("loopEnd", params.loopEnd, nullptr);
+
+        // Playback
+        paramTree.setProperty ("playMode", static_cast<int> (params.playMode), nullptr);
         paramTree.setProperty ("reversed", params.reversed, nullptr);
+
+        // Granular
+        paramTree.setProperty ("grainPos", params.granularPosition, nullptr);
+        paramTree.setProperty ("grainLen", params.granularLength, nullptr);
+        paramTree.setProperty ("grainShape", static_cast<int> (params.granularShape), nullptr);
+        paramTree.setProperty ("grainLoop", static_cast<int> (params.granularLoop), nullptr);
+
+        // Slices
+        if (! params.slicePoints.empty())
+        {
+            juce::String sliceStr;
+            for (size_t i = 0; i < params.slicePoints.size(); ++i)
+            {
+                if (i > 0) sliceStr += ",";
+                sliceStr += juce::String (params.slicePoints[i], 6);
+            }
+            paramTree.setProperty ("slices", sliceStr, nullptr);
+        }
+
+        // Modulations
+        for (int d = 0; d < InstrumentParams::kNumModDests; ++d)
+        {
+            auto& mod = params.modulations[static_cast<size_t> (d)];
+            if (mod.isDefault()) continue;
+
+            juce::ValueTree modTree ("Mod");
+            modTree.setProperty ("dest", d, nullptr);
+            modTree.setProperty ("type", static_cast<int> (mod.type), nullptr);
+            modTree.setProperty ("lfoShape", static_cast<int> (mod.lfoShape), nullptr);
+            modTree.setProperty ("lfoSpeed", mod.lfoSpeed, nullptr);
+            modTree.setProperty ("amount", mod.amount, nullptr);
+            modTree.setProperty ("attackS", mod.attackS, nullptr);
+            modTree.setProperty ("decayS", mod.decayS, nullptr);
+            modTree.setProperty ("sustain", mod.sustain, nullptr);
+            modTree.setProperty ("releaseS", mod.releaseS, nullptr);
+            paramTree.addChild (modTree, -1, nullptr);
+        }
+
         paramsTree.addChild (paramTree, -1, nullptr);
     }
     root.addChild (paramsTree, -1, nullptr);
@@ -67,7 +125,6 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
     {
         juce::ValueTree layoutTree ("TrackLayout");
 
-        // Visual order
         juce::String orderStr;
         auto& order = trackLayout.getVisualOrder();
         for (int i = 0; i < kNumTracks; ++i)
@@ -79,7 +136,6 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         voTree.setProperty ("values", orderStr, nullptr);
         layoutTree.addChild (voTree, -1, nullptr);
 
-        // Track names (only save non-empty)
         auto& names = trackLayout.getTrackNames();
         for (int i = 0; i < kNumTracks; ++i)
         {
@@ -92,7 +148,27 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
             }
         }
 
-        // Groups
+        // Note modes (only save if any are non-default)
+        {
+            bool anyRelease = false;
+            for (int i = 0; i < kNumTracks; ++i)
+                if (trackLayout.getTrackNoteMode (i) == NoteMode::Release)
+                    anyRelease = true;
+
+            if (anyRelease)
+            {
+                juce::String modeStr;
+                for (int i = 0; i < kNumTracks; ++i)
+                {
+                    if (i > 0) modeStr += ",";
+                    modeStr += juce::String (static_cast<int> (trackLayout.getTrackNoteMode (i)));
+                }
+                juce::ValueTree nmTree ("NoteModes");
+                nmTree.setProperty ("values", modeStr, nullptr);
+                layoutTree.addChild (nmTree, -1, nullptr);
+            }
+        }
+
         for (int gi = 0; gi < trackLayout.getNumGroups(); ++gi)
         {
             auto& group = trackLayout.getGroup (gi);
@@ -144,6 +220,8 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
     if (! root.hasType ("TrackerAdjustProject"))
         return "Not a valid Tracker Adjust project file";
 
+    int version = root.getProperty ("version", 1);
+
     // Settings
     auto settings = root.getChildWithName ("Settings");
     if (settings.isValid())
@@ -173,7 +251,7 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
         }
     }
 
-    // Instrument params (backward-compatible: section may be absent)
+    // Instrument params (backward-compatible)
     instrumentParams.clear();
     auto paramsTree = root.getChildWithName ("InstrumentParams");
     if (paramsTree.isValid())
@@ -187,18 +265,104 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             if (index < 0) continue;
 
             InstrumentParams params;
-            params.startPos     = paramTree.getProperty ("startPos", 0.0);
-            params.endPos       = paramTree.getProperty ("endPos", 1.0);
-            params.attackMs     = paramTree.getProperty ("attackMs", 5.0);
-            params.decayMs      = paramTree.getProperty ("decayMs", 50.0);
-            params.sustainLevel = paramTree.getProperty ("sustainLevel", 1.0);
-            params.releaseMs    = paramTree.getProperty ("releaseMs", 50.0);
-            params.reversed     = paramTree.getProperty ("reversed", false);
+
+            if (version >= 2)
+            {
+                // V2 format: full params
+                params.volume     = paramTree.getProperty ("volume", 0.0);
+                params.panning    = paramTree.getProperty ("panning", 0);
+                params.tune       = paramTree.getProperty ("tune", 0);
+                params.finetune   = paramTree.getProperty ("finetune", 0);
+
+                params.filterType = static_cast<InstrumentParams::FilterType> (
+                    static_cast<int> (paramTree.getProperty ("filterType", 0)));
+                params.cutoff     = paramTree.getProperty ("cutoff", 100);
+                params.resonance  = paramTree.getProperty ("resonance", 0);
+
+                params.overdrive  = paramTree.getProperty ("overdrive", 0);
+                params.bitDepth   = paramTree.getProperty ("bitDepth", 16);
+                params.reverbSend = paramTree.getProperty ("reverbSend", -100.0);
+                params.delaySend  = paramTree.getProperty ("delaySend", -100.0);
+
+                params.startPos   = paramTree.getProperty ("startPos", 0.0);
+                params.endPos     = paramTree.getProperty ("endPos", 1.0);
+                params.loopStart  = paramTree.getProperty ("loopStart", 0.0);
+                params.loopEnd    = paramTree.getProperty ("loopEnd", 1.0);
+
+                params.playMode   = static_cast<InstrumentParams::PlayMode> (
+                    static_cast<int> (paramTree.getProperty ("playMode", 0)));
+                params.reversed   = paramTree.getProperty ("reversed", false);
+
+                // wtWindow / wtPosition properties are ignored (wavetable mode removed)
+
+                params.granularPosition = paramTree.getProperty ("grainPos", 0.0);
+                params.granularLength   = paramTree.getProperty ("grainLen", 500);
+                params.granularShape    = static_cast<InstrumentParams::GranShape> (
+                    static_cast<int> (paramTree.getProperty ("grainShape", 1)));
+                params.granularLoop     = static_cast<InstrumentParams::GranLoop> (
+                    static_cast<int> (paramTree.getProperty ("grainLoop", 0)));
+
+                // Slices
+                juce::String sliceStr = paramTree.getProperty ("slices", "");
+                if (sliceStr.isNotEmpty())
+                {
+                    auto tokens = juce::StringArray::fromTokens (sliceStr, ",", "");
+                    for (auto& tok : tokens)
+                        params.slicePoints.push_back (tok.getDoubleValue());
+                }
+
+                // Modulations
+                for (int m = 0; m < paramTree.getNumChildren(); ++m)
+                {
+                    auto modTree = paramTree.getChild (m);
+                    if (! modTree.hasType ("Mod")) continue;
+
+                    int dest = modTree.getProperty ("dest", -1);
+                    if (dest < 0 || dest >= InstrumentParams::kNumModDests) continue;
+
+                    auto& mod = params.modulations[static_cast<size_t> (dest)];
+                    mod.type     = static_cast<InstrumentParams::Modulation::Type> (
+                        static_cast<int> (modTree.getProperty ("type", 0)));
+                    mod.lfoShape = static_cast<InstrumentParams::Modulation::LFOShape> (
+                        static_cast<int> (modTree.getProperty ("lfoShape", 2)));
+                    mod.lfoSpeed = modTree.getProperty ("lfoSpeed", 24);
+                    mod.amount   = modTree.getProperty ("amount", 100);
+                    mod.attackS  = modTree.getProperty ("attackS", 0.020);
+                    mod.decayS   = modTree.getProperty ("decayS", 0.030);
+                    mod.sustain  = modTree.getProperty ("sustain", 100);
+                    mod.releaseS = modTree.getProperty ("releaseS", 0.050);
+                }
+            }
+            else
+            {
+                // V1 format: legacy backward compatibility
+                params.startPos = paramTree.getProperty ("startPos", 0.0);
+                params.endPos   = paramTree.getProperty ("endPos", 1.0);
+                params.reversed = paramTree.getProperty ("reversed", false);
+
+                // Map old ADSR (ms) to Volume modulation envelope (seconds)
+                double attackMs  = paramTree.getProperty ("attackMs", 5.0);
+                double decayMs   = paramTree.getProperty ("decayMs", 50.0);
+                double susLevel  = paramTree.getProperty ("sustainLevel", 1.0);
+                double releaseMs = paramTree.getProperty ("releaseMs", 50.0);
+
+                // Only create modulation if the old ADSR was non-default
+                if (attackMs != 5.0 || decayMs != 50.0 || susLevel != 1.0 || releaseMs != 50.0)
+                {
+                    auto& volMod = params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Volume)];
+                    volMod.type     = InstrumentParams::Modulation::Type::Envelope;
+                    volMod.attackS  = attackMs * 0.001;
+                    volMod.decayS   = decayMs * 0.001;
+                    volMod.sustain  = static_cast<int> (susLevel * 100.0);
+                    volMod.releaseS = releaseMs * 0.001;
+                }
+            }
+
             instrumentParams[index] = params;
         }
     }
 
-    // Arrangement (backward-compatible: section may be absent)
+    // Arrangement (backward-compatible)
     arrangement.clear();
     auto arrTree = root.getChildWithName ("Arrangement");
     if (arrTree.isValid())
@@ -214,7 +378,7 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
         }
     }
 
-    // Track Layout (backward-compatible: section may be absent)
+    // Track Layout (backward-compatible)
     trackLayout.resetToDefault();
     auto layoutTree = root.getChildWithName ("TrackLayout");
     if (layoutTree.isValid())
@@ -233,7 +397,6 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             }
         }
 
-        // Track names
         for (int i = 0; i < layoutTree.getNumChildren(); ++i)
         {
             auto nameTree = layoutTree.getChild (i);
@@ -242,6 +405,20 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             int idx = nameTree.getProperty ("index", -1);
             if (idx >= 0 && idx < kNumTracks)
                 trackLayout.setTrackName (idx, nameTree.getProperty ("name", "").toString());
+        }
+
+        auto nmTree = layoutTree.getChildWithName ("NoteModes");
+        if (nmTree.isValid())
+        {
+            juce::String modeStr = nmTree.getProperty ("values", "");
+            auto tokens = juce::StringArray::fromTokens (modeStr, ",", "");
+            if (tokens.size() == kNumTracks)
+            {
+                for (int i = 0; i < kNumTracks; ++i)
+                    trackLayout.setTrackNoteMode (i, tokens[i].getIntValue() == 1
+                                                         ? NoteMode::Release
+                                                         : NoteMode::Kill);
+            }
         }
 
         for (int i = 0; i < layoutTree.getNumChildren(); ++i)
@@ -285,7 +462,6 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
     }
     else
     {
-        // No patterns in file — add a default empty one
         patternData.addPattern (64);
     }
 

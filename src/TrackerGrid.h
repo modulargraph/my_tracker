@@ -82,6 +82,8 @@ public:
     std::function<void (int fromVisual, int toVisual)> onTrackHeaderDragged;
     // Callback for file drop on track header
     std::function<void (int track, const juce::File& file)> onFileDroppedOnTrack;
+    // Callback for note mode toggle (K/R) on track header
+    std::function<void (int track)> onNoteModeToggled;
 
     // Layout constants (public for toolbar/status)
     static constexpr int kRowNumberWidth = 30;

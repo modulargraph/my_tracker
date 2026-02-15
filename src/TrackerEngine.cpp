@@ -1,7 +1,9 @@
 #include "TrackerEngine.h"
+#include "InstrumentEffectsPlugin.h"
 
 TrackerEngine::TrackerEngine()
 {
+    currentTrackInstrument.fill (-1);
 }
 
 TrackerEngine::~TrackerEngine()
@@ -23,6 +25,9 @@ void TrackerEngine::initialise()
 {
     engine = std::make_unique<te::Engine> ("TrackerAdjust");
 
+    // Register custom plugin types
+    engine->getPluginManager().createBuiltInType<InstrumentEffectsPlugin>();
+
     // Create an edit
     auto editFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
                         .getChildFile ("TrackerAdjust")
@@ -42,10 +47,14 @@ void TrackerEngine::initialise()
     edit->getTransport().ensureContextAllocated();
 }
 
-void TrackerEngine::syncPatternToEdit (const Pattern& pattern)
+void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
+                                       const std::array<bool, kNumTracks>& releaseMode)
 {
     if (edit == nullptr)
         return;
+
+    // Ensure correct instruments are loaded on each track
+    prepareTracksForPattern (pattern);
 
     auto tracks = te::getAudioTracks (*edit);
 
@@ -74,6 +83,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern)
 
         // Build MIDI sequence from pattern data
         juce::MidiMessageSequence midiSeq;
+        bool isRelease = releaseMode[static_cast<size_t> (trackIdx)];
 
         for (int row = 0; row < pattern.numRows; ++row)
         {
@@ -92,7 +102,28 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern)
                 continue;
             }
 
-            double endBeat = startBeat + (1.0 / static_cast<double> (rowsPerBeat));
+            // Calculate note end time
+            double endBeat;
+            if (isRelease)
+            {
+                // Release mode: note sustains until next note/OFF/KILL or pattern end
+                int endRow = pattern.numRows;
+                for (int nextRow = row + 1; nextRow < pattern.numRows; ++nextRow)
+                {
+                    if (pattern.getCell (nextRow, trackIdx).note >= 0)
+                    {
+                        endRow = nextRow;
+                        break;
+                    }
+                }
+                endBeat = static_cast<double> (endRow) / static_cast<double> (rowsPerBeat);
+            }
+            else
+            {
+                // Kill mode: note lasts exactly one row
+                endBeat = startBeat + (1.0 / static_cast<double> (rowsPerBeat));
+            }
+
             auto noteEnd = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (endBeat));
 
             int velocity = cell.volume >= 0 ? cell.volume : 127;
@@ -108,10 +139,14 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern)
     }
 }
 
-void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pattern*, int>>& sequence, int rpb)
+void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pattern*, int>>& sequence, int rpb,
+                                            const std::array<bool, kNumTracks>& releaseMode)
 {
     if (edit == nullptr || sequence.empty())
         return;
+
+    // Prepare instruments based on the first pattern in the arrangement
+    prepareTracksForPattern (*sequence[0].first);
 
     auto tracks = te::getAudioTracks (*edit);
 
@@ -140,6 +175,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
 
         juce::MidiMessageSequence midiSeq;
         double beatOffset = 0.0;
+        bool isRelease = releaseMode[static_cast<size_t> (trackIdx)];
 
         for (auto& [pattern, repeats] : sequence)
         {
@@ -163,7 +199,28 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         continue;
                     }
 
-                    double endBeat = startBeat + (1.0 / static_cast<double> (rpb));
+                    // Calculate note end time
+                    double endBeat;
+                    if (isRelease)
+                    {
+                        // Release mode: sustain until next note/OFF/KILL in this repeat, or end of repeat
+                        double repeatEndBeat = beatOffset + patternLengthBeats;
+                        endBeat = repeatEndBeat; // default: sustain to end of this pattern repeat
+                        for (int nextRow = row + 1; nextRow < pattern->numRows; ++nextRow)
+                        {
+                            if (pattern->getCell (nextRow, trackIdx).note >= 0)
+                            {
+                                endBeat = beatOffset + static_cast<double> (nextRow) / static_cast<double> (rpb);
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Kill mode: note lasts exactly one row
+                        endBeat = startBeat + (1.0 / static_cast<double> (rpb));
+                    }
+
                     auto noteEnd = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (endBeat));
 
                     int velocity = cell.volume >= 0 ? cell.volume : 127;
@@ -282,7 +339,61 @@ juce::String TrackerEngine::loadSampleForTrack (int trackIndex, const juce::File
     if (track == nullptr)
         return "Track not found";
 
-    return sampler.loadSample (*track, sampleFile, trackIndex);
+    auto result = sampler.loadSample (*track, sampleFile, trackIndex);
+    if (result.isEmpty())
+        currentTrackInstrument[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, trackIndex))] = trackIndex;
+    return result;
+}
+
+void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
+{
+    if (edit == nullptr)
+        return;
+
+    auto tracks = te::getAudioTracks (*edit);
+
+    for (int t = 0; t < kNumTracks && t < tracks.size(); ++t)
+    {
+        // Find the first instrument used on this track
+        int neededInst = -1;
+        for (int row = 0; row < pattern.numRows; ++row)
+        {
+            if (pattern.getCell (row, t).instrument >= 0)
+            {
+                neededInst = pattern.getCell (row, t).instrument;
+                break;
+            }
+        }
+
+        // If no instrument specified in pattern, default to track index
+        if (neededInst < 0)
+            neededInst = t;
+
+        // Skip if already loaded
+        if (neededInst == currentTrackInstrument[static_cast<size_t> (t)])
+            continue;
+
+        // Load the instrument onto this track
+        auto sampleFile = sampler.getSampleFile (neededInst);
+        if (sampleFile.existsAsFile())
+        {
+            sampler.loadSample (*tracks[t], sampleFile, neededInst);
+            sampler.applyParams (*tracks[t], neededInst);
+            currentTrackInstrument[static_cast<size_t> (t)] = neededInst;
+        }
+    }
+}
+
+int TrackerEngine::getTrackInstrument (int trackIndex) const
+{
+    if (trackIndex < 0 || trackIndex >= kNumTracks)
+        return -1;
+    return currentTrackInstrument[static_cast<size_t> (trackIndex)];
+}
+
+void TrackerEngine::invalidateTrackInstruments()
+{
+    currentTrackInstrument.fill (-1);
 }
 
 void TrackerEngine::previewNote (int trackIndex, int midiNote)

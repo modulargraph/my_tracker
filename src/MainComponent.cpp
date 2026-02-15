@@ -7,6 +7,11 @@ MainComponent::MainComponent()
     // Initialise the engine
     trackerEngine.initialise();
 
+    // Create tab bar
+    tabBar = std::make_unique<TabBarComponent> (trackerLookAndFeel);
+    addAndMakeVisible (*tabBar);
+    tabBar->onTabChanged = [this] (Tab tab) { switchToTab (tab); };
+
     // Create toolbar
     toolbar = std::make_unique<ToolbarComponent> (trackerLookAndFeel);
     addAndMakeVisible (*toolbar);
@@ -100,6 +105,11 @@ MainComponent::MainComponent()
         trackerGrid->setCursorPosition (
             juce::jmin (trackerGrid->getCursorRow(), newLen - 1),
             trackerGrid->getCursorTrack());
+
+        // Re-sync edit if playing in pattern mode
+        if (trackerEngine.isPlaying() && ! songMode)
+            trackerEngine.syncPatternToEdit (pat, getReleaseModes());
+
         updateToolbar();
         markDirty();
     };
@@ -120,7 +130,9 @@ MainComponent::MainComponent()
 
     toolbar->onOctaveDrag = [this] (int delta)
     {
-        trackerGrid->setOctave (juce::jlimit (0, 9, trackerGrid->getOctave() + delta));
+        int oct = juce::jlimit (0, 9, trackerGrid->getOctave() + delta);
+        trackerGrid->setOctave (oct);
+        sampleEditor->setOctave (oct);
         updateStatusBar();
         updateToolbar();
     };
@@ -190,40 +202,94 @@ MainComponent::MainComponent()
     // Create instrument panel (right side, visible by default)
     instrumentPanel = std::make_unique<InstrumentPanel> (trackerLookAndFeel);
     addAndMakeVisible (*instrumentPanel);
-    instrumentPanel->onInstrumentSelected = [this] (int inst)
-    {
-        trackerGrid->setCurrentInstrument (inst);
-        updateStatusBar();
-        updateToolbar();
-    };
     instrumentPanel->onLoadSampleRequested = [this] (int inst)
     {
         loadSampleForInstrument (inst);
     };
     instrumentPanel->onEditSampleRequested = [this] (int inst)
     {
-        openSampleEditor (inst);
+        trackerGrid->setCurrentInstrument (inst);
+        instrumentPanel->setSelectedInstrument (inst);
+        switchToTab (Tab::InstrumentEdit);
+    };
+    instrumentPanel->onInstrumentSelected = [this] (int inst)
+    {
+        trackerGrid->setCurrentInstrument (inst);
+        updateStatusBar();
+        updateToolbar();
+        // Refresh editor if on an edit/type tab
+        if (activeTab == Tab::InstrumentEdit || activeTab == Tab::InstrumentType)
+            updateSampleEditorForCurrentInstrument();
     };
 
-    // Create sample editor (hidden by default)
+    // Create sample editor (always present, shown in edit/type tabs)
     sampleEditor = std::make_unique<SampleEditorComponent> (trackerLookAndFeel);
-    addChildComponent (*sampleEditor);
+    addAndMakeVisible (*sampleEditor);
 
     sampleEditor->onParamsChanged = [this] (int inst, const InstrumentParams& params)
     {
         trackerEngine.getSampler().setParams (inst, params);
-        auto* track = trackerEngine.getTrack (inst);
-        if (track != nullptr)
-            trackerEngine.getSampler().applyParams (*track, inst);
+
+        // Apply to all tracks that currently use this instrument
+        bool applied = false;
+        for (int t = 0; t < kNumTracks; ++t)
+        {
+            if (trackerEngine.getTrackInstrument (t) == inst)
+            {
+                auto* track = trackerEngine.getTrack (t);
+                if (track != nullptr)
+                {
+                    trackerEngine.getSampler().applyParams (*track, inst);
+                    applied = true;
+                }
+            }
+        }
+
+        // Fallback: apply to the instrument's home track (before first playback sync)
+        if (! applied && inst >= 0 && inst < kNumTracks)
+        {
+            auto* track = trackerEngine.getTrack (inst);
+            if (track != nullptr)
+                trackerEngine.getSampler().applyParams (*track, inst);
+        }
         markDirty();
     };
-    sampleEditor->onPreviewRequested = [this] (int inst)
+    sampleEditor->onPreviewRequested = [this] (int inst, int note)
     {
-        trackerEngine.previewNote (inst, 60);
+        // Ensure the instrument's home track has this instrument loaded for preview
+        if (inst >= 0 && inst < kNumTracks && trackerEngine.getTrackInstrument (inst) != inst)
+        {
+            auto sampleFile = trackerEngine.getSampler().getSampleFile (inst);
+            if (sampleFile.existsAsFile())
+            {
+                trackerEngine.loadSampleForTrack (inst, sampleFile);
+                auto params = trackerEngine.getSampler().getParams (inst);
+                auto* track = trackerEngine.getTrack (inst);
+                if (track != nullptr)
+                    trackerEngine.getSampler().applyParams (*track, inst);
+            }
+        }
+        trackerEngine.previewNote (inst, note);
     };
-    sampleEditor->onCloseRequested = [this]
+
+    // Create file browser (hidden by default)
+    fileBrowser = std::make_unique<SampleBrowserComponent> (trackerLookAndFeel);
+    addChildComponent (*fileBrowser);
+    fileBrowser->onLoadSample = [this] (int instrument, const juce::File& file)
     {
-        closeSampleEditor();
+        auto error = trackerEngine.loadSampleForTrack (instrument, file);
+        if (error.isNotEmpty())
+            juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Load Error", error);
+        else
+        {
+            if (instrument < kNumTracks)
+                trackerGrid->trackHasSample[static_cast<size_t> (instrument)] = true;
+            trackerGrid->repaint();
+            updateToolbar();
+            updateInstrumentPanel();
+            fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
+            markDirty();
+        }
     };
 
     // Create the grid
@@ -253,7 +319,7 @@ MainComponent::MainComponent()
             if (songMode)
                 syncArrangementToEdit();
             else
-                trackerEngine.syncPatternToEdit (patternData.getCurrentPattern());
+                trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
         }
         markDirty();
     };
@@ -298,6 +364,19 @@ MainComponent::MainComponent()
         }
     };
 
+    trackerGrid->onNoteModeToggled = [this] (int /*track*/)
+    {
+        markDirty();
+        if (trackerEngine.isPlaying() && ! songMode)
+        {
+            trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
+        }
+        else if (trackerEngine.isPlaying() && songMode)
+        {
+            syncArrangementToEdit();
+        }
+    };
+
     // Transport change callback
     trackerEngine.onTransportChanged = [this]
     {
@@ -333,10 +412,11 @@ MainComponent::MainComponent()
     // Playback cursor update timer
     startTimerHz (30);
 
-    // Register as key listener on the grid and sample editor
+    // Register as key listener on the grid, sample editor, and file browser
     trackerGrid->addKeyListener (this);
     trackerGrid->addKeyListener (commandManager.getKeyMappings());
     sampleEditor->addKeyListener (this);
+    fileBrowser->addKeyListener (this);
 
     setSize (1280, 720);
     setWantsKeyboardFocus (true);
@@ -348,6 +428,7 @@ MainComponent::~MainComponent()
    #if JUCE_MAC
     juce::MenuBarModel::setMacMainMenu (nullptr);
    #endif
+    fileBrowser->removeKeyListener (this);
     sampleEditor->removeKeyListener (this);
     trackerGrid->removeKeyListener (commandManager.getKeyMappings());
     trackerGrid->removeKeyListener (this);
@@ -363,7 +444,10 @@ void MainComponent::resized()
 {
     auto r = getLocalBounds();
 
-    // Toolbar at top
+    // Tab bar at top
+    tabBar->setBounds (r.removeFromTop (TabBarComponent::kTabBarHeight));
+
+    // Toolbar below tab bar
     toolbar->setBounds (r.removeFromTop (ToolbarComponent::kToolbarHeight));
 
     // Status bar at bottom
@@ -374,40 +458,70 @@ void MainComponent::resized()
     octaveLabel.setBounds (rightStatus.removeFromLeft (rightStatus.getWidth() / 2));
     bpmLabel.setBounds (rightStatus);
 
-    // Arrangement panel (left side)
-    if (arrangementVisible)
-    {
-        arrangementComponent->setBounds (r.removeFromLeft (ArrangementComponent::kPanelWidth));
-        arrangementComponent->setVisible (true);
-    }
-    else
-    {
-        arrangementComponent->setVisible (false);
-    }
+    // Hide everything first
+    arrangementComponent->setVisible (false);
+    instrumentPanel->setVisible (false);
+    trackerGrid->setVisible (false);
+    sampleEditor->setVisible (false);
+    fileBrowser->setVisible (false);
 
-    // Instrument panel (right side)
-    if (instrumentPanelVisible)
+    switch (activeTab)
     {
-        instrumentPanel->setBounds (r.removeFromRight (InstrumentPanel::kPanelWidth));
-        instrumentPanel->setVisible (true);
-    }
-    else
-    {
-        instrumentPanel->setVisible (false);
-    }
+        case Tab::Tracker:
+        {
+            // Arrangement panel (left side)
+            if (arrangementVisible)
+            {
+                arrangementComponent->setBounds (r.removeFromLeft (ArrangementComponent::kPanelWidth));
+                arrangementComponent->setVisible (true);
+            }
 
-    // Grid or sample editor fills the rest
-    if (sampleEditorVisible)
-    {
-        sampleEditor->setBounds (r);
-        sampleEditor->setVisible (true);
-        trackerGrid->setVisible (false);
-    }
-    else
-    {
-        trackerGrid->setBounds (r);
-        trackerGrid->setVisible (true);
-        sampleEditor->setVisible (false);
+            // Instrument panel (right side)
+            if (instrumentPanelVisible)
+            {
+                instrumentPanel->setBounds (r.removeFromRight (InstrumentPanel::kPanelWidth));
+                instrumentPanel->setVisible (true);
+            }
+
+            // Grid fills the rest
+            trackerGrid->setBounds (r);
+            trackerGrid->setVisible (true);
+            break;
+        }
+        case Tab::InstrumentEdit:
+        {
+            // Instrument panel (right side, optional)
+            if (instrumentPanelVisible)
+            {
+                instrumentPanel->setBounds (r.removeFromRight (InstrumentPanel::kPanelWidth));
+                instrumentPanel->setVisible (true);
+            }
+
+            sampleEditor->setDisplayMode (SampleEditorComponent::DisplayMode::InstrumentEdit);
+            sampleEditor->setBounds (r);
+            sampleEditor->setVisible (true);
+            break;
+        }
+        case Tab::InstrumentType:
+        {
+            // Instrument panel (right side, optional)
+            if (instrumentPanelVisible)
+            {
+                instrumentPanel->setBounds (r.removeFromRight (InstrumentPanel::kPanelWidth));
+                instrumentPanel->setVisible (true);
+            }
+
+            sampleEditor->setDisplayMode (SampleEditorComponent::DisplayMode::InstrumentType);
+            sampleEditor->setBounds (r);
+            sampleEditor->setVisible (true);
+            break;
+        }
+        case Tab::Browser:
+        {
+            fileBrowser->setBounds (r);
+            fileBrowser->setVisible (true);
+            break;
+        }
     }
 }
 
@@ -418,14 +532,39 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     bool shift = key.getModifiers().isShiftDown();
     auto textChar = key.getTextCharacter();
 
-    // When sample editor is open, let it handle keys (except Cmd shortcuts)
-    if (sampleEditorVisible)
+    // F1-F4: switch tabs (always available)
+    if (keyCode == juce::KeyPress::F1Key) { switchToTab (Tab::Tracker); return true; }
+    if (keyCode == juce::KeyPress::F2Key) { switchToTab (Tab::InstrumentEdit); return true; }
+    if (keyCode == juce::KeyPress::F3Key) { switchToTab (Tab::InstrumentType); return true; }
+    if (keyCode == juce::KeyPress::F4Key) { switchToTab (Tab::Browser); return true; }
+
+    // Escape in non-Tracker tabs: return to Tracker
+    if (keyCode == juce::KeyPress::escapeKey && activeTab != Tab::Tracker)
     {
-        if (keyCode == juce::KeyPress::escapeKey)
+        switchToTab (Tab::Tracker);
+        return true;
+    }
+
+    // When on non-Tracker tabs, only handle global shortcuts (Space, Cmd+S, etc.)
+    if (activeTab != Tab::Tracker)
+    {
+        // Space: toggle play/stop (global) -- but not when sample editor has focus (it uses Space for preview)
+        if (keyCode == juce::KeyPress::spaceKey
+            && activeTab != Tab::InstrumentEdit && activeTab != Tab::InstrumentType)
         {
-            closeSampleEditor();
+            if (! trackerEngine.isPlaying())
+            {
+                if (songMode)
+                    syncArrangementToEdit();
+                else
+                    trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
+            }
+            trackerEngine.togglePlayStop();
+            updateStatusBar();
+            updateToolbar();
             return true;
         }
+        // Let Cmd shortcuts fall through to ApplicationCommandTarget
         return false;
     }
 
@@ -437,7 +576,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
             if (songMode)
                 syncArrangementToEdit();
             else
-                trackerEngine.syncPatternToEdit (patternData.getCurrentPattern());
+                trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
         }
 
         trackerEngine.togglePlayStop();
@@ -517,6 +656,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     if (cmd && ! shift && textChar >= '1' && textChar <= '8')
     {
         trackerGrid->setOctave (textChar - '1');
+        sampleEditor->setOctave (textChar - '1');
         updateStatusBar();
         updateToolbar();
         return true;
@@ -988,7 +1128,17 @@ void MainComponent::switchToPattern (int index)
 {
     index = juce::jlimit (0, patternData.getNumPatterns() - 1, index);
     patternData.setCurrentPattern (index);
-    trackerGrid->setCursorPosition (0, trackerGrid->getCursorTrack());
+
+    // Clamp cursor row to new pattern length
+    auto& pat = patternData.getCurrentPattern();
+    trackerGrid->setCursorPosition (
+        juce::jmin (trackerGrid->getCursorRow(), pat.numRows - 1),
+        trackerGrid->getCursorTrack());
+
+    // Re-sync edit if playing in pattern mode (not song mode)
+    if (trackerEngine.isPlaying() && ! songMode)
+        trackerEngine.syncPatternToEdit (pat, getReleaseModes());
+
     trackerGrid->repaint();
     updateStatusBar();
     updateToolbar();
@@ -1007,12 +1157,19 @@ void MainComponent::showPatternLengthEditor()
         {
             int newLen = aw->getTextEditorContents ("length").getIntValue();
             newLen = juce::jlimit (1, 256, newLen);
-            patternData.getCurrentPattern().resize (newLen);
+            auto& pat = patternData.getCurrentPattern();
+            pat.resize (newLen);
             trackerGrid->setCursorPosition (
                 juce::jmin (trackerGrid->getCursorRow(), newLen - 1),
                 trackerGrid->getCursorTrack());
+
+            // Re-sync edit if playing in pattern mode
+            if (trackerEngine.isPlaying() && ! songMode)
+                trackerEngine.syncPatternToEdit (pat, getReleaseModes());
+
             trackerGrid->repaint();
             updateToolbar();
+            markDirty();
         }
         delete aw;
     }), true);
@@ -1237,6 +1394,7 @@ void MainComponent::newProject()
         trackerGrid->trackHasSample[static_cast<size_t> (i)] = false;
     }
     trackerEngine.setBpm (120.0);
+    trackerEngine.invalidateTrackInstruments();
     undoManager.clearUndoHistory();
     currentProjectFile = juce::File();
     isDirty = false;
@@ -1244,6 +1402,7 @@ void MainComponent::newProject()
     updateStatusBar();
     updateToolbar();
     updateInstrumentPanel();
+    fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
     trackerGrid->repaint();
 }
 
@@ -1307,6 +1466,9 @@ void MainComponent::openProject()
                                   }
                               }
 
+                              // Invalidate track instrument cache so next sync re-loads correctly
+                              trackerEngine.invalidateTrackInstruments();
+
                               arrangementComponent->setSelectedEntry (arrangement.getNumEntries() > 0 ? 0 : -1);
 
                               trackerGrid->setCursorPosition (0, 0);
@@ -1318,6 +1480,7 @@ void MainComponent::openProject()
                               updateStatusBar();
                               updateToolbar();
                               updateInstrumentPanel();
+                              fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
                               trackerGrid->repaint();
                           });
 }
@@ -1418,6 +1581,19 @@ void MainComponent::showHelpOverlay()
     help << "  Cmd+S             Save\n";
     help << "  Cmd+Shift+S       Save As\n";
     help << "  Cmd+Shift+O       Load sample\n\n";
+    help << "TABS\n";
+    help << "  F1                Tracker tab\n";
+    help << "  F2                Inst Edit tab\n";
+    help << "  F3                Inst Type tab\n";
+    help << "  F4                Browser tab\n";
+    help << "  Escape            Return to Tracker\n";
+    help << "  ` (in edit tabs)  Toggle PARAMS / MOD sub-tab\n";
+    help << "  Note keys         Preview sample at pitch\n\n";
+    help << "BROWSER\n";
+    help << "  Left / Right      Switch file / instrument pane\n";
+    help << "  Up / Down         Navigate list\n";
+    help << "  Enter             Open folder / Load sample\n";
+    help << "  Backspace         Parent directory\n\n";
     help << "VIEW\n";
     help << "  Cmd+Shift+A       Toggle arrangement panel\n";
     help << "  Cmd+Shift+I       Toggle instrument panel\n";
@@ -1447,7 +1623,7 @@ void MainComponent::syncArrangementToEdit()
     if (arrangement.getNumEntries() == 0)
     {
         // Fall back to current pattern
-        trackerEngine.syncPatternToEdit (patternData.getCurrentPattern());
+        trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
         return;
     }
 
@@ -1461,11 +1637,11 @@ void MainComponent::syncArrangementToEdit()
 
     if (sequence.empty())
     {
-        trackerEngine.syncPatternToEdit (patternData.getCurrentPattern());
+        trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
         return;
     }
 
-    trackerEngine.syncArrangementToEdit (sequence, trackerEngine.getRowsPerBeat());
+    trackerEngine.syncArrangementToEdit (sequence, trackerEngine.getRowsPerBeat(), getReleaseModes());
 }
 
 void MainComponent::doCopy()
@@ -1609,25 +1785,63 @@ void MainComponent::loadSampleForInstrument (int instrument)
                           });
 }
 
-void MainComponent::openSampleEditor (int instrument)
+void MainComponent::updateSampleEditorForCurrentInstrument()
 {
-    auto sampleFile = trackerEngine.getSampler().getSampleFile (instrument);
-    if (! sampleFile.existsAsFile())
-        return;
+    int inst = trackerGrid->getCurrentInstrument();
+    auto sampleFile = trackerEngine.getSampler().getSampleFile (inst);
+    auto params = trackerEngine.getSampler().getParams (inst);
 
-    auto params = trackerEngine.getSampler().getParams (instrument);
-    sampleEditor->open (instrument, sampleFile, params);
-    sampleEditorVisible = true;
-    resized();
-    sampleEditor->grabKeyboardFocus();
+    if (sampleFile.existsAsFile())
+        sampleEditor->setInstrument (inst, sampleFile, params);
+    else
+        sampleEditor->setInstrument (inst, juce::File(), params);
 }
 
-void MainComponent::closeSampleEditor()
+std::array<bool, kNumTracks> MainComponent::getReleaseModes() const
 {
-    sampleEditor->close();
-    sampleEditorVisible = false;
+    std::array<bool, kNumTracks> modes {};
+    for (int i = 0; i < kNumTracks; ++i)
+        modes[static_cast<size_t> (i)] = (trackLayout.getTrackNoteMode (i) == NoteMode::Release);
+    return modes;
+}
+
+void MainComponent::switchToTab (Tab tab)
+{
+    if (activeTab == tab) return;
+    activeTab = tab;
+    tabBar->setActiveTab (tab);
+
+    // Refresh browser data when switching to it
+    if (tab == Tab::Browser)
+    {
+        fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
+        fileBrowser->setSelectedInstrument (trackerGrid->getCurrentInstrument());
+    }
+
+    // Update instrument panel and editor when switching to edit/type tabs
+    if (tab == Tab::InstrumentEdit || tab == Tab::InstrumentType)
+    {
+        updateInstrumentPanel();
+        updateSampleEditorForCurrentInstrument();
+        sampleEditor->setOctave (trackerGrid->getOctave());
+    }
+
     resized();
-    trackerGrid->grabKeyboardFocus();
+
+    // Focus the right component
+    switch (tab)
+    {
+        case Tab::Tracker:
+            trackerGrid->grabKeyboardFocus();
+            break;
+        case Tab::InstrumentEdit:
+        case Tab::InstrumentType:
+            sampleEditor->grabKeyboardFocus();
+            break;
+        case Tab::Browser:
+            fileBrowser->grabKeyboardFocus();
+            break;
+    }
 }
 
 void MainComponent::updateMuteSoloState()

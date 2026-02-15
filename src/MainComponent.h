@@ -13,6 +13,8 @@
 #include "InstrumentPanel.h"
 #include "SampleEditorComponent.h"
 #include "TrackLayout.h"
+#include "TabBarComponent.h"
+#include "FileBrowserComponent.h"
 
 class MainComponent : public juce::Component,
                       public juce::KeyListener,
@@ -78,6 +80,8 @@ private:
     TrackLayout trackLayout;
     PatternData patternData;
     TrackerEngine trackerEngine;
+    std::unique_ptr<TabBarComponent> tabBar;
+    Tab activeTab = Tab::Tracker;
     std::unique_ptr<ToolbarComponent> toolbar;
     std::unique_ptr<TrackerGrid> trackerGrid;
     juce::UndoManager undoManager;
@@ -85,9 +89,9 @@ private:
     std::unique_ptr<ArrangementComponent> arrangementComponent;
     std::unique_ptr<InstrumentPanel> instrumentPanel;
     std::unique_ptr<SampleEditorComponent> sampleEditor;
+    std::unique_ptr<SampleBrowserComponent> fileBrowser;
     bool arrangementVisible = false;
     bool instrumentPanelVisible = true;
-    bool sampleEditorVisible = false;
     bool songMode = false;
     enum class FollowMode { Off, Center, Page };
     FollowMode followMode = FollowMode::Off;
@@ -134,9 +138,10 @@ private:
     void syncArrangementToEdit();
     void showHelpOverlay();
     void updateInstrumentPanel();
+    std::array<bool, kNumTracks> getReleaseModes() const;
     void loadSampleForInstrument (int instrument);
-    void openSampleEditor (int instrument);
-    void closeSampleEditor();
+    void updateSampleEditorForCurrentInstrument();
+    void switchToTab (Tab tab);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

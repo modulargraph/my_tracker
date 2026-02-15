@@ -3,6 +3,7 @@
 InstrumentPanel::InstrumentPanel (TrackerLookAndFeel& lnf)
     : lookAndFeel (lnf)
 {
+    setWantsKeyboardFocus (true);
 }
 
 int InstrumentPanel::getVisibleSlotCount() const
@@ -125,6 +126,72 @@ void InstrumentPanel::mouseDoubleClick (const juce::MouseEvent& event)
 
     if (slots[static_cast<size_t> (idx)].hasData && onEditSampleRequested)
         onEditSampleRequested (idx);
+}
+
+bool InstrumentPanel::keyPressed (const juce::KeyPress& key)
+{
+    auto keyCode = key.getKeyCode();
+
+    if (keyCode == juce::KeyPress::upKey)
+    {
+        selectedInstrument = juce::jmax (0, selectedInstrument - 1);
+        if (selectedInstrument < scrollOffset)
+            scrollOffset = selectedInstrument;
+        repaint();
+        if (onInstrumentSelected)
+            onInstrumentSelected (selectedInstrument);
+        return true;
+    }
+    if (keyCode == juce::KeyPress::downKey)
+    {
+        selectedInstrument = juce::jmin (255, selectedInstrument + 1);
+        int visibleSlots = getVisibleSlotCount();
+        if (selectedInstrument >= scrollOffset + visibleSlots)
+            scrollOffset = selectedInstrument - visibleSlots + 1;
+        repaint();
+        if (onInstrumentSelected)
+            onInstrumentSelected (selectedInstrument);
+        return true;
+    }
+    if (keyCode == juce::KeyPress::pageUpKey)
+    {
+        selectedInstrument = juce::jmax (0, selectedInstrument - getVisibleSlotCount());
+        if (selectedInstrument < scrollOffset)
+            scrollOffset = selectedInstrument;
+        repaint();
+        if (onInstrumentSelected)
+            onInstrumentSelected (selectedInstrument);
+        return true;
+    }
+    if (keyCode == juce::KeyPress::pageDownKey)
+    {
+        selectedInstrument = juce::jmin (255, selectedInstrument + getVisibleSlotCount());
+        int visibleSlots = getVisibleSlotCount();
+        if (selectedInstrument >= scrollOffset + visibleSlots)
+            scrollOffset = selectedInstrument - visibleSlots + 1;
+        repaint();
+        if (onInstrumentSelected)
+            onInstrumentSelected (selectedInstrument);
+        return true;
+    }
+    if (keyCode == juce::KeyPress::returnKey)
+    {
+        if (slots[static_cast<size_t> (selectedInstrument)].hasData && onEditSampleRequested)
+            onEditSampleRequested (selectedInstrument);
+        else if (onLoadSampleRequested)
+            onLoadSampleRequested (selectedInstrument);
+        return true;
+    }
+
+    return false;
+}
+
+void InstrumentPanel::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)
+{
+    int delta = (wheel.deltaY > 0) ? -3 : 3;
+    int maxScroll = juce::jmax (0, 256 - getVisibleSlotCount());
+    scrollOffset = juce::jlimit (0, maxScroll, scrollOffset + delta);
+    repaint();
 }
 
 void InstrumentPanel::showContextMenu (int instrument, juce::Point<int> screenPos)
