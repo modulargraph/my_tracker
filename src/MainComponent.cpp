@@ -254,6 +254,13 @@ MainComponent::MainComponent()
         }
         markDirty();
     };
+    sampleEditor->onRealtimeParamsChanged = [this] (int inst, const InstrumentParams& params)
+    {
+        // Lightweight path: update params map only — InstrumentEffectsPlugin reads
+        // from the params map each audio block, so no applyParams() needed
+        trackerEngine.getSampler().setParams (inst, params);
+        markDirty();
+    };
     sampleEditor->onPreviewRequested = [this] (int inst, int note)
     {
         // Ensure the instrument's home track has this instrument loaded for preview

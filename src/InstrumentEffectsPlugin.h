@@ -42,6 +42,11 @@ private:
     // Current instrument state
     int currentInstrument = -1;
 
+    // Parameter smoothing
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedGainL { 1.0f };
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedGainR { 1.0f };
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> smoothedCutoffHz { 20000.0f };
+
     // Filter
     juce::dsp::StateVariableTPTFilter<float> svfFilter;
     bool filterInitialized = false;

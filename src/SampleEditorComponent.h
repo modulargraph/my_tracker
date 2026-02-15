@@ -34,6 +34,7 @@ public:
 
     // Callbacks
     std::function<void (int instrument, const InstrumentParams& params)> onParamsChanged;
+    std::function<void (int instrument, const InstrumentParams& params)> onRealtimeParamsChanged;
     std::function<void (int instrument, int note)> onPreviewRequested;
 
     void paint (juce::Graphics& g) override;
@@ -51,6 +52,7 @@ private:
     int currentInstrument = -1;
     juce::File currentFile;
     InstrumentParams currentParams;
+    InstrumentParams lastCommittedParams;
 
     // Waveform display
     juce::AudioFormatManager formatManager;
@@ -87,6 +89,7 @@ private:
     void timerCallback() override;
     void scheduleApply();
     void notifyParamsChanged();
+    bool isRealtimeOnlyChange (const InstrumentParams& oldP, const InstrumentParams& newP) const;
 
     // Focus helpers
     int getFocusedColumn() const;

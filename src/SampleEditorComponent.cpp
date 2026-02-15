@@ -108,6 +108,7 @@ void SampleEditorComponent::setInstrument (int instrumentIndex, const juce::File
     currentInstrument = instrumentIndex;
     currentFile = sampleFile;
     currentParams = params;
+    lastCommittedParams = params;
     paramsDirty = false;
 
     thumbnail.clear();
@@ -130,6 +131,7 @@ void SampleEditorComponent::clearInstrument()
     currentInstrument = -1;
     currentFile = juce::File();
     currentParams = InstrumentParams();
+    lastCommittedParams = InstrumentParams();
     paramsDirty = false;
     isDragging = false;
 
@@ -149,18 +151,50 @@ void SampleEditorComponent::timerCallback()
         paramsDirty = false;
         if (onParamsChanged)
             onParamsChanged (currentInstrument, currentParams);
+        lastCommittedParams = currentParams;
     }
 }
 
 void SampleEditorComponent::scheduleApply()
 {
     paramsDirty = true;
-    startTimer (80);
+    startTimer (30);
+}
+
+bool SampleEditorComponent::isRealtimeOnlyChange (const InstrumentParams& oldP, const InstrumentParams& newP) const
+{
+    // Structural params that require sample reload via applyParams()
+    if (oldP.tune != newP.tune) return false;
+    if (oldP.finetune != newP.finetune) return false;
+    if (oldP.startPos != newP.startPos) return false;
+    if (oldP.endPos != newP.endPos) return false;
+    if (oldP.reversed != newP.reversed) return false;
+    if (oldP.playMode != newP.playMode) return false;
+    if (oldP.loopStart != newP.loopStart) return false;
+    if (oldP.loopEnd != newP.loopEnd) return false;
+    if (oldP.granularPosition != newP.granularPosition) return false;
+    if (oldP.granularLength != newP.granularLength) return false;
+    if (oldP.granularShape != newP.granularShape) return false;
+    if (oldP.granularLoop != newP.granularLoop) return false;
+    if (oldP.slicePoints != newP.slicePoints) return false;
+    // Everything else (volume, pan, filter, overdrive, bitDepth, sends, modulations)
+    // is handled by InstrumentEffectsPlugin reading from the params map each block
+    return true;
 }
 
 void SampleEditorComponent::notifyParamsChanged()
 {
-    scheduleApply();
+    if (currentInstrument >= 0 && isRealtimeOnlyChange (lastCommittedParams, currentParams))
+    {
+        // DSP-only change: push directly to engine, no debounce, no sample reload
+        if (onRealtimeParamsChanged)
+            onRealtimeParamsChanged (currentInstrument, currentParams);
+    }
+    else
+    {
+        // Structural change: use debounced full apply path
+        scheduleApply();
+    }
     repaint();
 }
 
@@ -2078,13 +2112,12 @@ void SampleEditorComponent::mouseUp (const juce::MouseEvent&)
     if (isDragging)
     {
         isDragging = false;
-        if (paramsDirty)
-        {
-            stopTimer();
-            paramsDirty = false;
-            if (onParamsChanged)
-                onParamsChanged (currentInstrument, currentParams);
-        }
+        // Always do a full commit on mouse-up to ensure structural params are applied
+        stopTimer();
+        paramsDirty = false;
+        if (onParamsChanged)
+            onParamsChanged (currentInstrument, currentParams);
+        lastCommittedParams = currentParams;
     }
 }
 

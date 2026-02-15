@@ -25,6 +25,12 @@ void InstrumentEffectsPlugin::initialise (const te::PluginInitialisationInfo& in
     svfFilter.prepare (spec);
     filterInitialized = true;
 
+    // Configure parameter smoothing (~8ms ramp)
+    double rampSeconds = 0.008;
+    smoothedGainL.reset (sampleRate, rampSeconds);
+    smoothedGainR.reset (sampleRate, rampSeconds);
+    smoothedCutoffHz.reset (sampleRate, rampSeconds);
+
     resetModulationState();
 }
 
@@ -241,10 +247,10 @@ void InstrumentEffectsPlugin::processFilter (juce::AudioBuffer<float>& buffer, i
 
     // Apply cutoff modulation (-1..+1 maps to roughly +/- 50% of cutoff range)
     int modCutoff = juce::jlimit (0, 100, params.cutoff + static_cast<int> (cutoffMod * 50.0f));
-    float freqHz = cutoffPercentToHz (modCutoff);
+    float targetFreqHz = cutoffPercentToHz (modCutoff);
     float q = resonancePercentToQ (params.resonance);
 
-    svfFilter.setCutoffFrequency (freqHz);
+    smoothedCutoffHz.setTargetValue (targetFreqHz);
     svfFilter.setResonance (q);
 
     switch (params.filterType)
@@ -262,12 +268,27 @@ void InstrumentEffectsPlugin::processFilter (juce::AudioBuffer<float>& buffer, i
             return;
     }
 
-    // Create a sub-block for the filter
-    auto block = juce::dsp::AudioBlock<float> (buffer)
-                     .getSubBlock (static_cast<size_t> (startSample),
-                                   static_cast<size_t> (numSamples));
-    auto context = juce::dsp::ProcessContextReplacing<float> (block);
-    svfFilter.process (context);
+    // Process in sub-blocks of 32 samples, advancing smoothed cutoff between them
+    constexpr int subBlockSize = 32;
+    int samplesRemaining = numSamples;
+    int offset = startSample;
+
+    while (samplesRemaining > 0)
+    {
+        int chunkSize = juce::jmin (subBlockSize, samplesRemaining);
+
+        svfFilter.setCutoffFrequency (smoothedCutoffHz.getNextValue());
+        smoothedCutoffHz.skip (chunkSize - 1);
+
+        auto block = juce::dsp::AudioBlock<float> (buffer)
+                         .getSubBlock (static_cast<size_t> (offset),
+                                       static_cast<size_t> (chunkSize));
+        auto context = juce::dsp::ProcessContextReplacing<float> (block);
+        svfFilter.process (context);
+
+        offset += chunkSize;
+        samplesRemaining -= chunkSize;
+    }
 }
 
 void InstrumentEffectsPlugin::processOverdrive (juce::AudioBuffer<float>& buffer, int startSample,
@@ -317,17 +338,27 @@ void InstrumentEffectsPlugin::processVolumeAndPan (juce::AudioBuffer<float>& buf
     effectivePan = juce::jlimit (-50.0f, 50.0f, effectivePan);
 
     float panNorm = (effectivePan + 50.0f) / 100.0f; // 0=left, 1=right
-    float leftGain = gain * std::cos (panNorm * juce::MathConstants<float>::halfPi);
-    float rightGain = gain * std::sin (panNorm * juce::MathConstants<float>::halfPi);
+    float targetLeftGain = gain * std::cos (panNorm * juce::MathConstants<float>::halfPi);
+    float targetRightGain = gain * std::sin (panNorm * juce::MathConstants<float>::halfPi);
+
+    smoothedGainL.setTargetValue (targetLeftGain);
+    smoothedGainR.setTargetValue (targetRightGain);
 
     if (buffer.getNumChannels() >= 2)
     {
-        buffer.applyGain (0, startSample, numSamples, leftGain);
-        buffer.applyGain (1, startSample, numSamples, rightGain);
+        auto* left  = buffer.getWritePointer (0, startSample);
+        auto* right = buffer.getWritePointer (1, startSample);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            left[i]  *= smoothedGainL.getNextValue();
+            right[i] *= smoothedGainR.getNextValue();
+        }
     }
     else if (buffer.getNumChannels() >= 1)
     {
-        buffer.applyGain (0, startSample, numSamples, gain);
+        auto* data = buffer.getWritePointer (0, startSample);
+        for (int i = 0; i < numSamples; ++i)
+            data[i] *= smoothedGainL.getNextValue();
     }
 }
 
