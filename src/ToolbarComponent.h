@@ -11,6 +11,10 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent& event) override;
+    void mouseDrag (const juce::MouseEvent& event) override;
+    void mouseUp (const juce::MouseEvent& event) override;
+    void mouseDoubleClick (const juce::MouseEvent& event) override;
+    void mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
 
     // Display state
     void setPatternInfo (int current, int total, const juce::String& name);
@@ -23,10 +27,24 @@ public:
     void setPlaybackMode (bool songMode);
     void setSampleName (const juce::String& name);
 
+    // Panel toggle state
+    void setArrangementVisible (bool v) { arrangementOn = v; repaint(); }
+    void setInstrumentPanelVisible (bool v) { instrumentPanelOn = v; repaint(); }
+
     // Callbacks
     std::function<void()> onAddPattern;
     std::function<void()> onRemovePattern;
     std::function<void()> onPatternLengthClick;
+    std::function<void (int delta)> onLengthDrag;
+    std::function<void (double delta)> onBpmDrag;
+    std::function<void (int delta)> onStepDrag;
+    std::function<void (int delta)> onOctaveDrag;
+    std::function<void()> onModeToggle;
+    std::function<void()> onPatternNameDoubleClick;
+    std::function<void()> onToggleArrangement;
+    std::function<void()> onToggleInstrumentPanel;
+    std::function<void()> onNextPattern;
+    std::function<void()> onPrevPattern;
 
     static constexpr int kToolbarHeight = 36;
 
@@ -44,9 +62,19 @@ private:
     bool playing = false;
     bool songMode = false;
     juce::String sampleName;
+    bool arrangementOn = false;
+    bool instrumentPanelOn = true;
 
-    // Button hit areas
-    juce::Rectangle<int> addPatBounds, removePatBounds, lengthBounds;
+    // Hit areas
+    juce::Rectangle<int> addPatBounds, removePatBounds;
+    juce::Rectangle<int> lengthBounds, bpmBounds, stepBounds, octaveBounds, modeBounds, patNameBounds;
+    juce::Rectangle<int> arrangementToggleBounds, instrumentToggleBounds, patSelectorBounds;
+
+    // Drag state
+    enum class DragTarget { None, Length, Bpm, Step, Octave };
+    DragTarget dragTarget = DragTarget::None;
+    int dragStartY = 0;
+    int dragAccumulated = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ToolbarComponent)
 };

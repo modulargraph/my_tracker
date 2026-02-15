@@ -15,10 +15,21 @@ void ToolbarComponent::paint (juce::Graphics& g)
 
     int x = 8;
 
-    // Pattern selector
+    // Arrangement panel toggle (left of pattern selector)
+    arrangementToggleBounds = { x, 6, 24, 24 };
+    g.setColour (arrangementOn ? juce::Colour (0xff5c8abf) : juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (arrangementToggleBounds.toFloat(), 3.0f);
+    g.setColour (arrangementOn ? juce::Colours::white : textCol);
+    g.setFont (lookAndFeel.getMonoFont (11.0f));
+    g.drawText ("ARR", arrangementToggleBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
+    x += 28;
+
+    // Pattern selector (scrollable)
     auto patStr = juce::String::formatted ("Pat:%02d/%02d", currentPattern, totalPatterns);
+    patSelectorBounds = { x, 0, 80, kToolbarHeight };
     g.setColour (textCol);
-    g.drawText (patStr, x, 0, 80, kToolbarHeight, juce::Justification::centredLeft);
+    g.drawText (patStr, patSelectorBounds, juce::Justification::centredLeft);
     x += 82;
 
     // [+] button
@@ -38,8 +49,9 @@ void ToolbarComponent::paint (juce::Graphics& g)
     x += 28;
 
     // Pattern name
+    patNameBounds = { x, 0, 100, kToolbarHeight };
     g.setColour (textCol.withAlpha (0.7f));
-    g.drawText ("\"" + patternName + "\"", x, 0, 100, kToolbarHeight, juce::Justification::centredLeft);
+    g.drawText ("\"" + patternName + "\"", patNameBounds, juce::Justification::centredLeft);
     x += 104;
 
     // Separator
@@ -47,10 +59,10 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.drawVerticalLine (x, 4.0f, static_cast<float> (kToolbarHeight - 4));
     x += 8;
 
-    // Pattern length
+    // Pattern length (draggable)
     auto lenStr = juce::String::formatted ("Len:%d", patternLength);
     lengthBounds = { x, 0, 60, kToolbarHeight };
-    g.setColour (textCol);
+    g.setColour (dragTarget == DragTarget::Length ? juce::Colour (0xff88aacc) : textCol);
     g.drawText (lenStr, lengthBounds, juce::Justification::centredLeft);
     x += 64;
 
@@ -76,16 +88,18 @@ void ToolbarComponent::paint (juce::Graphics& g)
         g.setFont (lookAndFeel.getMonoFont (13.0f));
     }
 
-    // Octave
+    // Octave (draggable)
     auto octStr = juce::String::formatted ("Oct:%d", octave);
-    g.setColour (textCol);
-    g.drawText (octStr, x, 0, 50, kToolbarHeight, juce::Justification::centredLeft);
+    octaveBounds = { x, 0, 50, kToolbarHeight };
+    g.setColour (dragTarget == DragTarget::Octave ? juce::Colour (0xff88aacc) : textCol);
+    g.drawText (octStr, octaveBounds, juce::Justification::centredLeft);
     x += 54;
 
-    // Step
+    // Step (draggable)
     auto stepStr = juce::String::formatted ("Step:%d", step);
-    g.setColour (textCol);
-    g.drawText (stepStr, x, 0, 56, kToolbarHeight, juce::Justification::centredLeft);
+    stepBounds = { x, 0, 56, kToolbarHeight };
+    g.setColour (dragTarget == DragTarget::Step ? juce::Colour (0xff88aacc) : textCol);
+    g.drawText (stepStr, stepBounds, juce::Justification::centredLeft);
     x += 60;
 
     // Separator
@@ -93,10 +107,11 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.drawVerticalLine (x, 4.0f, static_cast<float> (kToolbarHeight - 4));
     x += 8;
 
-    // BPM
+    // BPM (draggable)
     auto bpmStr = juce::String::formatted ("BPM:%.1f", bpm);
-    g.setColour (textCol);
-    g.drawText (bpmStr, x, 0, 80, kToolbarHeight, juce::Justification::centredLeft);
+    bpmBounds = { x, 0, 80, kToolbarHeight };
+    g.setColour (dragTarget == DragTarget::Bpm ? juce::Colour (0xff88aacc) : textCol);
+    g.drawText (bpmStr, bpmBounds, juce::Justification::centredLeft);
     x += 84;
 
     // Play state
@@ -105,10 +120,20 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.drawText (stateStr, x, 0, 70, kToolbarHeight, juce::Justification::centredLeft);
     x += 74;
 
-    // Mode toggle
+    // Mode toggle (clickable)
     auto modeStr = songMode ? "SONG" : "PAT";
+    modeBounds = { x, 0, 50, kToolbarHeight };
     g.setColour (songMode ? juce::Colour (0xffd4a843) : textCol);
-    g.drawText (modeStr, x, 0, 50, kToolbarHeight, juce::Justification::centredLeft);
+    g.drawText (modeStr, modeBounds, juce::Justification::centredLeft);
+
+    // Instrument panel toggle (right-aligned)
+    instrumentToggleBounds = { getWidth() - 32, 6, 24, 24 };
+    g.setColour (instrumentPanelOn ? juce::Colour (0xff5c8abf) : juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (instrumentToggleBounds.toFloat(), 3.0f);
+    g.setColour (instrumentPanelOn ? juce::Colours::white : textCol);
+    g.setFont (lookAndFeel.getMonoFont (11.0f));
+    g.drawText ("INS", instrumentToggleBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
 
     // Bottom border
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
@@ -123,12 +148,110 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
 {
     auto pos = event.getPosition();
 
-    if (addPatBounds.contains (pos) && onAddPattern)
-        onAddPattern();
-    else if (removePatBounds.contains (pos) && onRemovePattern)
-        onRemovePattern();
-    else if (lengthBounds.contains (pos) && onPatternLengthClick)
+    if (arrangementToggleBounds.contains (pos) && onToggleArrangement)
+    {
+        onToggleArrangement();
+        return;
+    }
+    if (instrumentToggleBounds.contains (pos) && onToggleInstrumentPanel)
+    {
+        onToggleInstrumentPanel();
+        return;
+    }
+    if (addPatBounds.contains (pos) && onNextPattern)
+    {
+        onNextPattern();
+        return;
+    }
+    if (removePatBounds.contains (pos) && onPrevPattern)
+    {
+        onPrevPattern();
+        return;
+    }
+    if (modeBounds.contains (pos) && onModeToggle)
+    {
+        onModeToggle();
+        return;
+    }
+
+    // Start drag on draggable fields
+    dragTarget = DragTarget::None;
+    dragStartY = event.y;
+    dragAccumulated = 0;
+
+    if (lengthBounds.contains (pos))
+        dragTarget = DragTarget::Length;
+    else if (bpmBounds.contains (pos))
+        dragTarget = DragTarget::Bpm;
+    else if (stepBounds.contains (pos))
+        dragTarget = DragTarget::Step;
+    else if (octaveBounds.contains (pos))
+        dragTarget = DragTarget::Octave;
+
+    if (dragTarget != DragTarget::None)
+        repaint();
+}
+
+void ToolbarComponent::mouseDrag (const juce::MouseEvent& event)
+{
+    if (dragTarget == DragTarget::None)
+        return;
+
+    int deltaY = dragStartY - event.y;  // up = positive
+    int threshold = 4; // pixels per step
+
+    int steps = (deltaY - dragAccumulated) / threshold;
+    if (steps == 0) return;
+
+    dragAccumulated += steps * threshold;
+
+    switch (dragTarget)
+    {
+        case DragTarget::Length:
+            if (onLengthDrag) onLengthDrag (steps);
+            break;
+        case DragTarget::Bpm:
+            if (onBpmDrag) onBpmDrag (static_cast<double> (steps));
+            break;
+        case DragTarget::Step:
+            if (onStepDrag) onStepDrag (steps);
+            break;
+        case DragTarget::Octave:
+            if (onOctaveDrag) onOctaveDrag (steps);
+            break;
+        case DragTarget::None: break;
+    }
+}
+
+void ToolbarComponent::mouseUp (const juce::MouseEvent&)
+{
+    if (dragTarget != DragTarget::None)
+    {
+        dragTarget = DragTarget::None;
+        repaint();
+    }
+}
+
+void ToolbarComponent::mouseDoubleClick (const juce::MouseEvent& event)
+{
+    auto pos = event.getPosition();
+
+    if (lengthBounds.contains (pos) && onPatternLengthClick)
         onPatternLengthClick();
+    else if (patNameBounds.contains (pos) && onPatternNameDoubleClick)
+        onPatternNameDoubleClick();
+}
+
+void ToolbarComponent::mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel)
+{
+    auto pos = event.getPosition();
+    if (patSelectorBounds.contains (pos))
+    {
+        if (wheel.deltaY > 0 && onNextPattern)
+            onNextPattern();
+        else if (wheel.deltaY < 0 && onPrevPattern)
+            onPrevPattern();
+    }
 }
 
 void ToolbarComponent::setPatternInfo (int current, int total, const juce::String& name)
