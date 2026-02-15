@@ -4,7 +4,8 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
                                             double bpm, int rowsPerBeat,
                                             const std::map<int, juce::File>& loadedSamples,
                                             const std::map<int, InstrumentParams>& instrumentParams,
-                                            const Arrangement& arrangement)
+                                            const Arrangement& arrangement,
+                                            const TrackLayout& trackLayout)
 {
     juce::ValueTree root ("TrackerAdjustProject");
     root.setProperty ("version", 1, nullptr);
@@ -62,6 +63,55 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         root.addChild (arrTree, -1, nullptr);
     }
 
+    // Track Layout
+    {
+        juce::ValueTree layoutTree ("TrackLayout");
+
+        // Visual order
+        juce::String orderStr;
+        auto& order = trackLayout.getVisualOrder();
+        for (int i = 0; i < kNumTracks; ++i)
+        {
+            if (i > 0) orderStr += ",";
+            orderStr += juce::String (order[static_cast<size_t> (i)]);
+        }
+        juce::ValueTree voTree ("VisualOrder");
+        voTree.setProperty ("values", orderStr, nullptr);
+        layoutTree.addChild (voTree, -1, nullptr);
+
+        // Track names (only save non-empty)
+        auto& names = trackLayout.getTrackNames();
+        for (int i = 0; i < kNumTracks; ++i)
+        {
+            if (names[static_cast<size_t> (i)].isNotEmpty())
+            {
+                juce::ValueTree nameTree ("TrackName");
+                nameTree.setProperty ("index", i, nullptr);
+                nameTree.setProperty ("name", names[static_cast<size_t> (i)], nullptr);
+                layoutTree.addChild (nameTree, -1, nullptr);
+            }
+        }
+
+        // Groups
+        for (int gi = 0; gi < trackLayout.getNumGroups(); ++gi)
+        {
+            auto& group = trackLayout.getGroup (gi);
+            juce::ValueTree groupTree ("Group");
+            groupTree.setProperty ("name", group.name, nullptr);
+            groupTree.setProperty ("colour", group.colour.toString(), nullptr);
+
+            for (auto idx : group.trackIndices)
+            {
+                juce::ValueTree trackTree ("Track");
+                trackTree.setProperty ("index", idx, nullptr);
+                groupTree.addChild (trackTree, -1, nullptr);
+            }
+            layoutTree.addChild (groupTree, -1, nullptr);
+        }
+
+        root.addChild (layoutTree, -1, nullptr);
+    }
+
     // Patterns
     juce::ValueTree patterns ("Patterns");
     for (int i = 0; i < patternData.getNumPatterns(); ++i)
@@ -83,7 +133,8 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                                               double& bpm, int& rowsPerBeat,
                                               std::map<int, juce::File>& loadedSamples,
                                               std::map<int, InstrumentParams>& instrumentParams,
-                                              Arrangement& arrangement)
+                                              Arrangement& arrangement,
+                                              TrackLayout& trackLayout)
 {
     auto xml = juce::XmlDocument::parse (file);
     if (xml == nullptr)
@@ -160,6 +211,61 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             int patIdx = entryTree.getProperty ("pattern", 0);
             int repeats = entryTree.getProperty ("repeats", 1);
             arrangement.addEntry (patIdx, repeats);
+        }
+    }
+
+    // Track Layout (backward-compatible: section may be absent)
+    trackLayout.resetToDefault();
+    auto layoutTree = root.getChildWithName ("TrackLayout");
+    if (layoutTree.isValid())
+    {
+        auto voTree = layoutTree.getChildWithName ("VisualOrder");
+        if (voTree.isValid())
+        {
+            juce::String orderStr = voTree.getProperty ("values", "");
+            auto tokens = juce::StringArray::fromTokens (orderStr, ",", "");
+            if (tokens.size() == kNumTracks)
+            {
+                std::array<int, kNumTracks> order {};
+                for (int i = 0; i < kNumTracks; ++i)
+                    order[static_cast<size_t> (i)] = tokens[i].getIntValue();
+                trackLayout.setVisualOrder (order);
+            }
+        }
+
+        // Track names
+        for (int i = 0; i < layoutTree.getNumChildren(); ++i)
+        {
+            auto nameTree = layoutTree.getChild (i);
+            if (! nameTree.hasType ("TrackName")) continue;
+
+            int idx = nameTree.getProperty ("index", -1);
+            if (idx >= 0 && idx < kNumTracks)
+                trackLayout.setTrackName (idx, nameTree.getProperty ("name", "").toString());
+        }
+
+        for (int i = 0; i < layoutTree.getNumChildren(); ++i)
+        {
+            auto groupTree = layoutTree.getChild (i);
+            if (! groupTree.hasType ("Group")) continue;
+
+            TrackGroup group;
+            group.name = groupTree.getProperty ("name", "Group").toString();
+            group.colour = juce::Colour::fromString (groupTree.getProperty ("colour", "ff5c8abf").toString());
+
+            for (int j = 0; j < groupTree.getNumChildren(); ++j)
+            {
+                auto trackTree = groupTree.getChild (j);
+                if (trackTree.hasType ("Track"))
+                {
+                    int idx = trackTree.getProperty ("index", -1);
+                    if (idx >= 0 && idx < kNumTracks)
+                        group.trackIndices.push_back (idx);
+                }
+            }
+
+            if (! group.trackIndices.empty())
+                trackLayout.addGroup (std::move (group));
         }
     }
 

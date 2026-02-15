@@ -56,7 +56,97 @@ MainComponent::MainComponent()
             doRemove();
         }
     };
+    toolbar->onNextPattern = [this]
+    {
+        int idx = patternData.getCurrentPatternIndex();
+        if (idx + 1 >= patternData.getNumPatterns())
+        {
+            // At end — create a new pattern
+            patternData.addPattern (patternData.getCurrentPattern().numRows);
+            markDirty();
+        }
+        switchToPattern (idx + 1);
+    };
+    toolbar->onPrevPattern = [this]
+    {
+        int idx = patternData.getCurrentPatternIndex();
+        if (idx > 0)
+        {
+            // If on last pattern and it's empty, remove it
+            if (idx == patternData.getNumPatterns() - 1)
+            {
+                auto& pat = patternData.getCurrentPattern();
+                bool hasData = false;
+                for (int r = 0; r < pat.numRows && ! hasData; ++r)
+                    for (int t = 0; t < kNumTracks && ! hasData; ++t)
+                        if (! pat.getCell (r, t).isEmpty())
+                            hasData = true;
+                if (! hasData)
+                {
+                    patternData.removePattern (idx);
+                    markDirty();
+                }
+            }
+            switchToPattern (idx - 1);
+        }
+    };
     toolbar->onPatternLengthClick = [this] { showPatternLengthEditor(); };
+
+    toolbar->onLengthDrag = [this] (int delta)
+    {
+        auto& pat = patternData.getCurrentPattern();
+        int newLen = juce::jlimit (1, 256, pat.numRows + delta);
+        pat.resize (newLen);
+        trackerGrid->setCursorPosition (
+            juce::jmin (trackerGrid->getCursorRow(), newLen - 1),
+            trackerGrid->getCursorTrack());
+        updateToolbar();
+        markDirty();
+    };
+
+    toolbar->onBpmDrag = [this] (double delta)
+    {
+        trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() + delta));
+        updateStatusBar();
+        updateToolbar();
+    };
+
+    toolbar->onStepDrag = [this] (int delta)
+    {
+        trackerGrid->setEditStep (juce::jlimit (0, 16, trackerGrid->getEditStep() + delta));
+        updateStatusBar();
+        updateToolbar();
+    };
+
+    toolbar->onOctaveDrag = [this] (int delta)
+    {
+        trackerGrid->setOctave (juce::jlimit (0, 9, trackerGrid->getOctave() + delta));
+        updateStatusBar();
+        updateToolbar();
+    };
+
+    toolbar->onModeToggle = [this]
+    {
+        toggleSongMode();
+    };
+
+    toolbar->onPatternNameDoubleClick = [this]
+    {
+        showPatternNameEditor();
+    };
+
+    toolbar->onToggleArrangement = [this]
+    {
+        toggleArrangementPanel();
+        toolbar->setArrangementVisible (arrangementVisible);
+    };
+
+    toolbar->onToggleInstrumentPanel = [this]
+    {
+        instrumentPanelVisible = ! instrumentPanelVisible;
+        toolbar->setInstrumentPanelVisible (instrumentPanelVisible);
+        resized();
+    };
 
     // Create arrangement panel (hidden by default)
     arrangementComponent = std::make_unique<ArrangementComponent> (arrangement, patternData, trackerLookAndFeel);
@@ -116,7 +206,7 @@ MainComponent::MainComponent()
     };
 
     // Create the grid
-    trackerGrid = std::make_unique<TrackerGrid> (patternData, trackerLookAndFeel);
+    trackerGrid = std::make_unique<TrackerGrid> (patternData, trackerLookAndFeel, trackLayout);
     addAndMakeVisible (*trackerGrid);
 
     // Note preview callback
@@ -146,6 +236,24 @@ MainComponent::MainComponent()
     trackerGrid->onTrackHeaderRightClick = [this] (int track, juce::Point<int> screenPos)
     {
         showTrackHeaderMenu (track, screenPos);
+    };
+
+    // Grid right-click (context menu on cells)
+    trackerGrid->onGridRightClick = [this] (int track, juce::Point<int> screenPos)
+    {
+        showTrackHeaderMenu (track, screenPos);
+    };
+
+    // Double-click on track header to rename
+    trackerGrid->onTrackHeaderDoubleClick = [this] (int track, juce::Point<int> /*screenPos*/)
+    {
+        showRenameTrackDialog (track);
+    };
+
+    // Header drag-drop reorder complete
+    trackerGrid->onTrackHeaderDragged = [this] (int, int)
+    {
+        markDirty();
     };
 
     // File drop on track
@@ -625,6 +733,7 @@ bool MainComponent::perform (const InvocationInfo& info)
             return true;
         case cmdToggleInstrumentPanel:
             instrumentPanelVisible = ! instrumentPanelVisible;
+            toolbar->setInstrumentPanelVisible (instrumentPanelVisible);
             resized();
             return true;
         default: return false;
@@ -796,6 +905,26 @@ void MainComponent::showPatternLengthEditor()
     }), true);
 }
 
+void MainComponent::showPatternNameEditor()
+{
+    auto& pat = patternData.getCurrentPattern();
+    auto* aw = new juce::AlertWindow ("Pattern Name", "Enter a name for this pattern:", juce::AlertWindow::NoIcon);
+    aw->addTextEditor ("name", pat.name);
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([this, aw] (int result)
+    {
+        if (result == 1)
+        {
+            patternData.getCurrentPattern().name = aw->getTextEditorContents ("name");
+            updateToolbar();
+            markDirty();
+        }
+        delete aw;
+    }), true);
+}
+
 void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
 {
     juce::PopupMenu menu;
@@ -811,9 +940,45 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
         menu.addSeparator();
     }
     menu.addItem (3, "Load Sample...");
+    menu.addItem (4, "Rename Track...");
+    menu.addSeparator();
+
+    // Selection bounds are in visual space; get visual range
+    int rangeStart, rangeEnd;
+    if (trackerGrid->hasSelection)
+    {
+        int minRow, maxRow, minViTrack, maxViTrack;
+        trackerGrid->getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
+        rangeStart = minViTrack;
+        rangeEnd = maxViTrack;
+    }
+    else
+    {
+        rangeStart = trackLayout.physicalToVisual (track);
+        rangeEnd = rangeStart;
+    }
+
+    menu.addItem (10, "Move Track Left", rangeStart > 0);
+    menu.addItem (11, "Move Track Right", rangeEnd < kNumTracks - 1);
+
+    // Group selected tracks (if selection spans multiple tracks)
+    if (trackerGrid->hasSelection)
+    {
+        int minRow, maxRow, minTrack, maxTrack;
+        trackerGrid->getSelectionBounds (minRow, maxRow, minTrack, maxTrack);
+        if (minTrack != maxTrack)
+            menu.addItem (12, "Group Selected Tracks...");
+    }
+
+    int groupIdx = trackLayout.getGroupForTrack (track);
+    if (groupIdx >= 0)
+    {
+        menu.addItem (13, "Remove from Group");
+        menu.addItem (14, "Dissolve Group");
+    }
 
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }),
-                        [this, track, t] (int result)
+                        [this, track, t, rangeStart, rangeEnd, groupIdx] (int result)
                         {
                             if (result == 1 && t)
                             {
@@ -830,7 +995,91 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                                 trackerGrid->setCursorPosition (trackerGrid->getCursorRow(), track);
                                 loadSampleForCurrentTrack();
                             }
+                            else if (result == 4)
+                            {
+                                showRenameTrackDialog (track);
+                            }
+                            else if (result == 10)
+                            {
+                                trackLayout.moveVisualRange (rangeStart, rangeEnd, -1);
+                                markDirty();
+                                trackerGrid->repaint();
+                            }
+                            else if (result == 11)
+                            {
+                                trackLayout.moveVisualRange (rangeStart, rangeEnd, +1);
+                                markDirty();
+                                trackerGrid->repaint();
+                            }
+                            else if (result == 12)
+                            {
+                                // Group selected tracks — prompt for name
+                                auto* aw = new juce::AlertWindow ("Group Tracks", "Enter a name for this group:", juce::AlertWindow::NoIcon);
+                                aw->addTextEditor ("name", "Group");
+                                aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+                                aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+                                aw->enterModalState (true, juce::ModalCallbackFunction::create ([this, aw, rangeStart, rangeEnd] (int res)
+                                {
+                                    if (res == 1)
+                                    {
+                                        auto name = aw->getTextEditorContents ("name");
+                                        if (name.isEmpty()) name = "Group";
+                                        trackLayout.createGroup (name, rangeStart, rangeEnd);
+                                        markDirty();
+                                        trackerGrid->repaint();
+                                    }
+                                    delete aw;
+                                }), true);
+                            }
+                            else if (result == 13 && groupIdx >= 0)
+                            {
+                                // Remove this track from its group
+                                auto& group = trackLayout.getGroup (groupIdx);
+                                group.trackIndices.erase (
+                                    std::remove (group.trackIndices.begin(), group.trackIndices.end(), track),
+                                    group.trackIndices.end());
+                                if (group.trackIndices.empty())
+                                    trackLayout.removeGroup (groupIdx);
+                                markDirty();
+                                trackerGrid->repaint();
+                            }
+                            else if (result == 14 && groupIdx >= 0)
+                            {
+                                trackLayout.removeGroup (groupIdx);
+                                markDirty();
+                                trackerGrid->repaint();
+                            }
                         });
+}
+
+void MainComponent::showRenameTrackDialog (int track)
+{
+    auto currentName = trackLayout.getTrackName (track);
+    auto defaultText = currentName.isNotEmpty() ? currentName
+                                                 : juce::String::formatted ("T%02d", track + 1);
+
+    auto* aw = new juce::AlertWindow ("Rename Track",
+        "Enter a name for Track " + juce::String (track + 1) + ":",
+        juce::AlertWindow::NoIcon);
+    aw->addTextEditor ("name", defaultText);
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([this, aw, track] (int result)
+    {
+        if (result == 1)
+        {
+            auto name = aw->getTextEditorContents ("name").trim();
+            // If name matches default "T##" pattern, clear it
+            if (name == juce::String::formatted ("T%02d", track + 1))
+                name.clear();
+            trackLayout.setTrackName (track, name);
+            markDirty();
+            trackerGrid->repaint();
+        }
+        delete aw;
+    }), true);
 }
 
 void MainComponent::markDirty()
@@ -864,6 +1113,7 @@ void MainComponent::newProject()
     patternData.clearAllPatterns();
     patternData.addPattern (64);
     arrangement.clear();
+    trackLayout.resetToDefault();
     arrangementComponent->setSelectedEntry (-1);
     trackerGrid->setCursorPosition (0, 0);
     trackerGrid->clearSelection();
@@ -907,7 +1157,7 @@ void MainComponent::openProject()
                               std::map<int, juce::File> samples;
                               std::map<int, InstrumentParams> instParams;
 
-                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams, arrangement);
+                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams, arrangement, trackLayout);
                               if (error.isNotEmpty())
                               {
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
@@ -968,7 +1218,8 @@ void MainComponent::saveProject()
                                                      trackerEngine.getRowsPerBeat(),
                                                      trackerEngine.getSampler().getLoadedSamples(),
                                                      trackerEngine.getSampler().getAllParams(),
-                                                     arrangement);
+                                                     arrangement,
+                                                     trackLayout);
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Save Error", error);
         else
@@ -1003,7 +1254,8 @@ void MainComponent::saveProjectAs()
                                                                           trackerEngine.getRowsPerBeat(),
                                                                           trackerEngine.getSampler().getLoadedSamples(),
                                                                           trackerEngine.getSampler().getAllParams(),
-                                                                          arrangement);
+                                                                          arrangement,
+                                                                          trackLayout);
                               if (error.isNotEmpty())
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                                           "Save Error", error);
@@ -1066,6 +1318,7 @@ void MainComponent::showHelpOverlay()
 void MainComponent::toggleArrangementPanel()
 {
     arrangementVisible = ! arrangementVisible;
+    toolbar->setArrangementVisible (arrangementVisible);
     resized();
 }
 
@@ -1109,9 +1362,22 @@ void MainComponent::doCopy()
 
     if (trackerGrid->hasSelection)
     {
-        int minRow, maxRow, minTrack, maxTrack;
-        trackerGrid->getSelectionBounds (minRow, maxRow, minTrack, maxTrack);
-        clip.copyFromPattern (pat, minRow, maxRow, minTrack, maxTrack);
+        // Selection bounds are in visual space — copy visual columns
+        int minRow, maxRow, minViTrack, maxViTrack;
+        trackerGrid->getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
+        clip.numRows = maxRow - minRow + 1;
+        clip.numTracks = maxViTrack - minViTrack + 1;
+        clip.cells.resize (static_cast<size_t> (clip.numRows));
+        for (int r = 0; r < clip.numRows; ++r)
+        {
+            clip.cells[static_cast<size_t> (r)].resize (static_cast<size_t> (clip.numTracks));
+            for (int t = 0; t < clip.numTracks; ++t)
+            {
+                int phys = trackLayout.visualToPhysical (minViTrack + t);
+                clip.cells[static_cast<size_t> (r)][static_cast<size_t> (t)] =
+                    pat.getCell (minRow + r, phys);
+            }
+        }
     }
     else
     {
@@ -1128,9 +1394,9 @@ void MainComponent::doPaste()
 
     auto& pat = patternData.getCurrentPattern();
     int destRow = trackerGrid->getCursorRow();
-    int destTrack = trackerGrid->getCursorTrack();
+    int destViTrack = trackLayout.physicalToVisual (trackerGrid->getCursorTrack());
 
-    // Build undo records
+    // Build undo records — paste to visual columns
     std::vector<MultiCellEditAction::CellRecord> records;
     for (int r = 0; r < clip.numRows; ++r)
     {
@@ -1138,12 +1404,13 @@ void MainComponent::doPaste()
         if (row >= pat.numRows) break;
         for (int t = 0; t < clip.numTracks; ++t)
         {
-            int track = destTrack + t;
-            if (track >= kNumTracks) break;
+            int vi = destViTrack + t;
+            if (vi >= kNumTracks) break;
+            int phys = trackLayout.visualToPhysical (vi);
             MultiCellEditAction::CellRecord rec;
             rec.row = row;
-            rec.track = track;
-            rec.oldCell = pat.getCell (row, track);
+            rec.track = phys;
+            rec.oldCell = pat.getCell (row, phys);
             rec.newCell = clip.cells[static_cast<size_t> (r)][static_cast<size_t> (t)];
             records.push_back (rec);
         }
@@ -1161,18 +1428,20 @@ void MainComponent::doCut()
 
     if (trackerGrid->hasSelection)
     {
-        int minRow, maxRow, minTrack, maxTrack;
-        trackerGrid->getSelectionBounds (minRow, maxRow, minTrack, maxTrack);
+        // Selection bounds are in visual space
+        int minRow, maxRow, minViTrack, maxViTrack;
+        trackerGrid->getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
 
         std::vector<MultiCellEditAction::CellRecord> records;
         for (int r = minRow; r <= maxRow; ++r)
         {
-            for (int t = minTrack; t <= maxTrack; ++t)
+            for (int vi = minViTrack; vi <= maxViTrack; ++vi)
             {
+                int phys = trackLayout.visualToPhysical (vi);
                 MultiCellEditAction::CellRecord rec;
                 rec.row = r;
-                rec.track = t;
-                rec.oldCell = pat.getCell (r, t);
+                rec.track = phys;
+                rec.oldCell = pat.getCell (r, phys);
                 rec.newCell = Cell{}; // cleared
                 records.push_back (rec);
             }

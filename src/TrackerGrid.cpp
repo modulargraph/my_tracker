@@ -1,7 +1,7 @@
 #include "TrackerGrid.h"
 
-TrackerGrid::TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf)
-    : pattern (patternData), lookAndFeel (lnf)
+TrackerGrid::TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf, TrackLayout& layout)
+    : pattern (patternData), lookAndFeel (lnf), trackLayout (layout)
 {
     setWantsKeyboardFocus (true);
 }
@@ -10,9 +10,14 @@ TrackerGrid::TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf)
 // Layout
 //==============================================================================
 
+int TrackerGrid::getEffectiveHeaderHeight() const
+{
+    return kHeaderHeight + (trackLayout.hasGroups() ? kGroupHeaderHeight : 0);
+}
+
 int TrackerGrid::getVisibleRowCount() const
 {
-    return juce::jmax (1, (getHeight() - kHeaderHeight) / kRowHeight);
+    return juce::jmax (1, (getHeight() - getEffectiveHeaderHeight()) / kRowHeight);
 }
 
 int TrackerGrid::getVisibleTrackCount() const
@@ -29,11 +34,13 @@ void TrackerGrid::ensureCursorVisible()
     else if (cursorRow >= scrollOffset + visibleRows)
         scrollOffset = cursorRow - visibleRows + 1;
 
+    // Use visual position of cursor track for horizontal scrolling
+    int cursorVisual = trackLayout.physicalToVisual (cursorTrack);
     auto visibleTracks = getVisibleTrackCount();
-    if (cursorTrack < horizontalScrollOffset)
-        horizontalScrollOffset = cursorTrack;
-    else if (cursorTrack >= horizontalScrollOffset + visibleTracks)
-        horizontalScrollOffset = cursorTrack - visibleTracks + 1;
+    if (cursorVisual < horizontalScrollOffset)
+        horizontalScrollOffset = cursorVisual;
+    else if (cursorVisual >= horizontalScrollOffset + visibleTracks)
+        horizontalScrollOffset = cursorVisual - visibleTracks + 1;
 }
 
 void TrackerGrid::resized()
@@ -68,56 +75,65 @@ void TrackerGrid::paint (juce::Graphics& g)
     auto bgColour = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
     g.fillAll (bgColour);
 
+    if (trackLayout.hasGroups())
+        drawGroupHeaders (g);
     drawHeaders (g);
     drawRowNumbers (g);
     drawCells (g);
     if (hasSelection)
         drawSelection (g);
+    if (isDraggingBlock)
+        drawDragPreview (g);
 }
 
 void TrackerGrid::drawHeaders (juce::Graphics& g)
 {
     auto headerBg = lookAndFeel.findColour (TrackerLookAndFeel::headerColourId);
     auto textColour = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+    int headerY = trackLayout.hasGroups() ? kGroupHeaderHeight : 0;
 
     g.setColour (headerBg);
-    g.fillRect (0, 0, getWidth(), kHeaderHeight);
+    g.fillRect (0, headerY, getWidth(), kHeaderHeight);
 
     g.setFont (lookAndFeel.getMonoFont (12.0f));
 
     int visibleTracks = getVisibleTrackCount();
     for (int i = 0; i < visibleTracks && (horizontalScrollOffset + i) < kNumTracks; ++i)
     {
-        int track = horizontalScrollOffset + i;
+        int physTrack = trackLayout.visualToPhysical (horizontalScrollOffset + i);
         int x = kRowNumberWidth + i * kCellWidth;
 
         // Mute/Solo indicators
         juce::String text;
-        if (trackMuted[static_cast<size_t> (track)])
+        if (trackMuted[static_cast<size_t> (physTrack)])
             text = "M ";
-        else if (trackSoloed[static_cast<size_t> (track)])
+        else if (trackSoloed[static_cast<size_t> (physTrack)])
             text = "S ";
         else
             text = "";
 
-        if (trackHasSample[static_cast<size_t> (track)])
-            text += juce::String::formatted ("T%02d*", track + 1);
+        auto& customName = trackLayout.getTrackName (physTrack);
+        if (customName.isNotEmpty())
+            text += customName;
+        else if (trackHasSample[static_cast<size_t> (physTrack)])
+            text += juce::String::formatted ("T%02d*", physTrack + 1);
         else
-            text += juce::String::formatted ("T%02d", track + 1);
+            text += juce::String::formatted ("T%02d", physTrack + 1);
 
-        if (trackMuted[static_cast<size_t> (track)])
+        if (trackMuted[static_cast<size_t> (physTrack)])
             g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::muteColourId));
-        else if (trackSoloed[static_cast<size_t> (track)])
+        else if (trackSoloed[static_cast<size_t> (physTrack)])
             g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::soloColourId));
         else
             g.setColour (textColour);
 
-        g.drawText (text, x, 0, kCellWidth, kHeaderHeight, juce::Justification::centred);
+        g.drawText (text, x, headerY, kCellWidth, kHeaderHeight, juce::Justification::centred);
     }
 
     // Header bottom line
+    int effectiveHeaderH = getEffectiveHeaderHeight();
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
-    g.drawHorizontalLine (kHeaderHeight - 1, 0.0f, static_cast<float> (getWidth()));
+    g.drawHorizontalLine (effectiveHeaderH - 1, 0.0f, static_cast<float> (getWidth()));
 }
 
 void TrackerGrid::drawRowNumbers (juce::Graphics& g)
@@ -125,6 +141,7 @@ void TrackerGrid::drawRowNumbers (juce::Graphics& g)
     auto textColour = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
     auto beatColour = lookAndFeel.findColour (TrackerLookAndFeel::beatMarkerColourId);
     auto& pat = pattern.getCurrentPattern();
+    int effectiveHeaderH = getEffectiveHeaderHeight();
 
     g.setFont (lookAndFeel.getMonoFont (12.0f));
 
@@ -135,7 +152,7 @@ void TrackerGrid::drawRowNumbers (juce::Graphics& g)
         if (row >= pat.numRows)
             break;
 
-        int y = kHeaderHeight + i * kRowHeight;
+        int y = effectiveHeaderH + i * kRowHeight;
 
         // Beat marker background on every 4th row
         if (row % 4 == 0)
@@ -161,6 +178,7 @@ void TrackerGrid::drawCells (juce::Graphics& g)
 {
     auto& pat = pattern.getCurrentPattern();
     auto gridColour = lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId);
+    int effectiveHeaderH = getEffectiveHeaderHeight();
 
     int visibleRows = getVisibleRowCount();
     int visibleTracks = getVisibleTrackCount();
@@ -171,7 +189,7 @@ void TrackerGrid::drawCells (juce::Graphics& g)
         if (row >= pat.numRows)
             break;
 
-        int y = kHeaderHeight + i * kRowHeight;
+        int y = effectiveHeaderH + i * kRowHeight;
 
         // Bar marker line every 16th row
         if (row % 16 == 0 && row > 0)
@@ -183,13 +201,13 @@ void TrackerGrid::drawCells (juce::Graphics& g)
 
         for (int ti = 0; ti < visibleTracks && (horizontalScrollOffset + ti) < kNumTracks; ++ti)
         {
-            int track = horizontalScrollOffset + ti;
+            int physTrack = trackLayout.visualToPhysical (horizontalScrollOffset + ti);
             int x = kRowNumberWidth + ti * kCellWidth;
-            bool isCursor = (row == cursorRow && track == cursorTrack);
+            bool isCursor = (row == cursorRow && physTrack == cursorTrack);
             bool isCurrentRow = (row == cursorRow);
             bool isPlayRow = (row == playbackRow && isPlaying);
 
-            drawCell (g, pat.getCell (row, track), x, y, kCellWidth, isCursor, isCurrentRow, isPlayRow, track);
+            drawCell (g, pat.getCell (row, physTrack), x, y, kCellWidth, isCursor, isCurrentRow, isPlayRow, physTrack);
 
             // Vertical grid line
             g.setColour (gridColour);
@@ -289,9 +307,10 @@ void TrackerGrid::drawSelection (juce::Graphics& g)
 {
     if (! hasSelection) return;
 
-    int minRow, maxRow, minTrack, maxTrack;
-    getSelectionBounds (minRow, maxRow, minTrack, maxTrack);
+    int minRow, maxRow, minViTrack, maxViTrack;
+    getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
 
+    int effectiveHeaderH = getEffectiveHeaderHeight();
     int visibleTracks = getVisibleTrackCount();
 
     for (int row = minRow; row <= maxRow; ++row)
@@ -299,18 +318,95 @@ void TrackerGrid::drawSelection (juce::Graphics& g)
         if (row < scrollOffset || row >= scrollOffset + getVisibleRowCount())
             continue;
 
-        for (int track = minTrack; track <= maxTrack; ++track)
+        for (int vi = minViTrack; vi <= maxViTrack; ++vi)
         {
-            int ti = track - horizontalScrollOffset;
-            if (ti < 0 || ti >= visibleTracks) continue;
+            int screenVi = vi - horizontalScrollOffset;
+            if (screenVi < 0 || screenVi >= visibleTracks) continue;
 
-            int x = kRowNumberWidth + ti * kCellWidth;
-            int y = kHeaderHeight + (row - scrollOffset) * kRowHeight;
+            int x = kRowNumberWidth + screenVi * kCellWidth;
+            int y = effectiveHeaderH + (row - scrollOffset) * kRowHeight;
 
             g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::selectionColourId));
             g.fillRect (x, y, kCellWidth, kRowHeight);
         }
     }
+}
+
+void TrackerGrid::drawGroupHeaders (juce::Graphics& g)
+{
+    auto groupBg = lookAndFeel.findColour (TrackerLookAndFeel::groupHeaderColourId);
+
+    // Fill the group header row background
+    g.setColour (groupBg);
+    g.fillRect (0, 0, getWidth(), kGroupHeaderHeight);
+
+    int visibleTracks = getVisibleTrackCount();
+
+    // Pass 1: draw per-column background, blending colors of all groups that contain each track
+    for (int vi = 0; vi < visibleTracks && (horizontalScrollOffset + vi) < kNumTracks; ++vi)
+    {
+        int physTrack = trackLayout.visualToPhysical (horizontalScrollOffset + vi);
+        int x = kRowNumberWidth + vi * kCellWidth;
+
+        // Collect colors from all groups this track belongs to
+        float r = 0.0f, gr = 0.0f, b = 0.0f;
+        int count = 0;
+        for (int gi = 0; gi < trackLayout.getNumGroups(); ++gi)
+        {
+            auto& group = trackLayout.getGroup (gi);
+            for (auto idx : group.trackIndices)
+            {
+                if (idx == physTrack)
+                {
+                    r += group.colour.getFloatRed();
+                    gr += group.colour.getFloatGreen();
+                    b += group.colour.getFloatBlue();
+                    count++;
+                    break;
+                }
+            }
+        }
+
+        if (count > 0)
+        {
+            auto blended = juce::Colour::fromFloatRGBA (r / count, gr / count, b / count, 0.4f);
+            g.setColour (blended);
+            g.fillRect (x, 0, kCellWidth, kGroupHeaderHeight);
+        }
+    }
+
+    // Pass 2: draw group labels and borders
+    for (int gi = 0; gi < trackLayout.getNumGroups(); ++gi)
+    {
+        auto& group = trackLayout.getGroup (gi);
+        auto [firstVisual, lastVisual] = trackLayout.getGroupVisualRange (gi);
+
+        int startCol = firstVisual - horizontalScrollOffset;
+        int endCol = lastVisual - horizontalScrollOffset;
+
+        if (endCol < 0 || startCol >= visibleTracks)
+            continue;
+
+        startCol = juce::jmax (0, startCol);
+        endCol = juce::jmin (visibleTracks - 1, endCol);
+
+        int x = kRowNumberWidth + startCol * kCellWidth;
+        int w = (endCol - startCol + 1) * kCellWidth;
+
+        // Draw group name
+        g.setColour (group.colour.brighter (0.5f));
+        g.setFont (lookAndFeel.getMonoFont (10.0f));
+        g.drawText (group.name, x + 4, 0, w - 8, kGroupHeaderHeight, juce::Justification::centredLeft);
+
+        // Draw left/right borders
+        g.setColour (group.colour);
+        g.drawVerticalLine (x, 0.0f, static_cast<float> (kGroupHeaderHeight));
+        g.drawVerticalLine (x + w - 1, 0.0f, static_cast<float> (kGroupHeaderHeight));
+    }
+
+    // Bottom line of group header
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (kGroupHeaderHeight - 1, 0.0f, static_cast<float> (getWidth()));
 }
 
 //==============================================================================
@@ -393,22 +489,23 @@ int TrackerGrid::hexCharToValue (juce::juce_wchar c)
 
 bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubColumn& outSubCol) const
 {
-    if (my < kHeaderHeight || mx < kRowNumberWidth)
+    int effectiveHeaderH = getEffectiveHeaderHeight();
+    if (my < effectiveHeaderH || mx < kRowNumberWidth)
         return false;
 
-    int row = (my - kHeaderHeight) / kRowHeight + scrollOffset;
+    int row = (my - effectiveHeaderH) / kRowHeight + scrollOffset;
     auto& pat = pattern.getCurrentPattern();
     if (row >= pat.numRows)
         return false;
 
     int trackPixel = mx - kRowNumberWidth;
     int trackVisual = trackPixel / kCellWidth;
-    int track = trackVisual + horizontalScrollOffset;
-    if (track >= kNumTracks)
+    int visualIndex = trackVisual + horizontalScrollOffset;
+    if (visualIndex >= kNumTracks)
         return false;
 
     outRow = row;
-    outTrack = track;
+    outTrack = trackLayout.visualToPhysical (visualIndex);
 
     // Determine sub-column within cell
     int cellOffset = trackPixel - trackVisual * kCellWidth - kCellPadding;
@@ -427,16 +524,168 @@ bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubCo
 void TrackerGrid::mouseDown (const juce::MouseEvent& event)
 {
     grabKeyboardFocus();
+    isDraggingSelection = false;
+    isDraggingBlock = false;
+    isDraggingHeader = false;
+    isDraggingGroupBorder = false;
+    isDraggingGroupAsWhole = false;
+    dragGroupDragIndex = -1;
+    dragHeaderVisualIndex = -1;
+    dragGroupIndex = -1;
+    dragMoveRow = -1;
+    dragMoveTrack = -1;
+    dragGrabRowOffset = 0;
+    dragGrabTrackOffset = 0;
 
-    // Right-click on header
-    if (event.mods.isPopupMenu() && event.y < kHeaderHeight)
+    int effectiveHeaderH = getEffectiveHeaderHeight();
+
+    // Clicks on header area
+    if (event.y < effectiveHeaderH && event.x >= kRowNumberWidth)
     {
         int trackPixel = event.x - kRowNumberWidth;
-        if (trackPixel >= 0)
+        int visualIndex = trackPixel / kCellWidth + horizontalScrollOffset;
+        if (visualIndex >= kNumTracks) return;
+
+        int physTrack = trackLayout.visualToPhysical (visualIndex);
+
+        // Right-click → context menu
+        if (event.mods.isPopupMenu())
         {
-            int track = trackPixel / kCellWidth + horizontalScrollOffset;
-            if (track < kNumTracks && onTrackHeaderRightClick)
-                onTrackHeaderRightClick (track, event.getScreenPosition());
+            if (onTrackHeaderRightClick)
+                onTrackHeaderRightClick (physTrack, event.getScreenPosition());
+            return;
+        }
+
+        // Check if clicking near a group border in the group header row
+        if (trackLayout.hasGroups() && event.y < kGroupHeaderHeight)
+        {
+            constexpr int borderGrabZone = 6;
+            int pixelInCell = trackPixel % kCellWidth;
+
+            for (int gi = 0; gi < trackLayout.getNumGroups(); ++gi)
+            {
+                auto [firstVis, lastVis] = trackLayout.getGroupVisualRange (gi);
+                // Check left border
+                if (visualIndex == firstVis && pixelInCell < borderGrabZone)
+                {
+                    isDraggingGroupBorder = true;
+                    dragGroupIndex = gi;
+                    dragGroupRightEdge = false;
+                    return;
+                }
+                // Check right border
+                if (visualIndex == lastVis && (kCellWidth - pixelInCell) < borderGrabZone)
+                {
+                    isDraggingGroupBorder = true;
+                    dragGroupIndex = gi;
+                    dragGroupRightEdge = true;
+                    return;
+                }
+
+                // Also detect clicks just outside the border (one pixel into adjacent column)
+                if (visualIndex == firstVis - 1 && (kCellWidth - pixelInCell) < borderGrabZone)
+                {
+                    isDraggingGroupBorder = true;
+                    dragGroupIndex = gi;
+                    dragGroupRightEdge = false;
+                    return;
+                }
+                if (visualIndex == lastVis + 1 && pixelInCell < borderGrabZone)
+                {
+                    isDraggingGroupBorder = true;
+                    dragGroupIndex = gi;
+                    dragGroupRightEdge = true;
+                    return;
+                }
+            }
+        }
+
+        // Check if clicking on a group header band (not near border) to drag group
+        if (trackLayout.hasGroups() && event.y < kGroupHeaderHeight)
+        {
+            int groupIdx = trackLayout.getGroupForTrack (physTrack);
+            if (groupIdx >= 0)
+            {
+                // Drag entire group
+                auto& pat = pattern.getCurrentPattern();
+
+                // Select entire group columns (visual range)
+                selStartRow = 0;
+                selEndRow = pat.numRows - 1;
+                auto [gFirst, gLast] = trackLayout.getGroupVisualRange (groupIdx);
+                selStartTrack = gFirst;
+                selEndTrack = gLast;
+                hasSelection = true;
+                cursorTrack = physTrack;
+                cursorRow = 0;
+
+                isDraggingHeader = true;
+                isDraggingGroupAsWhole = true;
+                dragGroupDragIndex = groupIdx;
+                dragHeaderVisualIndex = visualIndex;
+
+                repaint();
+                if (onCursorMoved) onCursorMoved();
+                return;
+            }
+        }
+
+        // Shift-click on header → extend column selection (visual)
+        if (event.mods.isShiftDown() && hasSelection)
+        {
+            auto& pat = pattern.getCurrentPattern();
+            selEndTrack = visualIndex;
+            selStartRow = 0;
+            selEndRow = pat.numRows - 1;
+            cursorTrack = physTrack;
+            repaint();
+            if (onCursorMoved) onCursorMoved();
+            return;
+        }
+
+        // Left-click on header → select full column + start header drag (visual)
+        auto& pat = pattern.getCurrentPattern();
+        selStartRow = 0;
+        selEndRow = pat.numRows - 1;
+        selStartTrack = visualIndex;
+        selEndTrack = visualIndex;
+        hasSelection = true;
+        cursorTrack = physTrack;
+        cursorRow = 0;
+
+        isDraggingHeader = true;
+        dragHeaderVisualIndex = visualIndex;
+
+        repaint();
+        if (onCursorMoved) onCursorMoved();
+        return;
+    }
+
+    // Click on row number area → select full row
+    if (event.x < kRowNumberWidth && event.y >= effectiveHeaderH)
+    {
+        int clickedRow = (event.y - effectiveHeaderH) / kRowHeight + scrollOffset;
+        auto& pat = pattern.getCurrentPattern();
+        if (clickedRow >= 0 && clickedRow < pat.numRows)
+        {
+            if (event.mods.isShiftDown() && hasSelection)
+            {
+                // Extend existing row selection
+                selEndRow = clickedRow;
+            }
+            else
+            {
+                selStartRow = clickedRow;
+                selEndRow = clickedRow;
+            }
+            selStartTrack = 0;
+            selEndTrack = kNumTracks - 1;
+            hasSelection = true;
+            cursorRow = clickedRow;
+            cursorTrack = 0;
+            isDraggingSelection = true;
+            repaint();
+            if (onCursorMoved) onCursorMoved();
         }
         return;
     }
@@ -445,21 +694,54 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
     SubColumn subCol;
     if (hitTestGrid (event.x, event.y, row, track, subCol))
     {
+        int viTrack = trackLayout.physicalToVisual (track);
+
+        // Right-click on grid cells
+        if (event.mods.isPopupMenu())
+        {
+            if (onGridRightClick)
+                onGridRightClick (track, event.getScreenPosition());
+            return;
+        }
+
+        // Check if clicking inside an existing selection to initiate drag-move
+        // Selection bounds are in visual space
+        if (hasSelection && ! event.mods.isShiftDown())
+        {
+            int minRow, maxRow, minViTrack, maxViTrack;
+            getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
+            if (row >= minRow && row <= maxRow && viTrack >= minViTrack && viTrack <= maxViTrack)
+            {
+                isDraggingBlock = true;
+                dragMoveRow = row;
+                dragMoveTrack = viTrack;
+                dragGrabRowOffset = row - minRow;
+                dragGrabTrackOffset = viTrack - minViTrack;
+                return;
+            }
+        }
+
         if (event.mods.isShiftDown())
         {
-            // Extend selection
+            // Extend selection (visual space)
             if (! hasSelection)
             {
                 selStartRow = cursorRow;
-                selStartTrack = cursorTrack;
+                selStartTrack = trackLayout.physicalToVisual (cursorTrack);
             }
             selEndRow = row;
-            selEndTrack = track;
+            selEndTrack = viTrack;
             hasSelection = true;
         }
         else
         {
+            // Start a new drag selection (visual space)
             clearSelection();
+            selStartRow = row;
+            selStartTrack = viTrack;
+            selEndRow = row;
+            selEndTrack = viTrack;
+            isDraggingSelection = true;
         }
 
         cursorRow = row;
@@ -472,6 +754,362 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
 
         if (onCursorMoved)
             onCursorMoved();
+    }
+}
+
+void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
+{
+    int row, track;
+    SubColumn subCol;
+
+    if (isDraggingGroupBorder)
+    {
+        if (dragGroupIndex < 0 || dragGroupIndex >= trackLayout.getNumGroups())
+            return;
+
+        int trackPixel = event.x - kRowNumberWidth;
+        if (trackPixel < 0) return;
+
+        int visualIndex = trackPixel / kCellWidth + horizontalScrollOffset;
+        visualIndex = juce::jlimit (0, kNumTracks - 1, visualIndex);
+
+        auto& group = trackLayout.getGroup (dragGroupIndex);
+        auto [curFirst, curLast] = trackLayout.getGroupVisualRange (dragGroupIndex);
+
+        if (dragGroupRightEdge)
+        {
+            // Extend or shrink right edge
+            if (visualIndex > curLast)
+            {
+                // Add tracks from curLast+1 to visualIndex
+                for (int v = curLast + 1; v <= visualIndex; ++v)
+                {
+                    int phys = trackLayout.visualToPhysical (v);
+                    bool alreadyIn = false;
+                    for (auto idx : group.trackIndices)
+                        if (idx == phys) { alreadyIn = true; break; }
+                    if (! alreadyIn)
+                        group.trackIndices.push_back (phys);
+                }
+                repaint();
+            }
+            else if (visualIndex < curLast && visualIndex >= curFirst)
+            {
+                // Remove tracks from visualIndex+1 to curLast
+                for (int v = curLast; v > visualIndex; --v)
+                {
+                    int phys = trackLayout.visualToPhysical (v);
+                    group.trackIndices.erase (
+                        std::remove (group.trackIndices.begin(), group.trackIndices.end(), phys),
+                        group.trackIndices.end());
+                }
+                if (group.trackIndices.empty())
+                    trackLayout.removeGroup (dragGroupIndex);
+                repaint();
+            }
+        }
+        else
+        {
+            // Extend or shrink left edge
+            if (visualIndex < curFirst)
+            {
+                for (int v = curFirst - 1; v >= visualIndex; --v)
+                {
+                    int phys = trackLayout.visualToPhysical (v);
+                    bool alreadyIn = false;
+                    for (auto idx : group.trackIndices)
+                        if (idx == phys) { alreadyIn = true; break; }
+                    if (! alreadyIn)
+                        group.trackIndices.insert (group.trackIndices.begin(), phys);
+                }
+                repaint();
+            }
+            else if (visualIndex > curFirst && visualIndex <= curLast)
+            {
+                for (int v = curFirst; v < visualIndex; ++v)
+                {
+                    int phys = trackLayout.visualToPhysical (v);
+                    group.trackIndices.erase (
+                        std::remove (group.trackIndices.begin(), group.trackIndices.end(), phys),
+                        group.trackIndices.end());
+                }
+                if (group.trackIndices.empty())
+                    trackLayout.removeGroup (dragGroupIndex);
+                repaint();
+            }
+        }
+    }
+    else if (isDraggingHeader)
+    {
+        int trackPixel = event.x - kRowNumberWidth;
+        if (trackPixel >= 0)
+        {
+            int visualIndex = trackPixel / kCellWidth + horizontalScrollOffset;
+            visualIndex = juce::jlimit (0, kNumTracks - 1, visualIndex);
+
+            if (isDraggingGroupAsWhole && dragGroupDragIndex >= 0
+                && dragGroupDragIndex < trackLayout.getNumGroups())
+            {
+                // Move entire group
+                auto [gFirst, gLast] = trackLayout.getGroupVisualRange (dragGroupDragIndex);
+                int delta = visualIndex - dragHeaderVisualIndex;
+
+                if (delta != 0)
+                {
+                    // Clamp delta so group stays in bounds
+                    if (gFirst + delta < 0) delta = -gFirst;
+                    if (gLast + delta >= kNumTracks) delta = kNumTracks - 1 - gLast;
+
+                    if (delta != 0)
+                    {
+                        // Move group range by delta using moveVisualRange
+                        int moveDir = (delta > 0) ? 1 : -1;
+                        for (int step = 0; step < std::abs (delta); ++step)
+                        {
+                            auto [curFirst, curLast] = trackLayout.getGroupVisualRange (dragGroupDragIndex);
+                            trackLayout.moveVisualRange (curFirst, curLast, moveDir);
+                        }
+                        dragHeaderVisualIndex = visualIndex;
+                        repaint();
+                    }
+                }
+            }
+            else
+            {
+                // Single track header drag
+                // If the dragged track is in a group, constrain to group bounds
+                int physTrack = trackLayout.visualToPhysical (dragHeaderVisualIndex);
+                int groupIdx = trackLayout.getGroupForTrack (physTrack);
+                if (groupIdx >= 0)
+                {
+                    auto [gFirst, gLast] = trackLayout.getGroupVisualRange (groupIdx);
+                    visualIndex = juce::jlimit (gFirst, gLast, visualIndex);
+                }
+
+                if (visualIndex != dragHeaderVisualIndex)
+                {
+                    trackLayout.swapTracks (dragHeaderVisualIndex, visualIndex);
+                    dragHeaderVisualIndex = visualIndex;
+
+                    // Update selection to follow the dragged track (visual space)
+                    selStartTrack = visualIndex;
+                    selEndTrack = visualIndex;
+                    cursorTrack = trackLayout.visualToPhysical (visualIndex);
+
+                    repaint();
+                }
+            }
+        }
+    }
+    else if (isDraggingSelection)
+    {
+        auto& pat = pattern.getCurrentPattern();
+        int effectiveHeaderH = getEffectiveHeaderHeight();
+        int visibleRows = getVisibleRowCount();
+        int visibleTracks = getVisibleTrackCount();
+
+        if (hitTestGrid (event.x, event.y, row, track, subCol))
+        {
+            selEndRow = row;
+            selEndTrack = trackLayout.physicalToVisual (track);
+            cursorRow = row;
+            cursorTrack = track;
+        }
+        else
+        {
+            // Auto-scroll when dragging past edges
+            int trackPixel = event.x - kRowNumberWidth;
+            int viFromPixel = trackPixel / kCellWidth + horizontalScrollOffset;
+            int rowFromPixel = (event.y - effectiveHeaderH) / kRowHeight + scrollOffset;
+
+            // Clamp to valid range
+            viFromPixel = juce::jlimit (0, kNumTracks - 1, viFromPixel);
+            rowFromPixel = juce::jlimit (0, pat.numRows - 1, rowFromPixel);
+
+            selEndRow = rowFromPixel;
+            selEndTrack = viFromPixel;
+            cursorRow = rowFromPixel;
+            cursorTrack = trackLayout.visualToPhysical (viFromPixel);
+
+            // Scroll horizontally
+            if (event.x > getWidth() - 10 && horizontalScrollOffset + visibleTracks < kNumTracks)
+                horizontalScrollOffset++;
+            else if (event.x < kRowNumberWidth + 10 && horizontalScrollOffset > 0)
+                horizontalScrollOffset--;
+
+            // Scroll vertically
+            if (event.y > getHeight() - 10 && scrollOffset + visibleRows < pat.numRows)
+                scrollOffset++;
+            else if (event.y < effectiveHeaderH + 10 && scrollOffset > 0)
+                scrollOffset--;
+        }
+
+        if (selStartRow != selEndRow || selStartTrack != selEndTrack)
+            hasSelection = true;
+
+        repaint();
+    }
+    else if (isDraggingBlock)
+    {
+        if (hitTestGrid (event.x, event.y, row, track, subCol))
+        {
+            dragMoveRow = row;
+            dragMoveTrack = trackLayout.physicalToVisual (track);
+            repaint();
+        }
+    }
+}
+
+void TrackerGrid::mouseUp (const juce::MouseEvent& event)
+{
+    if (isDraggingGroupBorder)
+    {
+        isDraggingGroupBorder = false;
+        dragGroupIndex = -1;
+        if (onPatternDataChanged) onPatternDataChanged();
+        repaint();
+        return;
+    }
+
+    if (isDraggingHeader)
+    {
+        // Header drag complete — layout already updated during drag
+        if (onTrackHeaderDragged)
+            onTrackHeaderDragged (-1, -1); // signal completion
+        isDraggingHeader = false;
+        dragHeaderVisualIndex = -1;
+        if (onPatternDataChanged) onPatternDataChanged();
+        repaint();
+        return;
+    }
+
+    if (isDraggingBlock)
+    {
+        // Complete the drag-move: cut from old selection, paste at new position
+        // Selection bounds and dragMoveTrack are in visual space
+        int row, track;
+        SubColumn subCol;
+        if (hitTestGrid (event.x, event.y, row, track, subCol) && hasSelection)
+        {
+            int minRow, maxRow, minViTrack, maxViTrack;
+            getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
+
+            // Use grab offset so the block anchors from the grab point (all visual)
+            int destViTrack = dragMoveTrack - dragGrabTrackOffset;
+            int destRow = dragMoveRow - dragGrabRowOffset;
+            int rowOffset = destRow - minRow;
+            int trackOffset = destViTrack - minViTrack;
+
+            // Only proceed if there's actually a move
+            if (rowOffset != 0 || trackOffset != 0)
+            {
+                auto& pat = pattern.getCurrentPattern();
+                int selRows = maxRow - minRow + 1;
+                int selTracks = maxViTrack - minViTrack + 1;
+
+                // Copy the selected block (visual columns → physical)
+                std::vector<std::vector<Cell>> buffer (static_cast<size_t> (selRows),
+                    std::vector<Cell> (static_cast<size_t> (selTracks)));
+                for (int r = 0; r < selRows; ++r)
+                    for (int t = 0; t < selTracks; ++t)
+                    {
+                        int phys = trackLayout.visualToPhysical (minViTrack + t);
+                        buffer[static_cast<size_t> (r)][static_cast<size_t> (t)] =
+                            pat.getCell (minRow + r, phys);
+                    }
+
+                // Clear source area
+                for (int r = minRow; r <= maxRow; ++r)
+                    for (int vi = minViTrack; vi <= maxViTrack; ++vi)
+                        pat.getCell (r, trackLayout.visualToPhysical (vi)).clear();
+
+                // Paste at destination (visual columns → physical)
+                for (int r = 0; r < selRows; ++r)
+                {
+                    int dr = destRow + r;
+                    if (dr < 0 || dr >= pat.numRows) continue;
+                    for (int t = 0; t < selTracks; ++t)
+                    {
+                        int dvi = destViTrack + t;
+                        if (dvi < 0 || dvi >= kNumTracks) continue;
+                        int dphys = trackLayout.visualToPhysical (dvi);
+                        pat.getCell (dr, dphys) = buffer[static_cast<size_t> (r)][static_cast<size_t> (t)];
+                    }
+                }
+
+                // Update selection to new position (visual space)
+                selStartRow = destRow;
+                selStartTrack = destViTrack;
+                selEndRow = destRow + selRows - 1;
+                selEndTrack = destViTrack + selTracks - 1;
+                cursorRow = dragMoveRow;
+                cursorTrack = trackLayout.visualToPhysical (dragMoveTrack);
+
+                if (onPatternDataChanged) onPatternDataChanged();
+            }
+        }
+    }
+
+    isDraggingSelection = false;
+    isDraggingBlock = false;
+    dragMoveRow = -1;
+    dragMoveTrack = -1;
+    repaint();
+}
+
+void TrackerGrid::mouseDoubleClick (const juce::MouseEvent& event)
+{
+    int effectiveHeaderH = getEffectiveHeaderHeight();
+
+    // Double-click on track header area → rename
+    if (event.y < effectiveHeaderH && event.x >= kRowNumberWidth)
+    {
+        int trackPixel = event.x - kRowNumberWidth;
+        int visualIndex = trackPixel / kCellWidth + horizontalScrollOffset;
+        if (visualIndex < kNumTracks && onTrackHeaderDoubleClick)
+            onTrackHeaderDoubleClick (trackLayout.visualToPhysical (visualIndex), event.getScreenPosition());
+    }
+}
+
+void TrackerGrid::drawDragPreview (juce::Graphics& g)
+{
+    if (! isDraggingBlock || ! hasSelection || dragMoveRow < 0)
+        return;
+
+    int minRow, maxRow, minViTrack, maxViTrack;
+    getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
+
+    // All in visual space — grab offset and dragMoveTrack are visual
+    int rowOffset = (dragMoveRow - dragGrabRowOffset) - minRow;
+    int trackOffset = (dragMoveTrack - dragGrabTrackOffset) - minViTrack;
+
+    int effectiveHeaderH = getEffectiveHeaderHeight();
+    int visibleTracks = getVisibleTrackCount();
+    int selRows = maxRow - minRow + 1;
+    int selTracks = maxViTrack - minViTrack + 1;
+
+    for (int r = 0; r < selRows; ++r)
+    {
+        int destRow = minRow + rowOffset + r;
+        if (destRow < scrollOffset || destRow >= scrollOffset + getVisibleRowCount())
+            continue;
+
+        for (int t = 0; t < selTracks; ++t)
+        {
+            int destVi = minViTrack + trackOffset + t;
+            if (destVi < 0 || destVi >= kNumTracks) continue;
+
+            int screenVi = destVi - horizontalScrollOffset;
+            if (screenVi < 0 || screenVi >= visibleTracks) continue;
+
+            int x = kRowNumberWidth + screenVi * kCellWidth;
+            int y = effectiveHeaderH + (destRow - scrollOffset) * kRowHeight;
+
+            g.setColour (juce::Colour (0x445588cc));
+            g.fillRect (x, y, kCellWidth, kRowHeight);
+            g.setColour (juce::Colour (0x885588cc));
+            g.drawRect (x, y, kCellWidth, kRowHeight, 1);
+        }
     }
 }
 
@@ -492,8 +1130,8 @@ void TrackerGrid::filesDropped (const juce::StringArray& files, int x, int /*y*/
     int trackPixel = x - kRowNumberWidth;
     if (trackPixel < 0) return;
 
-    int track = trackPixel / kCellWidth + horizontalScrollOffset;
-    if (track >= kNumTracks) return;
+    int visualIndex = trackPixel / kCellWidth + horizontalScrollOffset;
+    if (visualIndex >= kNumTracks) return;
 
     for (auto& f : files)
     {
@@ -501,10 +1139,11 @@ void TrackerGrid::filesDropped (const juce::StringArray& files, int x, int /*y*/
         auto ext = file.getFileExtension().toLowerCase();
         if (ext == ".wav" || ext == ".aiff" || ext == ".aif" || ext == ".flac" || ext == ".ogg" || ext == ".mp3")
         {
+            int physTrack = trackLayout.visualToPhysical (visualIndex);
             if (onFileDroppedOnTrack)
-                onFileDroppedOnTrack (track, file);
-            track++; // Next file goes to next track
-            if (track >= kNumTracks) break;
+                onFileDroppedOnTrack (physTrack, file);
+            visualIndex++; // Next file goes to next visual track
+            if (visualIndex >= kNumTracks) break;
         }
     }
 }
@@ -550,13 +1189,19 @@ void TrackerGrid::moveCursor (int rowDelta, int trackDelta)
 {
     auto& pat = pattern.getCurrentPattern();
     int newRow = cursorRow + rowDelta;
-    int newTrack = cursorTrack + trackDelta;
 
-    // Wrap tracks
-    if (newTrack < 0)
-        newTrack = kNumTracks - 1;
-    else if (newTrack >= kNumTracks)
-        newTrack = 0;
+    // Navigate in visual space for track delta
+    int cursorVisual = trackLayout.physicalToVisual (cursorTrack);
+    int newVisual = cursorVisual + trackDelta;
+
+    // Wrap tracks in visual space
+    if (newVisual < 0)
+        newVisual = kNumTracks - 1;
+    else if (newVisual >= kNumTracks)
+        newVisual = 0;
+
+    // Convert back to physical
+    int newTrack = trackLayout.visualToPhysical (newVisual);
 
     // Clamp rows
     newRow = juce::jlimit (0, pat.numRows - 1, newRow);
@@ -594,10 +1239,10 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         {
             hasSelection = true;
             selStartRow = cursorRow;
-            selStartTrack = cursorTrack;
+            selStartTrack = trackLayout.physicalToVisual (cursorTrack);
         }
         moveCursor (-1, 0);
-        if (shift) { selEndRow = cursorRow; selEndTrack = cursorTrack; }
+        if (shift) { selEndRow = cursorRow; selEndTrack = trackLayout.physicalToVisual (cursorTrack); }
         else clearSelection();
         return true;
     }
@@ -607,10 +1252,10 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         {
             hasSelection = true;
             selStartRow = cursorRow;
-            selStartTrack = cursorTrack;
+            selStartTrack = trackLayout.physicalToVisual (cursorTrack);
         }
         moveCursor (1, 0);
-        if (shift) { selEndRow = cursorRow; selEndTrack = cursorTrack; }
+        if (shift) { selEndRow = cursorRow; selEndTrack = trackLayout.physicalToVisual (cursorTrack); }
         else clearSelection();
         return true;
     }
@@ -620,10 +1265,10 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         {
             hasSelection = true;
             selStartRow = cursorRow;
-            selStartTrack = cursorTrack;
+            selStartTrack = trackLayout.physicalToVisual (cursorTrack);
         }
         moveCursor (0, -1);
-        if (shift) { selEndRow = cursorRow; selEndTrack = cursorTrack; }
+        if (shift) { selEndRow = cursorRow; selEndTrack = trackLayout.physicalToVisual (cursorTrack); }
         else clearSelection();
         return true;
     }
@@ -633,10 +1278,10 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         {
             hasSelection = true;
             selStartRow = cursorRow;
-            selStartTrack = cursorTrack;
+            selStartTrack = trackLayout.physicalToVisual (cursorTrack);
         }
         moveCursor (0, 1);
-        if (shift) { selEndRow = cursorRow; selEndTrack = cursorTrack; }
+        if (shift) { selEndRow = cursorRow; selEndTrack = trackLayout.physicalToVisual (cursorTrack); }
         else clearSelection();
         return true;
     }

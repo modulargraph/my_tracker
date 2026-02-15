@@ -24,7 +24,8 @@ public:
         fxColourId              = 0x200000C,
         selectionColourId       = 0x200000D,
         muteColourId            = 0x200000E,
-        soloColourId            = 0x200000F
+        soloColourId            = 0x200000F,
+        groupHeaderColourId     = 0x2000010
     };
 
     juce::Font getMonoFont (float height) const;

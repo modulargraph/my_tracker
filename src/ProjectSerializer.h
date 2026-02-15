@@ -5,6 +5,7 @@
 #include "SimpleSampler.h"
 #include "InstrumentParams.h"
 #include "Arrangement.h"
+#include "TrackLayout.h"
 
 class ProjectSerializer
 {
@@ -13,13 +14,15 @@ public:
                                     double bpm, int rowsPerBeat,
                                     const std::map<int, juce::File>& loadedSamples,
                                     const std::map<int, InstrumentParams>& instrumentParams,
-                                    const Arrangement& arrangement);
+                                    const Arrangement& arrangement,
+                                    const TrackLayout& trackLayout);
 
     static juce::String loadFromFile (const juce::File& file, PatternData& patternData,
                                       double& bpm, int& rowsPerBeat,
                                       std::map<int, juce::File>& loadedSamples,
                                       std::map<int, InstrumentParams>& instrumentParams,
-                                      Arrangement& arrangement);
+                                      Arrangement& arrangement,
+                                      TrackLayout& trackLayout);
 
 private:
     static juce::ValueTree patternToValueTree (const Pattern& pattern, int index);

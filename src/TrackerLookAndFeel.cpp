@@ -22,6 +22,7 @@ TrackerLookAndFeel::TrackerLookAndFeel()
     setColour (selectionColourId,      juce::Colour (0x44ffffff));  // translucent white
     setColour (muteColourId,           juce::Colour (0xffcc4444));  // red
     setColour (soloColourId,           juce::Colour (0xffd4d444));  // yellow
+    setColour (groupHeaderColourId,    juce::Colour (0xff383848));  // subtle dark
 }
 
 juce::Font TrackerLookAndFeel::getMonoFont (float height) const

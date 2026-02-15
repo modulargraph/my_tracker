@@ -12,6 +12,7 @@
 #include "ArrangementComponent.h"
 #include "InstrumentPanel.h"
 #include "SampleEditorComponent.h"
+#include "TrackLayout.h"
 
 class MainComponent : public juce::Component,
                       public juce::KeyListener,
@@ -74,6 +75,7 @@ public:
 
 private:
     TrackerLookAndFeel trackerLookAndFeel;
+    TrackLayout trackLayout;
     PatternData patternData;
     TrackerEngine trackerEngine;
     std::unique_ptr<ToolbarComponent> toolbar;
@@ -99,7 +101,9 @@ private:
     void loadSampleForCurrentTrack();
     void switchToPattern (int index);
     void showPatternLengthEditor();
+    void showPatternNameEditor();
     void showTrackHeaderMenu (int track, juce::Point<int> screenPos);
+    void showRenameTrackDialog (int track);
     void updateMuteSoloState();
     void doCopy();
     void doPaste();

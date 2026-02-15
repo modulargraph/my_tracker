@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "PatternData.h"
 #include "TrackerLookAndFeel.h"
+#include "TrackLayout.h"
 
 enum class SubColumn { Note, Instrument, Volume, FX };
 
@@ -10,12 +11,15 @@ class TrackerGrid : public juce::Component,
                     public juce::FileDragAndDropTarget
 {
 public:
-    TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf);
+    TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf, TrackLayout& layout);
 
     void paint (juce::Graphics& g) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress& key) override;
     void mouseDown (const juce::MouseEvent& event) override;
+    void mouseDrag (const juce::MouseEvent& event) override;
+    void mouseUp (const juce::MouseEvent& event) override;
+    void mouseDoubleClick (const juce::MouseEvent& event) override;
     void mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
 
     // FileDragAndDropTarget
@@ -65,6 +69,12 @@ public:
     std::function<void()> onCursorMoved;
     // Callback for right-click on track header
     std::function<void (int track, juce::Point<int> screenPos)> onTrackHeaderRightClick;
+    // Callback for right-click on grid cells (for context menu)
+    std::function<void (int track, juce::Point<int> screenPos)> onGridRightClick;
+    // Callback for double-click on track header (for renaming)
+    std::function<void (int track, juce::Point<int> screenPos)> onTrackHeaderDoubleClick;
+    // Callback for drag-drop reorder of track header
+    std::function<void (int fromVisual, int toVisual)> onTrackHeaderDragged;
     // Callback for file drop on track header
     std::function<void (int track, const juce::File& file)> onFileDroppedOnTrack;
 
@@ -80,10 +90,12 @@ public:
     static constexpr int kVolWidth = 18;
     static constexpr int kFxWidth = 22;
     static constexpr int kCellPadding = 4;
+    static constexpr int kGroupHeaderHeight = 16;
 
 private:
     PatternData& pattern;
     TrackerLookAndFeel& lookAndFeel;
+    TrackLayout& trackLayout;
 
     int cursorRow = 0;
     int cursorTrack = 0;
@@ -97,6 +109,24 @@ private:
     // Hex entry state for multi-digit input
     int hexDigitCount = 0;
     int hexAccumulator = 0;
+
+    // Drag selection / drag-move state
+    bool isDraggingSelection = false;
+    bool isDraggingBlock = false;
+    bool isDraggingHeader = false;
+    bool isDraggingGroupBorder = false;
+    bool isDraggingGroupAsWhole = false;
+    int dragGroupDragIndex = -1; // group index being dragged as whole
+    int dragHeaderVisualIndex = -1;
+    int dragGroupIndex = -1;
+    bool dragGroupRightEdge = false; // true = right edge, false = left edge
+    int dragMoveRow = -1;
+    int dragMoveTrack = -1;
+    int dragGrabRowOffset = 0;   // offset from selection top-left to grab point
+    int dragGrabTrackOffset = 0;
+
+    // Rendering helper for drag-move preview
+    void drawDragPreview (juce::Graphics& g);
 
     // Scrolling
     int scrollOffset = 0;
@@ -112,6 +142,8 @@ private:
     void drawCell (juce::Graphics& g, const Cell& cell, int x, int y, int width,
                    bool isCursor, bool isCurrentRow, bool isPlaybackRow, int track);
     void drawSelection (juce::Graphics& g);
+    void drawGroupHeaders (juce::Graphics& g);
+    int getEffectiveHeaderHeight() const;
 
     // Note name helper
     static juce::String noteToString (int note);
