@@ -194,6 +194,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
 {
     auto keyCode = key.getKeyCode();
     bool cmd = key.getModifiers().isCommandDown();
+    bool shift = key.getModifiers().isShiftDown();
+    auto textChar = key.getTextCharacter();
 
     // Space: toggle play/stop
     if (keyCode == juce::KeyPress::spaceKey)
@@ -212,10 +214,19 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         return true;
     }
 
-    // Ctrl/Cmd+Right/Left: next/prev pattern
+    // Cmd+Right/Left: next/prev pattern
     if (cmd && keyCode == juce::KeyPress::rightKey)
     {
-        switchToPattern (patternData.getCurrentPatternIndex() + 1);
+        if (shift)
+        {
+            // Cmd+Shift+Right: add new pattern and switch to it
+            patternData.addPattern (patternData.getCurrentPattern().numRows);
+            switchToPattern (patternData.getNumPatterns() - 1);
+        }
+        else
+        {
+            switchToPattern (patternData.getCurrentPatternIndex() + 1);
+        }
         return true;
     }
     if (cmd && keyCode == juce::KeyPress::leftKey)
@@ -224,16 +235,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         return true;
     }
 
-    // Ctrl/Cmd+Shift+Right: add new pattern and switch to it
-    if (cmd && key.getModifiers().isShiftDown() && keyCode == juce::KeyPress::rightKey)
-    {
-        patternData.addPattern (patternData.getCurrentPattern().numRows);
-        switchToPattern (patternData.getNumPatterns() - 1);
-        return true;
-    }
-
-    // Ctrl/Cmd+M: toggle mute
-    if (cmd && key.getTextCharacter() == 'm')
+    // Cmd+M: toggle mute
+    if (cmd && ! shift && textChar == 'm')
     {
         int track = trackerGrid->getCursorTrack();
         auto* t = trackerEngine.getTrack (track);
@@ -245,9 +248,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         return true;
     }
 
-    // Ctrl/Cmd+Shift+S: toggle solo (Cmd+S reserved for save later)
-    // Use Ctrl+Shift+M for solo to avoid Cmd+S conflict
-    if (cmd && key.getModifiers().isShiftDown() && key.getTextCharacter() == 'M')
+    // Cmd+Shift+M: toggle solo
+    if (cmd && shift && textChar == 'M')
     {
         int track = trackerGrid->getCursorTrack();
         auto* t = trackerEngine.getTrack (track);
@@ -259,13 +261,14 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         return true;
     }
 
-    // Ctrl/Cmd+Up/Down: change instrument
+    // Cmd+Up/Down: change instrument
     if (cmd && keyCode == juce::KeyPress::upKey)
     {
         int inst = trackerGrid->getCurrentInstrument() + 1;
         trackerGrid->setCurrentInstrument (juce::jlimit (0, 255, inst));
         updateStatusBar();
         updateToolbar();
+        instrumentPanel->setSelectedInstrument (inst);
         return true;
     }
     if (cmd && keyCode == juce::KeyPress::downKey)
@@ -274,35 +277,28 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         trackerGrid->setCurrentInstrument (juce::jlimit (0, 255, inst));
         updateStatusBar();
         updateToolbar();
+        instrumentPanel->setSelectedInstrument (inst);
         return true;
     }
 
-    // F1: help overlay (only if not in octave select range - F1 is octave 0 in grid)
-    // We handle F1 here to show help when not entering notes
-
-    // F5: toggle arrangement panel
-    if (keyCode == juce::KeyPress::F5Key)
+    // Cmd+1 through Cmd+8: set octave 0-7 (MacBook-friendly alternative to F1-F8)
+    if (cmd && ! shift && textChar >= '1' && textChar <= '8')
     {
-        toggleArrangementPanel();
+        trackerGrid->setOctave (textChar - '1');
+        updateStatusBar();
+        updateToolbar();
         return true;
     }
 
-    // F6: toggle PAT/SONG mode
-    if (keyCode == juce::KeyPress::F6Key)
-    {
-        toggleSongMode();
-        return true;
-    }
-
-    // F9/F10: decrease/increase BPM
-    if (keyCode == juce::KeyPress::F9Key)
+    // Cmd+[ / Cmd+]: decrease/increase BPM (MacBook-friendly alternative to F9/F10)
+    if (cmd && ! shift && textChar == '[')
     {
         trackerEngine.setBpm (trackerEngine.getBpm() - 1.0);
         updateStatusBar();
         updateToolbar();
         return true;
     }
-    if (keyCode == juce::KeyPress::F10Key)
+    if (cmd && ! shift && textChar == ']')
     {
         trackerEngine.setBpm (trackerEngine.getBpm() + 1.0);
         updateStatusBar();
@@ -310,20 +306,45 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         return true;
     }
 
-    // F11/F12: decrease/increase edit step
-    if (keyCode == juce::KeyPress::F11Key)
+    // Cmd+- / Cmd+=: decrease/increase edit step (MacBook-friendly alternative to F11/F12)
+    if (cmd && ! shift && textChar == '-')
     {
         trackerGrid->setEditStep (juce::jmax (0, trackerGrid->getEditStep() - 1));
         updateStatusBar();
         updateToolbar();
         return true;
     }
-    if (keyCode == juce::KeyPress::F12Key)
+    if (cmd && ! shift && textChar == '=')
     {
         trackerGrid->setEditStep (juce::jmin (16, trackerGrid->getEditStep() + 1));
         updateStatusBar();
         updateToolbar();
         return true;
+    }
+
+    // F-key alternatives (still work if user holds Fn)
+    if (keyCode == juce::KeyPress::F5Key)  { toggleArrangementPanel(); return true; }
+    if (keyCode == juce::KeyPress::F6Key)  { toggleSongMode(); return true; }
+
+    if (keyCode == juce::KeyPress::F9Key)
+    {
+        trackerEngine.setBpm (trackerEngine.getBpm() - 1.0);
+        updateStatusBar(); updateToolbar(); return true;
+    }
+    if (keyCode == juce::KeyPress::F10Key)
+    {
+        trackerEngine.setBpm (trackerEngine.getBpm() + 1.0);
+        updateStatusBar(); updateToolbar(); return true;
+    }
+    if (keyCode == juce::KeyPress::F11Key)
+    {
+        trackerGrid->setEditStep (juce::jmax (0, trackerGrid->getEditStep() - 1));
+        updateStatusBar(); updateToolbar(); return true;
+    }
+    if (keyCode == juce::KeyPress::F12Key)
+    {
+        trackerGrid->setEditStep (juce::jmin (16, trackerGrid->getEditStep() + 1));
+        updateStatusBar(); updateToolbar(); return true;
     }
 
     return false;
@@ -350,6 +371,10 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
     commands.add (cmdOpen);
     commands.add (cmdSave);
     commands.add (cmdSaveAs);
+    commands.add (cmdShowHelp);
+    commands.add (cmdToggleArrangement);
+    commands.add (cmdToggleSongMode);
+    commands.add (cmdToggleInstrumentPanel);
 }
 
 void MainComponent::getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result)
@@ -410,6 +435,22 @@ void MainComponent::getCommandInfo (juce::CommandID commandID, juce::Application
         case cmdSaveAs:
             result.setInfo ("Save As...", "Save project to a new file", "File", 0);
             result.addDefaultKeypress ('S', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+            break;
+        case cmdShowHelp:
+            result.setInfo ("Keyboard Shortcuts", "Show all keyboard shortcuts", "Help", 0);
+            result.addDefaultKeypress ('/', juce::ModifierKeys::commandModifier);
+            break;
+        case cmdToggleArrangement:
+            result.setInfo ("Toggle Arrangement", "Show/hide arrangement panel", "View", 0);
+            result.addDefaultKeypress ('A', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+            break;
+        case cmdToggleSongMode:
+            result.setInfo ("Toggle Song Mode", "Switch between PAT and SONG playback", "View", 0);
+            result.addDefaultKeypress ('P', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+            break;
+        case cmdToggleInstrumentPanel:
+            result.setInfo ("Toggle Instruments", "Show/hide instrument panel", "View", 0);
+            result.addDefaultKeypress ('I', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
             break;
         default: break;
     }
@@ -475,6 +516,19 @@ bool MainComponent::perform (const InvocationInfo& info)
         case cmdSaveAs:
             saveProjectAs();
             return true;
+        case cmdShowHelp:
+            showHelpOverlay();
+            return true;
+        case cmdToggleArrangement:
+            toggleArrangementPanel();
+            return true;
+        case cmdToggleSongMode:
+            toggleSongMode();
+            return true;
+        case cmdToggleInstrumentPanel:
+            instrumentPanelVisible = ! instrumentPanelVisible;
+            resized();
+            return true;
         default: return false;
     }
 }
@@ -485,7 +539,7 @@ bool MainComponent::perform (const InvocationInfo& info)
 
 juce::StringArray MainComponent::getMenuBarNames()
 {
-    return { "File", "Edit" };
+    return { "File", "Edit", "View", "Help" };
 }
 
 juce::PopupMenu MainComponent::getMenuForIndex (int menuIndex, const juce::String&)
@@ -512,6 +566,17 @@ juce::PopupMenu MainComponent::getMenuForIndex (int menuIndex, const juce::Strin
         menu.addSeparator();
         menu.addCommandItem (&commandManager, muteTrack);
         menu.addCommandItem (&commandManager, soloTrack);
+    }
+    else if (menuIndex == 2)
+    {
+        menu.addCommandItem (&commandManager, cmdToggleArrangement);
+        menu.addCommandItem (&commandManager, cmdToggleInstrumentPanel);
+        menu.addSeparator();
+        menu.addCommandItem (&commandManager, cmdToggleSongMode);
+    }
+    else if (menuIndex == 3)
+    {
+        menu.addCommandItem (&commandManager, cmdShowHelp);
     }
     return menu;
 }
@@ -833,43 +898,46 @@ void MainComponent::saveProjectAs()
 void MainComponent::showHelpOverlay()
 {
     juce::String help;
-    help << "=== Tracker Adjust Keyboard Shortcuts ===\n\n";
+    help << "=== Keyboard Shortcuts ===\n\n";
     help << "NAVIGATION\n";
-    help << "  Arrow keys      Navigate grid\n";
-    help << "  Tab/Shift+Tab   Cycle sub-columns (Note/Inst/Vol/FX)\n";
-    help << "  Page Up/Down    Jump 16 rows\n";
-    help << "  Home/End        Jump to first/last row\n";
-    help << "  Mouse wheel     Scroll vertically (Shift = horizontal)\n\n";
+    help << "  Arrow keys        Navigate grid\n";
+    help << "  Tab / Shift+Tab   Cycle sub-columns (Note/Inst/Vol/FX)\n";
+    help << "  Fn+Up / Fn+Down   Jump 16 rows (Page Up/Down)\n";
+    help << "  Fn+Left / Fn+Right  First/last row (Home/End)\n";
+    help << "  Mouse wheel       Scroll (Shift = horizontal)\n\n";
     help << "NOTE ENTRY\n";
-    help << "  Z-M, Q-U keys   Enter notes (tracker keyboard layout)\n";
-    help << "  F1-F8           Set octave 0-7\n";
-    help << "  Backtick (`)    Note-off (===)\n";
-    help << "  0-9, A-F        Hex entry for Inst/Vol/FX sub-columns\n";
-    help << "  Delete/Bksp     Clear cell or sub-column\n\n";
+    help << "  Z-M, Q-U keys    Enter notes (tracker layout)\n";
+    help << "  Cmd+1 to Cmd+8   Set octave 0-7\n";
+    help << "  Backtick (`)      Note-off (===)\n";
+    help << "  0-9, A-F          Hex entry (Inst/Vol/FX columns)\n";
+    help << "  Backspace         Clear cell or sub-column\n\n";
     help << "PLAYBACK\n";
-    help << "  Space           Play/Stop\n";
-    help << "  F9/F10          Decrease/Increase BPM\n";
-    help << "  F11/F12         Decrease/Increase edit step\n\n";
-    help << "PATTERN\n";
-    help << "  Cmd+Left/Right  Switch pattern\n";
-    help << "  Cmd+Up/Down     Change instrument\n";
-    help << "  Cmd+M           Toggle mute on track\n";
-    help << "  Cmd+Shift+M     Toggle solo on track\n\n";
+    help << "  Space             Play / Stop\n";
+    help << "  Cmd+[ / Cmd+]     Decrease / Increase BPM\n";
+    help << "  Cmd+- / Cmd+=     Decrease / Increase edit step\n\n";
+    help << "PATTERN & TRACKS\n";
+    help << "  Cmd+Left/Right    Switch pattern\n";
+    help << "  Cmd+Shift+Right   Add new pattern\n";
+    help << "  Cmd+Up/Down       Change instrument\n";
+    help << "  Cmd+M             Mute track\n";
+    help << "  Cmd+Shift+M       Solo track\n\n";
     help << "EDITING\n";
-    help << "  Cmd+C/X/V       Copy/Cut/Paste\n";
-    help << "  Cmd+Z           Undo\n";
-    help << "  Cmd+Shift+Z     Redo\n";
-    help << "  Shift+Arrow     Select region\n\n";
+    help << "  Cmd+C / X / V     Copy / Cut / Paste\n";
+    help << "  Cmd+Z             Undo\n";
+    help << "  Cmd+Shift+Z       Redo\n";
+    help << "  Shift+Arrow       Select region\n\n";
     help << "FILE\n";
-    help << "  Cmd+N           New project\n";
-    help << "  Cmd+O           Open project\n";
-    help << "  Cmd+S           Save\n";
-    help << "  Cmd+Shift+S     Save As\n";
-    help << "  Cmd+Shift+O     Load sample\n\n";
-    help << "ARRANGEMENT\n";
-    help << "  F5              Toggle arrangement panel\n";
-    help << "  F6              Toggle PAT/SONG mode\n";
-    help << "  Drag audio files onto track headers to load samples\n";
+    help << "  Cmd+N             New project\n";
+    help << "  Cmd+O             Open project\n";
+    help << "  Cmd+S             Save\n";
+    help << "  Cmd+Shift+S       Save As\n";
+    help << "  Cmd+Shift+O       Load sample\n\n";
+    help << "VIEW\n";
+    help << "  Cmd+Shift+A       Toggle arrangement panel\n";
+    help << "  Cmd+Shift+I       Toggle instrument panel\n";
+    help << "  Cmd+Shift+P       Toggle PAT / SONG mode\n";
+    help << "  Cmd+/             Show this help\n\n";
+    help << "Drag audio files onto track headers to load samples.\n";
 
     juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::InfoIcon, "Keyboard Shortcuts", help);
 }

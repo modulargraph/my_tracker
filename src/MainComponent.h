@@ -58,7 +58,11 @@ public:
         cmdNewProject   = 0x1040,
         cmdOpen         = 0x1041,
         cmdSave         = 0x1042,
-        cmdSaveAs       = 0x1043
+        cmdSaveAs       = 0x1043,
+        cmdShowHelp     = 0x1050,
+        cmdToggleArrangement = 0x1051,
+        cmdToggleSongMode    = 0x1052,
+        cmdToggleInstrumentPanel = 0x1053
     };
 
     // Access for serialization
