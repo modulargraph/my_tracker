@@ -11,6 +11,7 @@
 #include "Arrangement.h"
 #include "ArrangementComponent.h"
 #include "InstrumentPanel.h"
+#include "SampleEditorComponent.h"
 
 class MainComponent : public juce::Component,
                       public juce::KeyListener,
@@ -81,8 +82,10 @@ private:
     Arrangement arrangement;
     std::unique_ptr<ArrangementComponent> arrangementComponent;
     std::unique_ptr<InstrumentPanel> instrumentPanel;
+    std::unique_ptr<SampleEditorComponent> sampleEditor;
     bool arrangementVisible = false;
     bool instrumentPanelVisible = true;
+    bool sampleEditorVisible = false;
     bool songMode = false;
 
     // Status bar info
@@ -117,6 +120,8 @@ private:
     void showHelpOverlay();
     void updateInstrumentPanel();
     void loadSampleForInstrument (int instrument);
+    void openSampleEditor (int instrument);
+    void closeSampleEditor();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

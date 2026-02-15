@@ -2,7 +2,9 @@
 
 juce::String ProjectSerializer::saveToFile (const juce::File& file, const PatternData& patternData,
                                             double bpm, int rowsPerBeat,
-                                            const std::map<int, juce::File>& loadedSamples)
+                                            const std::map<int, juce::File>& loadedSamples,
+                                            const std::map<int, InstrumentParams>& instrumentParams,
+                                            const Arrangement& arrangement)
 {
     juce::ValueTree root ("TrackerAdjustProject");
     root.setProperty ("version", 1, nullptr);
@@ -26,6 +28,40 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
     }
     root.addChild (samples, -1, nullptr);
 
+    // Instrument params (only save non-default)
+    juce::ValueTree paramsTree ("InstrumentParams");
+    for (auto& [index, params] : instrumentParams)
+    {
+        if (params.isDefault()) continue;
+
+        juce::ValueTree paramTree ("Param");
+        paramTree.setProperty ("index", index, nullptr);
+        paramTree.setProperty ("startPos", params.startPos, nullptr);
+        paramTree.setProperty ("endPos", params.endPos, nullptr);
+        paramTree.setProperty ("attackMs", params.attackMs, nullptr);
+        paramTree.setProperty ("decayMs", params.decayMs, nullptr);
+        paramTree.setProperty ("sustainLevel", params.sustainLevel, nullptr);
+        paramTree.setProperty ("releaseMs", params.releaseMs, nullptr);
+        paramTree.setProperty ("reversed", params.reversed, nullptr);
+        paramsTree.addChild (paramTree, -1, nullptr);
+    }
+    root.addChild (paramsTree, -1, nullptr);
+
+    // Arrangement
+    if (arrangement.getNumEntries() > 0)
+    {
+        juce::ValueTree arrTree ("Arrangement");
+        for (int i = 0; i < arrangement.getNumEntries(); ++i)
+        {
+            auto& entry = arrangement.getEntry (i);
+            juce::ValueTree entryTree ("Entry");
+            entryTree.setProperty ("pattern", entry.patternIndex, nullptr);
+            entryTree.setProperty ("repeats", entry.repeats, nullptr);
+            arrTree.addChild (entryTree, -1, nullptr);
+        }
+        root.addChild (arrTree, -1, nullptr);
+    }
+
     // Patterns
     juce::ValueTree patterns ("Patterns");
     for (int i = 0; i < patternData.getNumPatterns(); ++i)
@@ -45,7 +81,9 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
 
 juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternData& patternData,
                                               double& bpm, int& rowsPerBeat,
-                                              std::map<int, juce::File>& loadedSamples)
+                                              std::map<int, juce::File>& loadedSamples,
+                                              std::map<int, InstrumentParams>& instrumentParams,
+                                              Arrangement& arrangement)
 {
     auto xml = juce::XmlDocument::parse (file);
     if (xml == nullptr)
@@ -84,14 +122,52 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
         }
     }
 
+    // Instrument params (backward-compatible: section may be absent)
+    instrumentParams.clear();
+    auto paramsTree = root.getChildWithName ("InstrumentParams");
+    if (paramsTree.isValid())
+    {
+        for (int i = 0; i < paramsTree.getNumChildren(); ++i)
+        {
+            auto paramTree = paramsTree.getChild (i);
+            if (! paramTree.hasType ("Param")) continue;
+
+            int index = paramTree.getProperty ("index", -1);
+            if (index < 0) continue;
+
+            InstrumentParams params;
+            params.startPos     = paramTree.getProperty ("startPos", 0.0);
+            params.endPos       = paramTree.getProperty ("endPos", 1.0);
+            params.attackMs     = paramTree.getProperty ("attackMs", 5.0);
+            params.decayMs      = paramTree.getProperty ("decayMs", 50.0);
+            params.sustainLevel = paramTree.getProperty ("sustainLevel", 1.0);
+            params.releaseMs    = paramTree.getProperty ("releaseMs", 50.0);
+            params.reversed     = paramTree.getProperty ("reversed", false);
+            instrumentParams[index] = params;
+        }
+    }
+
+    // Arrangement (backward-compatible: section may be absent)
+    arrangement.clear();
+    auto arrTree = root.getChildWithName ("Arrangement");
+    if (arrTree.isValid())
+    {
+        for (int i = 0; i < arrTree.getNumChildren(); ++i)
+        {
+            auto entryTree = arrTree.getChild (i);
+            if (! entryTree.hasType ("Entry")) continue;
+
+            int patIdx = entryTree.getProperty ("pattern", 0);
+            int repeats = entryTree.getProperty ("repeats", 1);
+            arrangement.addEntry (patIdx, repeats);
+        }
+    }
+
     // Patterns
     patternData.clearAllPatterns();
     auto patterns = root.getChildWithName ("Patterns");
     if (patterns.isValid() && patterns.getNumChildren() > 0)
     {
-        // Remove the default pattern added by clearAllPatterns
-        patternData.removePattern (0);
-
         for (int i = 0; i < patterns.getNumChildren(); ++i)
         {
             auto patTree = patterns.getChild (i);
@@ -100,6 +176,11 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             auto& pat = patternData.getPattern (patternData.getNumPatterns() - 1);
             valueTreeToPattern (patTree, pat);
         }
+    }
+    else
+    {
+        // No patterns in file — add a default empty one
+        patternData.addPattern (64);
     }
 
     int currentPat = settings.isValid() ? static_cast<int> (settings.getProperty ("currentPattern", 0)) : 0;

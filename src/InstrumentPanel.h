@@ -11,6 +11,7 @@ public:
 
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& event) override;
+    void mouseDoubleClick (const juce::MouseEvent& event) override;
 
     void setSelectedInstrument (int inst) { selectedInstrument = inst; repaint(); }
     int getSelectedInstrument() const { return selectedInstrument; }
@@ -21,6 +22,7 @@ public:
     // Callbacks
     std::function<void (int instrument)> onInstrumentSelected;
     std::function<void (int instrument)> onLoadSampleRequested;
+    std::function<void (int instrument)> onEditSampleRequested;
 
     static constexpr int kPanelWidth = 180;
 

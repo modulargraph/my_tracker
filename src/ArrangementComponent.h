@@ -22,6 +22,7 @@ public:
     void setPlayingEntry (int idx) { playingEntry = idx; repaint(); }
 
     std::function<void (int patternIndex)> onSwitchToPattern;
+    std::function<void()> onAddEntryRequested;
 
     static constexpr int kPanelWidth = 200;
 
@@ -35,6 +36,8 @@ private:
 
     static constexpr int kEntryHeight = 24;
     static constexpr int kHeaderHeight = 28;
+
+    juce::TextButton addButton { "+" };
 
     void showEntryContextMenu (int index, juce::Point<int> screenPos);
 

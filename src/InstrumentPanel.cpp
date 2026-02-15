@@ -116,6 +116,17 @@ void InstrumentPanel::mouseDown (const juce::MouseEvent& event)
     }
 }
 
+void InstrumentPanel::mouseDoubleClick (const juce::MouseEvent& event)
+{
+    if (event.y < kHeaderHeight) return;
+
+    int idx = (event.y - kHeaderHeight) / kSlotHeight + scrollOffset;
+    if (idx < 0 || idx >= 256) return;
+
+    if (slots[static_cast<size_t> (idx)].hasData && onEditSampleRequested)
+        onEditSampleRequested (idx);
+}
+
 void InstrumentPanel::showContextMenu (int instrument, juce::Point<int> screenPos)
 {
     juce::PopupMenu menu;

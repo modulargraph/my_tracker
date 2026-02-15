@@ -3,17 +3,23 @@
 #include <JuceHeader.h>
 #include "PatternData.h"
 #include "SimpleSampler.h"
+#include "InstrumentParams.h"
+#include "Arrangement.h"
 
 class ProjectSerializer
 {
 public:
     static juce::String saveToFile (const juce::File& file, const PatternData& patternData,
                                     double bpm, int rowsPerBeat,
-                                    const std::map<int, juce::File>& loadedSamples);
+                                    const std::map<int, juce::File>& loadedSamples,
+                                    const std::map<int, InstrumentParams>& instrumentParams,
+                                    const Arrangement& arrangement);
 
     static juce::String loadFromFile (const juce::File& file, PatternData& patternData,
                                       double& bpm, int& rowsPerBeat,
-                                      std::map<int, juce::File>& loadedSamples);
+                                      std::map<int, juce::File>& loadedSamples,
+                                      std::map<int, InstrumentParams>& instrumentParams,
+                                      Arrangement& arrangement);
 
 private:
     static juce::ValueTree patternToValueTree (const Pattern& pattern, int index);

@@ -18,11 +18,42 @@ MainComponent::MainComponent()
     };
     toolbar->onRemovePattern = [this]
     {
-        if (patternData.getNumPatterns() > 1)
+        if (patternData.getNumPatterns() <= 1)
+            return;
+
+        int idx = patternData.getCurrentPatternIndex();
+        auto& pat = patternData.getCurrentPattern();
+
+        // Check if pattern has any data
+        bool hasData = false;
+        for (int r = 0; r < pat.numRows && ! hasData; ++r)
+            for (int t = 0; t < kNumTracks && ! hasData; ++t)
+                if (! pat.getCell (r, t).isEmpty())
+                    hasData = true;
+
+        auto doRemove = [this, idx]
         {
-            int idx = patternData.getCurrentPatternIndex();
             patternData.removePattern (idx);
             switchToPattern (juce::jmin (idx, patternData.getNumPatterns() - 1));
+            markDirty();
+        };
+
+        if (hasData)
+        {
+            juce::AlertWindow::showOkCancelBox (
+                juce::AlertWindow::WarningIcon,
+                "Delete Pattern",
+                "This pattern contains data. Are you sure you want to delete it?",
+                "Delete", "Cancel", nullptr,
+                juce::ModalCallbackFunction::create ([doRemove] (int result)
+                {
+                    if (result == 1)
+                        doRemove();
+                }));
+        }
+        else
+        {
+            doRemove();
         }
     };
     toolbar->onPatternLengthClick = [this] { showPatternLengthEditor(); };
@@ -33,6 +64,16 @@ MainComponent::MainComponent()
     arrangementComponent->onSwitchToPattern = [this] (int patIdx)
     {
         switchToPattern (patIdx);
+    };
+    arrangementComponent->onAddEntryRequested = [this]
+    {
+        int patIdx = patternData.getCurrentPatternIndex();
+        int pos = (arrangementComponent->getSelectedEntry() >= 0)
+                      ? arrangementComponent->getSelectedEntry() + 1
+                      : arrangement.getNumEntries();
+        arrangement.insertEntry (pos, patIdx);
+        arrangementComponent->setSelectedEntry (pos);
+        markDirty();
     };
 
     // Create instrument panel (right side, visible by default)
@@ -47,6 +88,31 @@ MainComponent::MainComponent()
     instrumentPanel->onLoadSampleRequested = [this] (int inst)
     {
         loadSampleForInstrument (inst);
+    };
+    instrumentPanel->onEditSampleRequested = [this] (int inst)
+    {
+        openSampleEditor (inst);
+    };
+
+    // Create sample editor (hidden by default)
+    sampleEditor = std::make_unique<SampleEditorComponent> (trackerLookAndFeel);
+    addChildComponent (*sampleEditor);
+
+    sampleEditor->onParamsChanged = [this] (int inst, const InstrumentParams& params)
+    {
+        trackerEngine.getSampler().setParams (inst, params);
+        auto* track = trackerEngine.getTrack (inst);
+        if (track != nullptr)
+            trackerEngine.getSampler().applyParams (*track, inst);
+        markDirty();
+    };
+    sampleEditor->onPreviewRequested = [this] (int inst)
+    {
+        trackerEngine.previewNote (inst, 60);
+    };
+    sampleEditor->onCloseRequested = [this]
+    {
+        closeSampleEditor();
     };
 
     // Create the grid
@@ -66,6 +132,14 @@ MainComponent::MainComponent()
         updateStatusBar();
         updateToolbar();
         instrumentPanel->setSelectedInstrument (trackerGrid->getCurrentInstrument());
+    };
+
+    // Pattern data changed — re-sync during playback
+    trackerGrid->onPatternDataChanged = [this]
+    {
+        if (trackerEngine.isPlaying())
+            trackerEngine.syncPatternToEdit (patternData.getCurrentPattern());
+        markDirty();
     };
 
     // Track header right-click
@@ -125,9 +199,10 @@ MainComponent::MainComponent()
     // Playback cursor update timer
     startTimerHz (30);
 
-    // Register as key listener on the grid so we get events even when grid has focus
+    // Register as key listener on the grid and sample editor
     trackerGrid->addKeyListener (this);
     trackerGrid->addKeyListener (commandManager.getKeyMappings());
+    sampleEditor->addKeyListener (this);
 
     setSize (1280, 720);
     setWantsKeyboardFocus (true);
@@ -139,6 +214,7 @@ MainComponent::~MainComponent()
    #if JUCE_MAC
     juce::MenuBarModel::setMacMainMenu (nullptr);
    #endif
+    sampleEditor->removeKeyListener (this);
     trackerGrid->removeKeyListener (commandManager.getKeyMappings());
     trackerGrid->removeKeyListener (this);
     setLookAndFeel (nullptr);
@@ -186,8 +262,19 @@ void MainComponent::resized()
         instrumentPanel->setVisible (false);
     }
 
-    // Grid fills the rest
-    trackerGrid->setBounds (r);
+    // Grid or sample editor fills the rest
+    if (sampleEditorVisible)
+    {
+        sampleEditor->setBounds (r);
+        sampleEditor->setVisible (true);
+        trackerGrid->setVisible (false);
+    }
+    else
+    {
+        trackerGrid->setBounds (r);
+        trackerGrid->setVisible (true);
+        sampleEditor->setVisible (false);
+    }
 }
 
 bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
@@ -196,6 +283,17 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     bool cmd = key.getModifiers().isCommandDown();
     bool shift = key.getModifiers().isShiftDown();
     auto textChar = key.getTextCharacter();
+
+    // When sample editor is open, let it handle keys (except Cmd shortcuts)
+    if (sampleEditorVisible)
+    {
+        if (keyCode == juce::KeyPress::escapeKey)
+        {
+            closeSampleEditor();
+            return true;
+        }
+        return false;
+    }
 
     // Space: toggle play/stop
     if (keyCode == juce::KeyPress::spaceKey)
@@ -764,6 +862,9 @@ void MainComponent::newProject()
 
     trackerEngine.stop();
     patternData.clearAllPatterns();
+    patternData.addPattern (64);
+    arrangement.clear();
+    arrangementComponent->setSelectedEntry (-1);
     trackerGrid->setCursorPosition (0, 0);
     trackerGrid->clearSelection();
     for (int i = 0; i < kNumTracks; ++i)
@@ -799,12 +900,14 @@ void MainComponent::openProject()
                               if (! file.existsAsFile()) return;
 
                               trackerEngine.stop();
+                              arrangement.clear();
 
                               double bpm = 120.0;
                               int rpb = 4;
                               std::map<int, juce::File> samples;
+                              std::map<int, InstrumentParams> instParams;
 
-                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples);
+                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams, arrangement);
                               if (error.isNotEmpty())
                               {
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
@@ -829,6 +932,20 @@ void MainComponent::openProject()
                                   }
                               }
 
+                              // Restore instrument params and apply processing
+                              for (auto& [index, params] : instParams)
+                              {
+                                  trackerEngine.getSampler().setParams (index, params);
+                                  if (! params.isDefault())
+                                  {
+                                      auto* track = trackerEngine.getTrack (index);
+                                      if (track != nullptr)
+                                          trackerEngine.getSampler().applyParams (*track, index);
+                                  }
+                              }
+
+                              arrangementComponent->setSelectedEntry (arrangement.getNumEntries() > 0 ? 0 : -1);
+
                               trackerGrid->setCursorPosition (0, 0);
                               trackerGrid->clearSelection();
                               undoManager.clearUndoHistory();
@@ -849,7 +966,9 @@ void MainComponent::saveProject()
         auto error = ProjectSerializer::saveToFile (currentProjectFile, patternData,
                                                      trackerEngine.getBpm(),
                                                      trackerEngine.getRowsPerBeat(),
-                                                     trackerEngine.getSampler().getLoadedSamples());
+                                                     trackerEngine.getSampler().getLoadedSamples(),
+                                                     trackerEngine.getSampler().getAllParams(),
+                                                     arrangement);
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Save Error", error);
         else
@@ -882,7 +1001,9 @@ void MainComponent::saveProjectAs()
                               auto error = ProjectSerializer::saveToFile (f, patternData,
                                                                           trackerEngine.getBpm(),
                                                                           trackerEngine.getRowsPerBeat(),
-                                                                          trackerEngine.getSampler().getLoadedSamples());
+                                                                          trackerEngine.getSampler().getLoadedSamples(),
+                                                                          trackerEngine.getSampler().getAllParams(),
+                                                                          arrangement);
                               if (error.isNotEmpty())
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                                           "Save Error", error);
@@ -957,20 +1078,28 @@ void MainComponent::toggleSongMode()
 
 void MainComponent::syncArrangementToEdit()
 {
-    // Build a combined pattern from the arrangement entries and sync to edit
-    // For simplicity, we sync the first pattern in the arrangement
-    // A full implementation would concatenate all patterns
-    if (arrangement.getNumEntries() > 0)
-    {
-        auto& entry = arrangement.getEntry (0);
-        if (entry.patternIndex >= 0 && entry.patternIndex < patternData.getNumPatterns())
-            trackerEngine.syncPatternToEdit (patternData.getPattern (entry.patternIndex));
-    }
-    else
+    if (arrangement.getNumEntries() == 0)
     {
         // Fall back to current pattern
         trackerEngine.syncPatternToEdit (patternData.getCurrentPattern());
+        return;
     }
+
+    // Build sequence of (pattern*, repeats) pairs
+    std::vector<std::pair<const Pattern*, int>> sequence;
+    for (auto& entry : arrangement.getEntries())
+    {
+        if (entry.patternIndex >= 0 && entry.patternIndex < patternData.getNumPatterns())
+            sequence.emplace_back (&patternData.getPattern (entry.patternIndex), entry.repeats);
+    }
+
+    if (sequence.empty())
+    {
+        trackerEngine.syncPatternToEdit (patternData.getCurrentPattern());
+        return;
+    }
+
+    trackerEngine.syncArrangementToEdit (sequence, trackerEngine.getRowsPerBeat());
 }
 
 void MainComponent::doCopy()
@@ -1096,6 +1225,27 @@ void MainComponent::loadSampleForInstrument (int instrument)
                                   }
                               }
                           });
+}
+
+void MainComponent::openSampleEditor (int instrument)
+{
+    auto sampleFile = trackerEngine.getSampler().getSampleFile (instrument);
+    if (! sampleFile.existsAsFile())
+        return;
+
+    auto params = trackerEngine.getSampler().getParams (instrument);
+    sampleEditor->open (instrument, sampleFile, params);
+    sampleEditorVisible = true;
+    resized();
+    sampleEditor->grabKeyboardFocus();
+}
+
+void MainComponent::closeSampleEditor()
+{
+    sampleEditor->close();
+    sampleEditorVisible = false;
+    resized();
+    trackerGrid->grabKeyboardFocus();
 }
 
 void MainComponent::updateMuteSoloState()

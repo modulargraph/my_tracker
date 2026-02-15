@@ -109,7 +109,6 @@ void PatternData::duplicatePattern (int index)
 void PatternData::clearAllPatterns()
 {
     patterns.clear();
-    patterns.emplace_back (64);
     currentPattern = 0;
 }
 

@@ -18,6 +18,9 @@ public:
     // Pattern → Edit conversion
     void syncPatternToEdit (const Pattern& pattern);
 
+    // Song-mode: concatenate multiple patterns with repeats into one long edit
+    void syncArrangementToEdit (const std::vector<std::pair<const Pattern*, int>>& sequence, int rowsPerBeat);
+
     // Transport control
     void play();
     void stop();

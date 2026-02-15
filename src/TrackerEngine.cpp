@@ -101,6 +101,74 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern)
     }
 }
 
+void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pattern*, int>>& sequence, int rpb)
+{
+    if (edit == nullptr || sequence.empty())
+        return;
+
+    auto tracks = te::getAudioTracks (*edit);
+
+    // Calculate total length in beats
+    double totalBeats = 0.0;
+    for (auto& [pattern, repeats] : sequence)
+        totalBeats += (static_cast<double> (pattern->numRows) / static_cast<double> (rpb)) * repeats;
+
+    auto totalEndTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (totalBeats));
+    auto startTime = te::TimePosition::fromSeconds (0.0);
+    te::TimeRange fullRange { startTime, totalEndTime };
+
+    for (int trackIdx = 0; trackIdx < kNumTracks && trackIdx < tracks.size(); ++trackIdx)
+    {
+        auto* track = tracks[trackIdx];
+
+        // Remove existing clips
+        auto clips = track->getClips();
+        for (int i = clips.size(); --i >= 0;)
+            clips.getUnchecked (i)->removeFromParent();
+
+        // Create one long MIDI clip spanning all entries
+        auto midiClip = track->insertMIDIClip ("Arrangement", fullRange, nullptr);
+        if (midiClip == nullptr)
+            continue;
+
+        juce::MidiMessageSequence midiSeq;
+        double beatOffset = 0.0;
+
+        for (auto& [pattern, repeats] : sequence)
+        {
+            double patternLengthBeats = static_cast<double> (pattern->numRows) / static_cast<double> (rpb);
+
+            for (int rep = 0; rep < repeats; ++rep)
+            {
+                for (int row = 0; row < pattern->numRows; ++row)
+                {
+                    const auto& cell = pattern->getCell (row, trackIdx);
+                    if (cell.note < 0)
+                        continue;
+
+                    double startBeat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
+                    double endBeat = startBeat + (1.0 / static_cast<double> (rpb));
+
+                    auto noteStart = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
+                    auto noteEnd = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (endBeat));
+
+                    int velocity = cell.volume >= 0 ? cell.volume : 127;
+
+                    midiSeq.addEvent (juce::MidiMessage::noteOn (1, cell.note, static_cast<juce::uint8> (velocity)),
+                                      noteStart.inSeconds());
+                    midiSeq.addEvent (juce::MidiMessage::noteOff (1, cell.note),
+                                      noteEnd.inSeconds());
+                }
+
+                beatOffset += patternLengthBeats;
+            }
+        }
+
+        midiSeq.updateMatchedPairs();
+        midiClip->mergeInMidiSequence (midiSeq, te::MidiList::NoteAutomationType::none);
+    }
+}
+
 void TrackerEngine::play()
 {
     if (edit == nullptr)

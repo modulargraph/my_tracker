@@ -59,6 +59,8 @@ public:
 
     // Callback for when a note is entered (for preview)
     std::function<void (int note, int instrument)> onNoteEntered;
+    // Callback for any pattern data change (note entry, hex edit, delete, etc.)
+    std::function<void()> onPatternDataChanged;
     // Callback for status bar updates
     std::function<void()> onCursorMoved;
     // Callback for right-click on track header

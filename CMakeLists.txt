@@ -33,7 +33,8 @@ target_sources(TrackerAdjust PRIVATE
     src/ToolbarComponent.cpp
     src/ProjectSerializer.cpp
     src/ArrangementComponent.cpp
-    src/InstrumentPanel.cpp)
+    src/InstrumentPanel.cpp
+    src/SampleEditorComponent.cpp)
 
 target_compile_features(TrackerAdjust PRIVATE cxx_std_20)
 

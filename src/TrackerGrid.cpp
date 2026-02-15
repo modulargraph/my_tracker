@@ -718,6 +718,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         }
         hexDigitCount = 0;
         hexAccumulator = 0;
+        if (onPatternDataChanged) onPatternDataChanged();
         repaint();
         return true;
     }
@@ -728,6 +729,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         Cell& cell = pattern.getCell (cursorRow, cursorTrack);
         cell.note = 255; // note-off marker
         cell.instrument = currentInstrument;
+        if (onPatternDataChanged) onPatternDataChanged();
         moveCursor (editStep, 0);
         repaint();
         return true;
@@ -756,6 +758,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
 
             if (onNoteEntered)
                 onNoteEntered (note, currentInstrument);
+            if (onPatternDataChanged) onPatternDataChanged();
 
             moveCursor (editStep, 0);
             repaint();
@@ -782,6 +785,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 hexAccumulator = 0;
                 moveCursor (editStep, 0);
             }
+            if (onPatternDataChanged) onPatternDataChanged();
             repaint();
             return true;
         }
@@ -806,6 +810,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 hexAccumulator = 0;
                 moveCursor (editStep, 0);
             }
+            if (onPatternDataChanged) onPatternDataChanged();
             repaint();
             return true;
         }
@@ -838,6 +843,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 hexAccumulator = 0;
                 moveCursor (editStep, 0);
             }
+            if (onPatternDataChanged) onPatternDataChanged();
             repaint();
             return true;
         }

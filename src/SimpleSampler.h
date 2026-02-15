@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include <tracktion_engine/tracktion_engine.h>
+#include "InstrumentParams.h"
 
 namespace te = tracktion;
 
@@ -24,11 +25,20 @@ public:
 
     // Get all loaded samples for serialization
     const std::map<int, juce::File>& getLoadedSamples() const { return loadedSamples; }
-    void clearLoadedSamples() { loadedSamples.clear(); }
+    void clearLoadedSamples() { loadedSamples.clear(); instrumentParams.clear(); }
+
+    // Instrument params (ADSR, start/end, reverse)
+    InstrumentParams getParams (int instrumentIndex) const;
+    void setParams (int instrumentIndex, const InstrumentParams& params);
+    const std::map<int, InstrumentParams>& getAllParams() const { return instrumentParams; }
+    void clearAllParams() { instrumentParams.clear(); }
+
+    // Apply params: read original file, process (crop/reverse/ADSR), write temp WAV, reload
+    juce::String applyParams (te::AudioTrack& track, int instrumentIndex);
 
 private:
-    // Map of instrument index to sample file path
     std::map<int, juce::File> loadedSamples;
+    std::map<int, InstrumentParams> instrumentParams;
 
     te::SamplerPlugin* getOrCreateSampler (te::AudioTrack& track);
 

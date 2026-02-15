@@ -4,6 +4,13 @@ ArrangementComponent::ArrangementComponent (Arrangement& arr, PatternData& pd, T
     : arrangement (arr), patternData (pd), lookAndFeel (lnf)
 {
     setWantsKeyboardFocus (true);
+
+    addAndMakeVisible (addButton);
+    addButton.onClick = [this]
+    {
+        if (onAddEntryRequested)
+            onAddEntryRequested();
+    };
 }
 
 void ArrangementComponent::paint (juce::Graphics& g)
@@ -47,13 +54,17 @@ void ArrangementComponent::paint (juce::Graphics& g)
         // Entry text
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
 
-        juce::String patName;
+        juce::String patLabel;
         if (entry.patternIndex >= 0 && entry.patternIndex < patternData.getNumPatterns())
-            patName = patternData.getPattern (entry.patternIndex).name;
+        {
+            auto& patName = patternData.getPattern (entry.patternIndex).name;
+            patLabel = juce::String::formatted ("P%02d", entry.patternIndex) + " " + patName;
+        }
         else
-            patName = "???";
+            patLabel = juce::String::formatted ("P%02d ???", entry.patternIndex);
 
-        auto text = juce::String::formatted ("%02d: [%s] x%d", i, patName.toRawUTF8(), entry.repeats);
+        auto text = juce::String::formatted ("%02d: ", i) + patLabel
+                    + juce::String::formatted (" x%d", entry.repeats);
         g.drawText (text, 8, y, getWidth() - 16, kEntryHeight, juce::Justification::centredLeft);
 
         // Separator
@@ -67,7 +78,7 @@ void ArrangementComponent::paint (juce::Graphics& g)
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.4f));
         g.drawText ("(empty)", 8, kHeaderHeight + 8, getWidth() - 16, 20, juce::Justification::centredLeft);
         g.setFont (lookAndFeel.getMonoFont (10.0f));
-        g.drawText ("Ins to add", 8, kHeaderHeight + 28, getWidth() - 16, 16, juce::Justification::centredLeft);
+        g.drawText ("Click + or press + to add", 8, kHeaderHeight + 28, getWidth() - 16, 16, juce::Justification::centredLeft);
     }
 
     // Right border
@@ -77,6 +88,7 @@ void ArrangementComponent::paint (juce::Graphics& g)
 
 void ArrangementComponent::resized()
 {
+    addButton.setBounds (getWidth() - kHeaderHeight - 2, 2, kHeaderHeight - 4, kHeaderHeight - 4);
 }
 
 void ArrangementComponent::mouseDown (const juce::MouseEvent& event)
@@ -102,14 +114,11 @@ bool ArrangementComponent::keyPressed (const juce::KeyPress& key)
 {
     auto keyCode = key.getKeyCode();
 
-    // Insert: add entry at selected position (or end)
-    if (keyCode == 0x100000a || key.getTextCharacter() == '+') // Insert key
+    // Insert / +: add entry via callback
+    if (keyCode == 0x100000a || key.getTextCharacter() == '+') // Insert key or +
     {
-        int patIdx = patternData.getCurrentPatternIndex();
-        int pos = (selectedEntry >= 0) ? selectedEntry + 1 : arrangement.getNumEntries();
-        arrangement.insertEntry (pos, patIdx);
-        selectedEntry = pos;
-        repaint();
+        if (onAddEntryRequested)
+            onAddEntryRequested();
         return true;
     }
 
