@@ -99,6 +99,7 @@ MainComponent::MainComponent()
 
     toolbar->onLengthDrag = [this] (int delta)
     {
+        if (patternData.getNumPatterns() == 0) return;
         auto& pat = patternData.getCurrentPattern();
         int newLen = juce::jlimit (1, 256, pat.numRows + delta);
         pat.resize (newLen);
@@ -1136,6 +1137,9 @@ void MainComponent::switchToPattern (int index)
     index = juce::jlimit (0, patternData.getNumPatterns() - 1, index);
     patternData.setCurrentPattern (index);
 
+    // Clear any selection from the previous pattern
+    trackerGrid->clearSelection();
+
     // Clamp cursor row to new pattern length
     auto& pat = patternData.getCurrentPattern();
     trackerGrid->setCursorPosition (
@@ -1553,62 +1557,139 @@ void MainComponent::saveProjectAs()
 
 void MainComponent::showHelpOverlay()
 {
-    juce::String help;
-    help << "=== Keyboard Shortcuts ===\n\n";
-    help << "NAVIGATION\n";
-    help << "  Arrow keys        Navigate grid\n";
-    help << "  Tab / Shift+Tab   Cycle sub-columns (Note/Inst/Vol/FX)\n";
-    help << "  Fn+Up / Fn+Down   Jump 16 rows (Page Up/Down)\n";
-    help << "  Fn+Left / Fn+Right  First/last row (Home/End)\n";
-    help << "  Mouse wheel       Scroll (Shift = horizontal)\n\n";
-    help << "NOTE ENTRY\n";
-    help << "  Z-M, Q-U keys    Enter notes (tracker layout)\n";
-    help << "  Cmd+1 to Cmd+8   Set octave 0-7\n";
-    help << "  Backtick (`)      Note-off (===)\n";
-    help << "  0-9, A-F          Hex entry (Inst/Vol/FX columns)\n";
-    help << "  Backspace         Clear cell or sub-column\n\n";
-    help << "PLAYBACK\n";
-    help << "  Space             Play / Stop\n";
-    help << "  Cmd+[ / Cmd+]     Decrease / Increase BPM\n";
-    help << "  Cmd+- / Cmd+=     Decrease / Increase edit step\n\n";
-    help << "PATTERN & TRACKS\n";
-    help << "  Cmd+Left/Right    Switch pattern\n";
-    help << "  Cmd+Shift+Right   Add new pattern\n";
-    help << "  Cmd+Up/Down       Change instrument\n";
-    help << "  Cmd+M             Mute track\n";
-    help << "  Cmd+Shift+M       Solo track\n\n";
-    help << "EDITING\n";
-    help << "  Cmd+C / X / V     Copy / Cut / Paste\n";
-    help << "  Cmd+Z             Undo\n";
-    help << "  Cmd+Shift+Z       Redo\n";
-    help << "  Shift+Arrow       Select region\n\n";
-    help << "FILE\n";
-    help << "  Cmd+N             New project\n";
-    help << "  Cmd+O             Open project\n";
-    help << "  Cmd+S             Save\n";
-    help << "  Cmd+Shift+S       Save As\n";
-    help << "  Cmd+Shift+O       Load sample\n\n";
-    help << "TABS\n";
-    help << "  F1                Tracker tab\n";
-    help << "  F2                Inst Edit tab\n";
-    help << "  F3                Inst Type tab\n";
-    help << "  F4                Browser tab\n";
-    help << "  Escape            Return to Tracker\n";
-    help << "  ` (in edit tabs)  Toggle PARAMS / MOD sub-tab\n";
-    help << "  Note keys         Preview sample at pitch\n\n";
-    help << "BROWSER\n";
-    help << "  Left / Right      Switch file / instrument pane\n";
-    help << "  Up / Down         Navigate list\n";
-    help << "  Enter             Open folder / Load sample\n";
-    help << "  Backspace         Parent directory\n\n";
-    help << "VIEW\n";
-    help << "  Cmd+Shift+A       Toggle arrangement panel\n";
-    help << "  Cmd+Shift+I       Toggle instrument panel\n";
-    help << "  Cmd+Shift+P       Toggle PAT / SONG mode\n";
-    help << "  Cmd+/             Show this help\n\n";
-    help << "Drag audio files onto track headers to load samples.\n";
+    struct HelpComponent : public juce::Component
+    {
+        struct Section
+        {
+            juce::String title;
+            juce::StringArray shortcuts;
+        };
 
-    juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::InfoIcon, "Keyboard Shortcuts", help);
+        std::array<std::vector<Section>, 3> columns;
+
+        HelpComponent()
+        {
+            // Column 1: Navigation + Notes
+            columns[0] = {
+                { "NAVIGATION", {
+                    "Arrow keys        Navigate grid",
+                    "Tab / Shift+Tab   Cycle sub-columns",
+                    "Fn+Up / Fn+Down   Page Up / Down",
+                    "Fn+Left / Right   First / Last row",
+                    "Mouse wheel       Scroll (Shift=horiz)" }},
+                { "NOTE ENTRY", {
+                    "Z-M, Q-U keys    Enter notes",
+                    "Cmd+1 to Cmd+8   Set octave 0-7",
+                    "Backtick (`)      Note-off (===)",
+                    "0-9, A-F          Hex entry",
+                    "Backspace         Clear cell" }},
+                { "PLAYBACK", {
+                    "Space             Play / Stop",
+                    "Cmd+[ / Cmd+]     BPM down / up",
+                    "Cmd+- / Cmd+=     Step down / up" }}
+            };
+
+            // Column 2: Pattern + Editing + File
+            columns[1] = {
+                { "PATTERN & TRACKS", {
+                    "Cmd+Left/Right    Switch pattern",
+                    "Cmd+Shift+Right   Add new pattern",
+                    "Cmd+Up/Down       Change instrument",
+                    "Cmd+M             Mute track",
+                    "Cmd+Shift+M       Solo track" }},
+                { "EDITING", {
+                    "Cmd+C / X / V     Copy / Cut / Paste",
+                    "Cmd+Z             Undo",
+                    "Cmd+Shift+Z       Redo",
+                    "Shift+Arrow       Select region" }},
+                { "FILE", {
+                    "Cmd+N             New project",
+                    "Cmd+O             Open project",
+                    "Cmd+S             Save",
+                    "Cmd+Shift+S       Save As",
+                    "Cmd+Shift+O       Load sample" }}
+            };
+
+            // Column 3: Tabs + Browser + View
+            columns[2] = {
+                { "TABS", {
+                    "F1                Tracker tab",
+                    "F2                Inst Edit tab",
+                    "F3                Inst Type tab",
+                    "F4                Browser tab",
+                    "Escape            Return to Tracker",
+                    "` (in edit tabs)  Params / Mod",
+                    "Note keys         Preview sample" }},
+                { "BROWSER", {
+                    "Left / Right      Switch pane",
+                    "Up / Down         Navigate list",
+                    "Enter             Open / Load",
+                    "Backspace         Parent directory" }},
+                { "VIEW", {
+                    "Cmd+Shift+A       Arrangement",
+                    "Cmd+Shift+I       Instruments",
+                    "Cmd+Shift+P       PAT / SONG mode",
+                    "Cmd+/             Show this help" }}
+            };
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            g.fillAll (juce::Colour (0xff1e1e2e));
+
+            auto area = getLocalBounds().reduced (16);
+            int colWidth = area.getWidth() / 3;
+            auto font = juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain);
+            auto titleFont = juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold);
+
+            for (int c = 0; c < 3; ++c)
+            {
+                auto colArea = area.removeFromLeft (colWidth);
+                if (c < 2)
+                    colArea.removeFromRight (8); // gap between columns
+
+                int y = colArea.getY();
+
+                for (auto& section : columns[static_cast<size_t> (c)])
+                {
+                    g.setFont (titleFont);
+                    g.setColour (juce::Colour (0xffcba6f7));
+                    g.drawText (section.title, colArea.getX(), y, colArea.getWidth(), 18,
+                                juce::Justification::centredLeft);
+                    y += 20;
+
+                    g.setFont (font);
+                    g.setColour (juce::Colour (0xffcdd6f4));
+                    for (auto& shortcut : section.shortcuts)
+                    {
+                        g.drawText ("  " + shortcut, colArea.getX(), y, colArea.getWidth(), 16,
+                                    juce::Justification::centredLeft);
+                        y += 16;
+                    }
+                    y += 10; // gap between sections
+                }
+            }
+
+            // Footer
+            g.setFont (font);
+            g.setColour (juce::Colour (0xff6c7086));
+            g.drawText ("Drag audio files onto track headers to load samples.",
+                        getLocalBounds().reduced (16).removeFromBottom (20),
+                        juce::Justification::centred);
+        }
+    };
+
+    auto* content = new HelpComponent();
+    content->setSize (720, 480);
+
+    juce::DialogWindow::LaunchOptions opts;
+    opts.content.setOwned (content);
+    opts.dialogTitle = "Keyboard Shortcuts";
+    opts.dialogBackgroundColour = juce::Colour (0xff1e1e2e);
+    opts.escapeKeyTriggersCloseButton = true;
+    opts.useNativeTitleBar = false;
+    opts.resizable = false;
+    opts.launchAsync();
 }
 
 void MainComponent::toggleArrangementPanel()

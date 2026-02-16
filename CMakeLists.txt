@@ -24,20 +24,23 @@ juce_generate_juce_header(TrackerAdjust)
 
 target_sources(TrackerAdjust PRIVATE
     src/Main.cpp
-    src/MainComponent.cpp
-    src/PatternData.cpp
-    src/TrackerGrid.cpp
-    src/TrackerEngine.cpp
-    src/SimpleSampler.cpp
-    src/TrackerLookAndFeel.cpp
-    src/ToolbarComponent.cpp
-    src/ProjectSerializer.cpp
-    src/ArrangementComponent.cpp
-    src/InstrumentPanel.cpp
-    src/SampleEditorComponent.cpp
-    src/InstrumentEffectsPlugin.cpp
-    src/TabBarComponent.cpp
-    src/FileBrowserComponent.cpp)
+    src/data/PatternData.cpp
+    src/audio/TrackerEngine.cpp
+    src/audio/SimpleSampler.cpp
+    src/audio/TrackerSamplerPlugin.cpp
+    src/audio/InstrumentEffectsPlugin.cpp
+    src/ui/MainComponent.cpp
+    src/ui/TrackerGrid.cpp
+    src/ui/TrackerLookAndFeel.cpp
+    src/ui/ToolbarComponent.cpp
+    src/ui/ProjectSerializer.cpp
+    src/ui/ArrangementComponent.cpp
+    src/ui/InstrumentPanel.cpp
+    src/ui/SampleEditorComponent.cpp
+    src/ui/TabBarComponent.cpp
+    src/ui/FileBrowserComponent.cpp)
+
+target_include_directories(TrackerAdjust PRIVATE src src/data src/audio src/ui)
 
 target_compile_features(TrackerAdjust PRIVATE cxx_std_20)
 

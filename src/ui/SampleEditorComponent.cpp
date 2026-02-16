@@ -1,4 +1,6 @@
 #include "SampleEditorComponent.h"
+#include "NoteUtils.h"
+#include "FormatUtils.h"
 
 //==============================================================================
 // LFO speed presets (descending, in steps)
@@ -8,49 +10,7 @@ const int SampleEditorComponent::kLfoSpeeds[] = {
     128, 96, 64, 48, 32, 24, 16, 12, 8, 6, 4, 3, 2, 1
 };
 
-//==============================================================================
-// Formatting helpers
-//==============================================================================
-
-static juce::String formatDb (double db)
-{
-    if (db <= -99.0) return "-inf";
-    return juce::String (db, 1) + " dB";
-}
-
-static juce::String formatPercent (int v)
-{
-    return juce::String (v);
-}
-
-static juce::String formatPan (int v)
-{
-    if (v == 0) return "C";
-    if (v < 0)  return "L" + juce::String (-v);
-    return "R" + juce::String (v);
-}
-
-static juce::String formatSemitones (int v)
-{
-    if (v > 0) return "+" + juce::String (v);
-    return juce::String (v);
-}
-
-static juce::String formatCents (int v)
-{
-    if (v > 0) return "+" + juce::String (v);
-    return juce::String (v);
-}
-
-static juce::String formatSeconds (double s)
-{
-    return juce::String (s, 3) + "s";
-}
-
-static juce::String formatPosSec (double normPos, double totalLen)
-{
-    return juce::String (normPos * totalLen, 3) + "s";
-}
+using namespace FormatUtils;
 
 //==============================================================================
 // Construction / Destruction
@@ -1756,51 +1716,7 @@ bool SampleEditorComponent::isCurrentColumnDiscrete() const
 
 int SampleEditorComponent::keyToNote (const juce::KeyPress& key) const
 {
-    if (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown()
-        || key.getModifiers().isAltDown())
-        return -1;
-
-    auto c = key.getTextCharacter();
-    int baseNote = currentOctave * 12;
-
-    // Lower octave: Z-M
-    switch (c)
-    {
-        case 'z': return baseNote + 0;   // C
-        case 's': return baseNote + 1;   // C#
-        case 'x': return baseNote + 2;   // D
-        case 'd': return baseNote + 3;   // D#
-        case 'c': return baseNote + 4;   // E
-        case 'v': return baseNote + 5;   // F
-        case 'g': return baseNote + 6;   // F#
-        case 'b': return baseNote + 7;   // G
-        case 'h': return baseNote + 8;   // G#
-        case 'n': return baseNote + 9;   // A
-        case 'j': return baseNote + 10;  // A#
-        case 'm': return baseNote + 11;  // B
-        default: break;
-    }
-
-    // Upper octave: Q-U
-    int upperBase = (currentOctave + 1) * 12;
-    switch (c)
-    {
-        case 'q': return upperBase + 0;   // C
-        case '2': return upperBase + 1;   // C#
-        case 'w': return upperBase + 2;   // D
-        case '3': return upperBase + 3;   // D#
-        case 'e': return upperBase + 4;   // E
-        case 'r': return upperBase + 5;   // F
-        case '5': return upperBase + 6;   // F#
-        case 't': return upperBase + 7;   // G
-        case '6': return upperBase + 8;   // G#
-        case 'y': return upperBase + 9;   // A
-        case '7': return upperBase + 10;  // A#
-        case 'u': return upperBase + 11;  // B
-        default: break;
-    }
-
-    return -1;
+    return NoteUtils::keyToNote (key, currentOctave);
 }
 
 bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)

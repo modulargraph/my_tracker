@@ -1,5 +1,6 @@
 #include "TrackerEngine.h"
 #include "InstrumentEffectsPlugin.h"
+#include "TrackerSamplerPlugin.h"
 
 TrackerEngine::TrackerEngine()
 {
@@ -27,6 +28,7 @@ void TrackerEngine::initialise()
 
     // Register custom plugin types
     engine->getPluginManager().createBuiltInType<InstrumentEffectsPlugin>();
+    engine->getPluginManager().createBuiltInType<TrackerSamplerPlugin>();
 
     // Create an edit
     auto editFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
