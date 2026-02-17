@@ -35,6 +35,14 @@ public:
     // Returns current playback row (based on transport position)
     int getPlaybackRow (int numRows) const;
 
+    // Update the transport loop range for a new pattern length (call during playback)
+    // If the playhead is past the new end, it resets to the beginning of the pattern.
+    void updateLoopRangeForPatternLength (int numRows);
+
+    // Re-apply instrument settings to all tracks currently using the given instrument
+    // (call after loading a new sample while playback is active)
+    void refreshTracksForInstrument (int instrumentIndex, const Pattern& pattern);
+
     // Returns current beat position (for song mode tracking)
     double getPlaybackBeatPosition() const;
 

@@ -45,8 +45,23 @@ void Pattern::clear()
 
 void Pattern::resize (int newNumRows)
 {
-    numRows = newNumRows;
-    rows.resize (static_cast<size_t> (numRows));
+    int oldNumRows = numRows;
+    numRows = juce::jlimit (1, 256, newNumRows);
+
+    // Only grow the vector, never shrink it — preserves data from trimmed rows
+    if (static_cast<int> (rows.size()) < numRows)
+    {
+        int oldSize = static_cast<int> (rows.size());
+        rows.resize (static_cast<size_t> (numRows));
+
+        // Initialize any newly created rows (beyond what was ever allocated)
+        for (int i = oldSize; i < numRows; ++i)
+            rows[static_cast<size_t> (i)] = std::array<Cell, kNumTracks> {};
+    }
+
+    // When shrinking, numRows decreases but rows.size() stays the same.
+    // Old data is preserved and will reappear if the pattern is expanded again.
+    juce::ignoreUnused (oldNumRows);
 }
 
 //==============================================================================

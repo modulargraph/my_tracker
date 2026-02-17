@@ -391,6 +391,36 @@ int TrackerEngine::getPlaybackRow (int numRows) const
     return juce::jlimit (0, numRows - 1, row);
 }
 
+void TrackerEngine::updateLoopRangeForPatternLength (int numRows)
+{
+    if (edit == nullptr || ! isPlaying())
+        return;
+
+    auto& transport = edit->getTransport();
+
+    // Calculate the new pattern length in beats and convert to time
+    double patternLengthBeats = static_cast<double> (numRows) / static_cast<double> (rowsPerBeat);
+    auto newEndTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (patternLengthBeats));
+    auto startTime = te::TimePosition::fromSeconds (0.0);
+
+    te::TimeRange newRange { startTime, newEndTime };
+    transport.setLoopRange (newRange);
+
+    // If the playhead is past the new end, wrap to the beginning
+    auto currentPos = transport.getPosition();
+    if (currentPos >= newEndTime)
+        transport.setPosition (startTime);
+}
+
+void TrackerEngine::refreshTracksForInstrument (int instrumentIndex, const Pattern& pattern)
+{
+    if (edit == nullptr || instrumentIndex < 0)
+        return;
+
+    // Re-prepare tracks so the new sample bank is applied
+    prepareTracksForPattern (pattern);
+}
+
 double TrackerEngine::getPlaybackBeatPosition() const
 {
     if (edit == nullptr || ! isPlaying())

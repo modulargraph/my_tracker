@@ -109,7 +109,10 @@ MainComponent::MainComponent()
 
         // Re-sync edit if playing in pattern mode
         if (trackerEngine.isPlaying() && ! songMode)
+        {
             trackerEngine.syncPatternToEdit (pat, getReleaseModes());
+            trackerEngine.updateLoopRangeForPatternLength (pat.numRows);
+        }
 
         updateToolbar();
         markDirty();
@@ -294,6 +297,10 @@ MainComponent::MainComponent()
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Load Error", error);
         else
         {
+            // Re-apply instrument to active tracks during playback
+            if (trackerEngine.isPlaying())
+                trackerEngine.refreshTracksForInstrument (instrument, patternData.getCurrentPattern());
+
             trackerGrid->repaint();
             updateToolbar();
             updateInstrumentPanel();
@@ -380,6 +387,10 @@ MainComponent::MainComponent()
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Load Error", error);
         else
         {
+            // Re-apply instrument to active tracks during playback
+            if (trackerEngine.isPlaying())
+                trackerEngine.refreshTracksForInstrument (inst, patternData.getCurrentPattern());
+
             trackerGrid->repaint();
             updateToolbar();
             updateInstrumentPanel();
@@ -1138,6 +1149,10 @@ void MainComponent::loadSampleForCurrentTrack()
                                                                               "Load Error", error);
                                   else
                                   {
+                                      // Re-apply instrument to active tracks during playback
+                                      if (trackerEngine.isPlaying())
+                                          trackerEngine.refreshTracksForInstrument (inst, patternData.getCurrentPattern());
+
                                       trackerGrid->repaint();
                                       updateToolbar();
                                       updateInstrumentPanel();
@@ -1190,7 +1205,10 @@ void MainComponent::showPatternLengthEditor()
 
             // Re-sync edit if playing in pattern mode
             if (trackerEngine.isPlaying() && ! songMode)
+            {
                 trackerEngine.syncPatternToEdit (pat, getReleaseModes());
+                trackerEngine.updateLoopRangeForPatternLength (pat.numRows);
+            }
 
             trackerGrid->repaint();
             updateToolbar();
@@ -1872,6 +1890,10 @@ void MainComponent::loadSampleForInstrument (int instrument)
                                                                               "Load Error", error);
                                   else
                                   {
+                                      // Re-apply instrument to active tracks during playback
+                                      if (trackerEngine.isPlaying())
+                                          trackerEngine.refreshTracksForInstrument (instrument, patternData.getCurrentPattern());
+
                                       trackerGrid->repaint();
                                       updateToolbar();
                                       updateInstrumentPanel();
