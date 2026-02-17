@@ -2,6 +2,7 @@
 #include "TrackerEngine.h"
 #include "InstrumentEffectsPlugin.h"
 #include "TrackerSamplerPlugin.h"
+#include "SendEffectsPlugin.h"
 
 TrackerEngine::TrackerEngine()
 {
@@ -32,6 +33,7 @@ void TrackerEngine::initialise()
     // Register custom plugin types
     engine->getPluginManager().createBuiltInType<InstrumentEffectsPlugin>();
     engine->getPluginManager().createBuiltInType<TrackerSamplerPlugin>();
+    engine->getPluginManager().createBuiltInType<SendEffectsPlugin>();
 
     // Create an edit
     auto editFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
@@ -42,8 +44,11 @@ void TrackerEngine::initialise()
     edit = te::createEmptyEdit (*engine, editFile);
     edit->playInStopEnabled = true;
 
-    // Create 16 audio tracks + 1 dedicated preview track
-    edit->ensureNumberOfAudioTracks (kNumTracks + 1);
+    // Create 16 audio tracks + 1 preview track + 1 send effects bus track
+    edit->ensureNumberOfAudioTracks (kNumTracks + 2);
+
+    // Set up the send effects bus track
+    setupSendEffectsTrack();
 
     // Listen for transport changes
     edit->getTransport().addChangeListener (this);
@@ -494,11 +499,12 @@ void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
                 samplerPlugin->preloadBanks (banks);
         }
 
-        // Configure effects plugin with rowsPerBeat and global mod state
+        // Configure effects plugin with rowsPerBeat, global mod state, and send buffers
         if (auto* fxPlugin = sampler.getOrCreateEffectsPlugin (*tracks[t], firstInst))
         {
             fxPlugin->setRowsPerBeat (rowsPerBeat);
             fxPlugin->setGlobalModState (sampler.getOrCreateGlobalModState (firstInst));
+            fxPlugin->setSendBuffers (&sampler.getSendBuffers());
         }
     }
 }
@@ -659,6 +665,59 @@ te::AudioTrack* TrackerEngine::getTrack (int index)
         return tracks[index];
 
     return nullptr;
+}
+
+void TrackerEngine::setupSendEffectsTrack()
+{
+    auto* track = getTrack (kSendEffectsTrack);
+    if (track == nullptr) return;
+
+    // Prepare send buffers (default block size, stereo)
+    sampler.getSendBuffers().prepare (2048, 2);
+
+    // Create and insert the SendEffectsPlugin on the bus track
+    auto* existing = track->pluginList.findFirstPluginOfType<SendEffectsPlugin>();
+    if (existing == nullptr)
+    {
+        if (auto plugin = dynamic_cast<SendEffectsPlugin*> (
+                track->edit.getPluginCache().createNewPlugin (SendEffectsPlugin::xmlTypeName, {}).get()))
+        {
+            track->pluginList.insertPlugin (*plugin, 0, nullptr);
+            existing = plugin;
+        }
+    }
+
+    if (existing != nullptr)
+    {
+        existing->setSendBuffers (&sampler.getSendBuffers());
+        sendEffectsPlugin = existing;
+    }
+}
+
+void TrackerEngine::setDelayParams (const DelayParams& params)
+{
+    if (sendEffectsPlugin != nullptr)
+        sendEffectsPlugin->delayParams = params;
+}
+
+void TrackerEngine::setReverbParams (const ReverbParams& params)
+{
+    if (sendEffectsPlugin != nullptr)
+        sendEffectsPlugin->reverbParams = params;
+}
+
+DelayParams TrackerEngine::getDelayParams() const
+{
+    if (sendEffectsPlugin != nullptr)
+        return sendEffectsPlugin->delayParams;
+    return {};
+}
+
+ReverbParams TrackerEngine::getReverbParams() const
+{
+    if (sendEffectsPlugin != nullptr)
+        return sendEffectsPlugin->reverbParams;
+    return {};
 }
 
 void TrackerEngine::changeListenerCallback (juce::ChangeBroadcaster*)

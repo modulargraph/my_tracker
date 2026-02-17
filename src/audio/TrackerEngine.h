@@ -5,6 +5,8 @@
 #include "PatternData.h"
 #include "SimpleSampler.h"
 #include "InstrumentEffectsPlugin.h"
+#include "SendEffectsPlugin.h"
+#include "SendEffectsParams.h"
 
 namespace te = tracktion;
 
@@ -82,12 +84,24 @@ public:
     te::Engine& getEngine() { return *engine; }
     SimpleSampler& getSampler() { return sampler; }
 
+    // Send effects access
+    SendEffectsPlugin* getSendEffectsPlugin() { return sendEffectsPlugin; }
+    void setDelayParams (const DelayParams& params);
+    void setReverbParams (const ReverbParams& params);
+    DelayParams getDelayParams() const;
+    ReverbParams getReverbParams() const;
+
 private:
     std::unique_ptr<te::Engine> engine;
     std::unique_ptr<te::Edit> edit;
     SimpleSampler sampler;
     int rowsPerBeat = 4;
     std::array<int, kNumTracks> currentTrackInstrument {};
+
+    // Send effects bus track
+    static constexpr int kSendEffectsTrack = kNumTracks + 1;
+    SendEffectsPlugin* sendEffectsPlugin = nullptr;
+    void setupSendEffectsTrack();
 
     // Preview state
     static constexpr int kPreviewTrack = kNumTracks;

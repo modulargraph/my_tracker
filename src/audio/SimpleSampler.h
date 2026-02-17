@@ -5,6 +5,7 @@
 #include <tracktion_engine/tracktion_engine.h>
 #include "InstrumentParams.h"
 #include "TrackerSamplerPlugin.h"
+#include "SendBuffers.h"
 
 namespace te = tracktion;
 
@@ -69,7 +70,11 @@ public:
     // Global modulation state (shared across tracks for same instrument)
     GlobalModState* getOrCreateGlobalModState (int instrumentIndex);
 
+    // Shared send buffers for delay/reverb sends
+    SendBuffers& getSendBuffers() { return sendBuffers; }
+
 private:
+    SendBuffers sendBuffers;
     std::map<int, juce::File> loadedSamples;
     std::map<int, InstrumentParams> instrumentParams;
     std::map<int, std::shared_ptr<SampleBank>> sampleBanks;

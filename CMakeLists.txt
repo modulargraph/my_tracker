@@ -36,6 +36,7 @@ target_sources(TrackerAdjust PRIVATE
     src/audio/SimpleSampler.cpp
     src/audio/TrackerSamplerPlugin.cpp
     src/audio/InstrumentEffectsPlugin.cpp
+    src/audio/SendEffectsPlugin.cpp
     src/ui/MainComponent.cpp
     src/ui/TrackerGrid.cpp
     src/ui/TrackerLookAndFeel.cpp
@@ -45,7 +46,8 @@ target_sources(TrackerAdjust PRIVATE
     src/ui/InstrumentPanel.cpp
     src/ui/SampleEditorComponent.cpp
     src/ui/TabBarComponent.cpp
-    src/ui/FileBrowserComponent.cpp)
+    src/ui/FileBrowserComponent.cpp
+    src/ui/SendEffectsComponent.cpp)
 
 target_include_directories(TrackerAdjust PRIVATE src src/data src/audio src/ui)
 

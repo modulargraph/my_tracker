@@ -6,7 +6,8 @@ TabBarComponent::TabBarComponent (TrackerLookAndFeel& lnf)
     tabs[0] = { "TRACKER",     Tab::Tracker,        {} };
     tabs[1] = { "INST EDIT",   Tab::InstrumentEdit, {} };
     tabs[2] = { "INST TYPE",   Tab::InstrumentType, {} };
-    tabs[3] = { "BROWSER",     Tab::Browser,        {} };
+    tabs[3] = { "EFFECTS",     Tab::Effects,        {} };
+    tabs[4] = { "BROWSER",     Tab::Browser,        {} };
 }
 
 void TabBarComponent::paint (juce::Graphics& g)

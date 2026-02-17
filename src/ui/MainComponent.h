@@ -15,6 +15,7 @@
 #include "TrackLayout.h"
 #include "TabBarComponent.h"
 #include "FileBrowserComponent.h"
+#include "SendEffectsComponent.h"
 
 class MainComponent : public juce::Component,
                       public juce::KeyListener,
@@ -90,6 +91,7 @@ private:
     std::unique_ptr<InstrumentPanel> instrumentPanel;
     std::unique_ptr<SampleEditorComponent> sampleEditor;
     std::unique_ptr<SampleBrowserComponent> fileBrowser;
+    std::unique_ptr<SendEffectsComponent> sendEffectsComponent;
     bool arrangementVisible = false;
     bool instrumentPanelVisible = true;
     bool songMode = false;
