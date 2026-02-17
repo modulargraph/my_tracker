@@ -209,12 +209,39 @@ public:
 
     void setVisualOrder (const std::array<int, kNumTracks>& order) { visualOrder = order; }
 
+    // Per-track FX lane count (minimum 1)
+    int getTrackFxLaneCount (int physicalTrack) const
+    {
+        return trackFxLaneCounts[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))];
+    }
+
+    void setTrackFxLaneCount (int physicalTrack, int count)
+    {
+        trackFxLaneCounts[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))]
+            = juce::jlimit (1, 8, count);
+    }
+
+    void addFxLane (int physicalTrack)
+    {
+        auto& c = trackFxLaneCounts[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))];
+        if (c < 8) ++c;
+    }
+
+    void removeFxLane (int physicalTrack)
+    {
+        auto& c = trackFxLaneCounts[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))];
+        if (c > 1) --c;
+    }
+
+    const std::array<int, kNumTracks>& getTrackFxLaneCounts() const { return trackFxLaneCounts; }
+
     void resetToDefault()
     {
         std::iota (visualOrder.begin(), visualOrder.end(), 0);
         groups.clear();
         for (auto& n : trackNames) n.clear();
         for (auto& m : trackNoteModes) m = NoteMode::Kill;
+        trackFxLaneCounts.fill (1);
     }
 
     void clear() { resetToDefault(); }
@@ -224,4 +251,5 @@ private:
     std::vector<TrackGroup> groups;
     std::array<juce::String, kNumTracks> trackNames;
     std::array<NoteMode, kNumTracks> trackNoteModes {};
+    std::array<int, kNumTracks> trackFxLaneCounts {};
 };

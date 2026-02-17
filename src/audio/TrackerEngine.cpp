@@ -100,19 +100,23 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
             double startBeat = static_cast<double> (row) / static_cast<double> (rowsPerBeat);
             auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
 
-            // Process effect commands (before note check — effects work independently)
-            if (cell.fx > 0)
+            // Process ALL FX slots (before note check -- effects work independently)
+            for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
             {
-                if (cell.fx == 0x8) // Panning: 8xx → CC 10
+                const auto& slot = cell.getFxSlot (fxSlotIdx);
+                if (slot.fx > 0)
                 {
-                    int ccVal = juce::jlimit (0, 127, cell.fxParam / 2);
-                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 10, ccVal),
-                                      rowTime.inSeconds() - 0.00005);
-                }
-                else if (cell.fx == 0xE) // Mod mode: Exy → CC 85
-                {
-                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 85, cell.fxParam),
-                                      rowTime.inSeconds() - 0.00005);
+                    if (slot.fx == 0x8) // Panning: 8xx -> CC 10
+                    {
+                        int ccVal = juce::jlimit (0, 127, slot.fxParam / 2);
+                        midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 10, ccVal),
+                                          rowTime.inSeconds() - 0.00005);
+                    }
+                    else if (slot.fx == 0xE) // Mod mode: Exy -> CC 85
+                    {
+                        midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 85, slot.fxParam),
+                                          rowTime.inSeconds() - 0.00005);
+                    }
                 }
             }
 
@@ -120,7 +124,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
             if (cell.note < 0)
                 continue;
 
-            // OFF (255) → graceful release (noteOff for last playing note)
+            // OFF (255) -> graceful release (noteOff for last playing note)
             if (cell.note == 255)
             {
                 if (lastPlayingNote >= 0)
@@ -237,19 +241,23 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     double startBeat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
                     auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
 
-                    // Process effect commands (before note check)
-                    if (cell.fx > 0)
+                    // Process ALL FX slots (before note check)
+                    for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
                     {
-                        if (cell.fx == 0x8) // Panning: 8xx → CC 10
+                        const auto& slot = cell.getFxSlot (fxSlotIdx);
+                        if (slot.fx > 0)
                         {
-                            int ccVal = juce::jlimit (0, 127, cell.fxParam / 2);
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 10, ccVal),
-                                              rowTime.inSeconds() - 0.00005);
-                        }
-                        else if (cell.fx == 0xE) // Mod mode: Exy → CC 85
-                        {
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 85, cell.fxParam),
-                                              rowTime.inSeconds() - 0.00005);
+                            if (slot.fx == 0x8) // Panning: 8xx -> CC 10
+                            {
+                                int ccVal = juce::jlimit (0, 127, slot.fxParam / 2);
+                                midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 10, ccVal),
+                                                  rowTime.inSeconds() - 0.00005);
+                            }
+                            else if (slot.fx == 0xE) // Mod mode: Exy -> CC 85
+                            {
+                                midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 85, slot.fxParam),
+                                                  rowTime.inSeconds() - 0.00005);
+                            }
                         }
                     }
 
