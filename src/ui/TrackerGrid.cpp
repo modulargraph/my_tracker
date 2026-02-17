@@ -8,6 +8,42 @@ TrackerGrid::TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf, Tra
 }
 
 //==============================================================================
+// Variable-width track layout helpers
+//==============================================================================
+
+int TrackerGrid::getTrackXOffset (int visualIndex) const
+{
+    int x = 0;
+    for (int vi = horizontalScrollOffset; vi < visualIndex; ++vi)
+    {
+        int phys = trackLayout.visualToPhysical (vi);
+        x += getCellWidth (trackLayout.getTrackFxLaneCount (phys));
+    }
+    return x;
+}
+
+int TrackerGrid::getTrackWidth (int visualIndex) const
+{
+    if (visualIndex < 0 || visualIndex >= kNumTracks)
+        return getCellWidth (1);
+    int phys = trackLayout.visualToPhysical (visualIndex);
+    return getCellWidth (trackLayout.getTrackFxLaneCount (phys));
+}
+
+int TrackerGrid::visualTrackAtPixel (int pixelX) const
+{
+    int x = 0;
+    for (int vi = horizontalScrollOffset; vi < kNumTracks; ++vi)
+    {
+        int w = getTrackWidth (vi);
+        if (pixelX < x + w)
+            return vi;
+        x += w;
+    }
+    return kNumTracks - 1;
+}
+
+//==============================================================================
 // Layout
 //==============================================================================
 
@@ -23,7 +59,19 @@ int TrackerGrid::getVisibleRowCount() const
 
 int TrackerGrid::getVisibleTrackCount() const
 {
-    return juce::jmax (1, (getWidth() - kRowNumberWidth) / kCellWidth);
+    // Count how many tracks fit in the available width
+    int availableWidth = getWidth() - kRowNumberWidth;
+    int count = 0;
+    int usedWidth = 0;
+    for (int vi = horizontalScrollOffset; vi < kNumTracks; ++vi)
+    {
+        int w = getTrackWidth (vi);
+        if (usedWidth + w > availableWidth && count > 0)
+            break;
+        usedWidth += w;
+        count++;
+    }
+    return juce::jmax (1, count);
 }
 
 void TrackerGrid::ensureCursorVisible()
@@ -106,10 +154,12 @@ void TrackerGrid::drawHeaders (juce::Graphics& g)
     g.setFont (lookAndFeel.getMonoFont (12.0f));
 
     int visibleTracks = getVisibleTrackCount();
+    int xPos = kRowNumberWidth;
     for (int i = 0; i < visibleTracks && (horizontalScrollOffset + i) < kNumTracks; ++i)
     {
-        int physTrack = trackLayout.visualToPhysical (horizontalScrollOffset + i);
-        int x = kRowNumberWidth + i * kCellWidth;
+        int vi = horizontalScrollOffset + i;
+        int physTrack = trackLayout.visualToPhysical (vi);
+        int cellW = getTrackWidth (vi);
 
         // Mute/Solo indicators
         juce::String text;
@@ -136,7 +186,7 @@ void TrackerGrid::drawHeaders (juce::Graphics& g)
             g.setColour (textColour);
 
         // Draw track name (leave room for note mode indicator)
-        g.drawText (text, x, headerY, kCellWidth - 16, kHeaderHeight, juce::Justification::centred);
+        g.drawText (text, xPos, headerY, cellW - 16, kHeaderHeight, juce::Justification::centred);
 
         // Draw note mode toggle (K = kill, R = release) on right edge
         auto noteMode = trackLayout.getTrackNoteMode (physTrack);
@@ -146,8 +196,10 @@ void TrackerGrid::drawHeaders (juce::Graphics& g)
                               : textColour.withAlpha (0.3f);
         g.setFont (lookAndFeel.getMonoFont (9.0f));
         g.setColour (modeColour);
-        g.drawText (modeChar, x + kCellWidth - 16, headerY, 14, kHeaderHeight, juce::Justification::centred);
+        g.drawText (modeChar, xPos + cellW - 16, headerY, 14, kHeaderHeight, juce::Justification::centred);
         g.setFont (lookAndFeel.getMonoFont (12.0f));
+
+        xPos += cellW;
     }
 
     // Header bottom line
@@ -203,6 +255,11 @@ void TrackerGrid::drawCells (juce::Graphics& g)
     int visibleRows = getVisibleRowCount();
     int visibleTracks = getVisibleTrackCount();
 
+    // Calculate total visible width for horizontal lines
+    int totalVisibleWidth = 0;
+    for (int ti = 0; ti < visibleTracks && (horizontalScrollOffset + ti) < kNumTracks; ++ti)
+        totalVisibleWidth += getTrackWidth (horizontalScrollOffset + ti);
+
     for (int i = 0; i < visibleRows; ++i)
     {
         int row = scrollOffset + i;
@@ -216,33 +273,38 @@ void TrackerGrid::drawCells (juce::Graphics& g)
         {
             g.setColour (juce::Colour (0xff444444));
             g.drawHorizontalLine (y, static_cast<float> (kRowNumberWidth),
-                                  static_cast<float> (kRowNumberWidth + visibleTracks * kCellWidth));
+                                  static_cast<float> (kRowNumberWidth + totalVisibleWidth));
         }
 
+        int xPos = kRowNumberWidth;
         for (int ti = 0; ti < visibleTracks && (horizontalScrollOffset + ti) < kNumTracks; ++ti)
         {
-            int physTrack = trackLayout.visualToPhysical (horizontalScrollOffset + ti);
-            int x = kRowNumberWidth + ti * kCellWidth;
+            int vi = horizontalScrollOffset + ti;
+            int physTrack = trackLayout.visualToPhysical (vi);
+            int cellW = getTrackWidth (vi);
+            int fxLanes = trackLayout.getTrackFxLaneCount (physTrack);
             bool isCursor = (row == cursorRow && physTrack == cursorTrack);
             bool isCurrentRow = (row == cursorRow);
             bool isPlayRow = (row == playbackRow && isPlaying);
 
-            drawCell (g, pat.getCell (row, physTrack), x, y, kCellWidth, isCursor, isCurrentRow, isPlayRow, physTrack);
+            drawCell (g, pat.getCell (row, physTrack), xPos, y, cellW, isCursor, isCurrentRow, isPlayRow, physTrack, fxLanes);
 
             // Vertical grid line
             g.setColour (gridColour);
-            g.drawVerticalLine (x, static_cast<float> (y), static_cast<float> (y + kRowHeight));
+            g.drawVerticalLine (xPos, static_cast<float> (y), static_cast<float> (y + kRowHeight));
+
+            xPos += cellW;
         }
 
         // Horizontal grid line
         g.setColour (gridColour);
         g.drawHorizontalLine (y + kRowHeight - 1, static_cast<float> (kRowNumberWidth),
-                              static_cast<float> (kRowNumberWidth + visibleTracks * kCellWidth));
+                              static_cast<float> (kRowNumberWidth + totalVisibleWidth));
     }
 }
 
 void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, int width,
-                            bool isCursor, bool isCurrentRow, bool isPlaybackRow, int /*track*/)
+                            bool isCursor, bool isCurrentRow, bool isPlaybackRow, int /*track*/, int fxLaneCount)
 {
     // Background
     if (isCursor)
@@ -263,7 +325,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
     int textX = x + kCellPadding;
 
     // Note sub-column
-    juce::String noteStr = cell.isEmpty() ? "---" : noteToString (cell.note);
+    juce::String noteStr = cell.hasNote() ? noteToString (cell.note) : "---";
     auto noteColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId);
 
     // Highlight active sub-column on cursor cell
@@ -274,12 +336,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
     }
     g.setColour (noteColour);
     g.drawText (noteStr, textX, y, kNoteWidth, kRowHeight, juce::Justification::centredLeft);
-    textX += kNoteWidth;
-
-    // Space
-    g.setColour (isCursor ? juce::Colours::white.withAlpha (0.3f) : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.3f));
-    g.drawText (" ", textX, y, 4, kRowHeight, juce::Justification::centredLeft);
-    textX += 4;
+    textX += kNoteWidth + kSubColSpace;
 
     // Instrument sub-column
     juce::String instStr = cell.instrument >= 0 ? juce::String::formatted ("%02X", cell.instrument) : "..";
@@ -291,10 +348,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
     }
     g.setColour (instColour);
     g.drawText (instStr, textX, y, kInstWidth, kRowHeight, juce::Justification::centredLeft);
-    textX += kInstWidth;
-
-    // Space
-    textX += 4;
+    textX += kInstWidth + kSubColSpace;
 
     // Volume sub-column
     juce::String volStr = cell.volume >= 0 ? juce::String::formatted ("%02X", cell.volume) : "..";
@@ -306,21 +360,25 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
     }
     g.setColour (volColour);
     g.drawText (volStr, textX, y, kVolWidth, kRowHeight, juce::Justification::centredLeft);
-    textX += kVolWidth;
+    textX += kVolWidth + kSubColSpace;
 
-    // Space
-    textX += 4;
-
-    // FX sub-column
-    juce::String fxStr = cell.fx > 0 ? juce::String::formatted ("%X%02X", cell.fx, cell.fxParam) : "...";
+    // FX sub-columns (one or more lanes)
     auto fxColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
-    if (isCursor && cursorSubColumn == SubColumn::FX)
+
+    for (int fxLane = 0; fxLane < fxLaneCount; ++fxLane)
     {
-        g.setColour (juce::Colour (0xff3a5a7a));
-        g.fillRect (textX - 1, y, kFxWidth + 2, kRowHeight);
+        const auto& slot = cell.getFxSlot (fxLane);
+        juce::String fxStr = slot.fx > 0 ? juce::String::formatted ("%X%02X", slot.fx, slot.fxParam) : "...";
+
+        if (isCursor && cursorSubColumn == SubColumn::FX && cursorFxLane == fxLane)
+        {
+            g.setColour (juce::Colour (0xff3a5a7a));
+            g.fillRect (textX - 1, y, kFxWidth + 2, kRowHeight);
+        }
+        g.setColour (fxColour);
+        g.drawText (fxStr, textX, y, kFxWidth, kRowHeight, juce::Justification::centredLeft);
+        textX += kFxWidth + kSubColSpace;
     }
-    g.setColour (fxColour);
-    g.drawText (fxStr, textX, y, kFxWidth, kRowHeight, juce::Justification::centredLeft);
 }
 
 void TrackerGrid::drawSelection (juce::Graphics& g)
@@ -343,11 +401,13 @@ void TrackerGrid::drawSelection (juce::Graphics& g)
             int screenVi = vi - horizontalScrollOffset;
             if (screenVi < 0 || screenVi >= visibleTracks) continue;
 
-            int x = kRowNumberWidth + screenVi * kCellWidth;
+            int xOff = getTrackXOffset (vi);
+            int x = kRowNumberWidth + xOff;
+            int cellW = getTrackWidth (vi);
             int y = effectiveHeaderH + (row - scrollOffset) * kRowHeight;
 
             g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::selectionColourId));
-            g.fillRect (x, y, kCellWidth, kRowHeight);
+            g.fillRect (x, y, cellW, kRowHeight);
         }
     }
 }
@@ -363,10 +423,12 @@ void TrackerGrid::drawGroupHeaders (juce::Graphics& g)
     int visibleTracks = getVisibleTrackCount();
 
     // Pass 1: draw per-column background, blending colors of all groups that contain each track
+    int xPos = kRowNumberWidth;
     for (int vi = 0; vi < visibleTracks && (horizontalScrollOffset + vi) < kNumTracks; ++vi)
     {
-        int physTrack = trackLayout.visualToPhysical (horizontalScrollOffset + vi);
-        int x = kRowNumberWidth + vi * kCellWidth;
+        int absVi = horizontalScrollOffset + vi;
+        int physTrack = trackLayout.visualToPhysical (absVi);
+        int cellW = getTrackWidth (absVi);
 
         // Collect colors from all groups this track belongs to
         float r = 0.0f, gr = 0.0f, b = 0.0f;
@@ -391,8 +453,10 @@ void TrackerGrid::drawGroupHeaders (juce::Graphics& g)
         {
             auto blended = juce::Colour::fromFloatRGBA (r / count, gr / count, b / count, 0.4f);
             g.setColour (blended);
-            g.fillRect (x, 0, kCellWidth, kGroupHeaderHeight);
+            g.fillRect (xPos, 0, cellW, kGroupHeaderHeight);
         }
+
+        xPos += cellW;
     }
 
     // Pass 2: draw group labels and borders
@@ -410,8 +474,11 @@ void TrackerGrid::drawGroupHeaders (juce::Graphics& g)
         startCol = juce::jmax (0, startCol);
         endCol = juce::jmin (visibleTracks - 1, endCol);
 
-        int x = kRowNumberWidth + startCol * kCellWidth;
-        int w = (endCol - startCol + 1) * kCellWidth;
+        // Calculate x position and width from variable widths
+        int x = kRowNumberWidth + getTrackXOffset (startCol + horizontalScrollOffset);
+        int w = 0;
+        for (int vi = startCol; vi <= endCol; ++vi)
+            w += getTrackWidth (vi + horizontalScrollOffset);
 
         // Draw group name
         g.setColour (group.colour.brighter (0.5f));
@@ -449,10 +516,72 @@ int TrackerGrid::hexCharToValue (juce::juce_wchar c)
 }
 
 //==============================================================================
+// FX Command Popup
+//==============================================================================
+
+void TrackerGrid::showFxCommandPopup()
+{
+    juce::PopupMenu menu;
+    auto& commands = getFxCommandList();
+
+    for (int i = 0; i < static_cast<int> (commands.size()); ++i)
+    {
+        auto& cmd = commands[static_cast<size_t> (i)];
+        juce::String label = cmd.format + ": " + cmd.name;
+        if (cmd.description.isNotEmpty())
+            label += " (" + cmd.description + ")";
+        menu.addItem (i + 1, label);
+    }
+
+    // Calculate popup position near cursor
+    int cursorVisual = trackLayout.physicalToVisual (cursorTrack);
+    int effectiveHeaderH = getEffectiveHeaderHeight();
+    int xOff = getTrackXOffset (cursorVisual);
+    int popupX = kRowNumberWidth + xOff + kCellPadding + kNoteWidth + kSubColSpace + kInstWidth + kSubColSpace + kVolWidth + kSubColSpace;
+    popupX += cursorFxLane * (kFxWidth + kSubColSpace);
+    int popupY = effectiveHeaderH + (cursorRow - scrollOffset) * kRowHeight + kRowHeight;
+
+    auto options = juce::PopupMenu::Options()
+                       .withTargetScreenArea (localAreaToGlobal (juce::Rectangle<int> (popupX, popupY, 1, 1)));
+
+    menu.showMenuAsync (options, [this] (int result)
+    {
+        if (result > 0)
+        {
+            auto& commands = getFxCommandList();
+            int index = result - 1;
+            if (index >= 0 && index < static_cast<int> (commands.size()))
+            {
+                Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+                int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
+                cell.ensureFxSlots (fxLanes);
+                auto& slot = cell.getFxSlot (cursorFxLane);
+                slot.fx = commands[static_cast<size_t> (index)].command;
+                slot.fxParam = 0;
+
+                // Position cursor on param digits for further editing
+                hexDigitCount = 1;
+                hexAccumulator = 0;
+
+                if (onPatternDataChanged) onPatternDataChanged();
+                repaint();
+            }
+        }
+        grabKeyboardFocus();
+    });
+}
+
+//==============================================================================
 // Mouse
 //==============================================================================
 
 bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubColumn& outSubCol) const
+{
+    int fxLane = 0;
+    return hitTestGrid (mx, my, outRow, outTrack, outSubCol, fxLane);
+}
+
+bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubColumn& outSubCol, int& outFxLane) const
 {
     int effectiveHeaderH = getEffectiveHeaderHeight();
     if (my < effectiveHeaderH || mx < kRowNumberWidth)
@@ -464,24 +593,34 @@ bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubCo
         return false;
 
     int trackPixel = mx - kRowNumberWidth;
-    int trackVisual = trackPixel / kCellWidth;
-    int visualIndex = trackVisual + horizontalScrollOffset;
+    int visualIndex = visualTrackAtPixel (trackPixel);
     if (visualIndex >= kNumTracks)
         return false;
 
     outRow = row;
     outTrack = trackLayout.visualToPhysical (visualIndex);
+    outFxLane = 0;
 
     // Determine sub-column within cell
-    int cellOffset = trackPixel - trackVisual * kCellWidth - kCellPadding;
+    int cellStartX = getTrackXOffset (visualIndex);
+    int cellOffset = trackPixel - cellStartX - kCellPadding;
+    int fxLanes = trackLayout.getTrackFxLaneCount (outTrack);
+
     if (cellOffset < kNoteWidth)
         outSubCol = SubColumn::Note;
-    else if (cellOffset < kNoteWidth + 4 + kInstWidth)
+    else if (cellOffset < kNoteWidth + kSubColSpace + kInstWidth)
         outSubCol = SubColumn::Instrument;
-    else if (cellOffset < kNoteWidth + 4 + kInstWidth + 4 + kVolWidth)
+    else if (cellOffset < kNoteWidth + kSubColSpace + kInstWidth + kSubColSpace + kVolWidth)
         outSubCol = SubColumn::Volume;
     else
+    {
         outSubCol = SubColumn::FX;
+        // Determine which FX lane
+        int fxStart = kNoteWidth + kSubColSpace + kInstWidth + kSubColSpace + kVolWidth + kSubColSpace;
+        int fxOffset = cellOffset - fxStart;
+        int lane = fxOffset / (kFxWidth + kSubColSpace);
+        outFxLane = juce::jlimit (0, fxLanes - 1, lane);
+    }
 
     return true;
 }
@@ -508,17 +647,19 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
     if (event.y < effectiveHeaderH && event.x >= kRowNumberWidth)
     {
         int trackPixel = event.x - kRowNumberWidth;
-        int visualIndex = trackPixel / kCellWidth + horizontalScrollOffset;
+        int visualIndex = visualTrackAtPixel (trackPixel);
         if (visualIndex >= kNumTracks) return;
 
         int physTrack = trackLayout.visualToPhysical (visualIndex);
+        int cellW = getTrackWidth (visualIndex);
+        int cellStartX = getTrackXOffset (visualIndex);
+        int pixelInCell = trackPixel - cellStartX;
 
         // Click on note mode toggle (rightmost 16px of track header, below group header)
         int headerY = trackLayout.hasGroups() ? kGroupHeaderHeight : 0;
         if (event.y >= headerY && ! event.mods.isPopupMenu())
         {
-            int pixelInCell = trackPixel % kCellWidth;
-            if (pixelInCell >= kCellWidth - 16)
+            if (pixelInCell >= cellW - 16)
             {
                 trackLayout.toggleTrackNoteMode (physTrack);
                 if (onNoteModeToggled)
@@ -528,7 +669,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
             }
         }
 
-        // Right-click → context menu
+        // Right-click -> context menu
         if (event.mods.isPopupMenu())
         {
             if (onTrackHeaderRightClick)
@@ -540,7 +681,6 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
         if (trackLayout.hasGroups() && event.y < kGroupHeaderHeight)
         {
             constexpr int borderGrabZone = 6;
-            int pixelInCell = trackPixel % kCellWidth;
 
             for (int gi = 0; gi < trackLayout.getNumGroups(); ++gi)
             {
@@ -554,7 +694,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
                     return;
                 }
                 // Check right border
-                if (visualIndex == lastVis && (kCellWidth - pixelInCell) < borderGrabZone)
+                if (visualIndex == lastVis && (cellW - pixelInCell) < borderGrabZone)
                 {
                     isDraggingGroupBorder = true;
                     dragGroupIndex = gi;
@@ -563,7 +703,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
                 }
 
                 // Also detect clicks just outside the border (one pixel into adjacent column)
-                if (visualIndex == firstVis - 1 && (kCellWidth - pixelInCell) < borderGrabZone)
+                if (visualIndex == firstVis - 1 && (cellW - pixelInCell) < borderGrabZone)
                 {
                     isDraggingGroupBorder = true;
                     dragGroupIndex = gi;
@@ -610,7 +750,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
             }
         }
 
-        // Shift-click on header → extend column selection (visual)
+        // Shift-click on header -> extend column selection (visual)
         if (event.mods.isShiftDown() && hasSelection)
         {
             auto& pat = pattern.getCurrentPattern();
@@ -623,7 +763,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
             return;
         }
 
-        // Left-click on header → select full column + start header drag (visual)
+        // Left-click on header -> select full column + start header drag (visual)
         auto& pat = pattern.getCurrentPattern();
         selStartRow = 0;
         selEndRow = pat.numRows - 1;
@@ -641,7 +781,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
         return;
     }
 
-    // Click on row number area → select full row
+    // Click on row number area -> select full row
     if (event.x < kRowNumberWidth && event.y >= effectiveHeaderH)
     {
         int clickedRow = (event.y - effectiveHeaderH) / kRowHeight + scrollOffset;
@@ -670,9 +810,9 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
         return;
     }
 
-    int row, track;
+    int row, track, fxLane;
     SubColumn subCol;
-    if (hitTestGrid (event.x, event.y, row, track, subCol))
+    if (hitTestGrid (event.x, event.y, row, track, subCol, fxLane))
     {
         int viTrack = trackLayout.physicalToVisual (track);
 
@@ -727,6 +867,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
         cursorRow = row;
         cursorTrack = track;
         cursorSubColumn = subCol;
+        cursorFxLane = fxLane;
         hexDigitCount = 0;
         hexAccumulator = 0;
         ensureCursorVisible();
@@ -750,7 +891,7 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
         int trackPixel = event.x - kRowNumberWidth;
         if (trackPixel < 0) return;
 
-        int visualIndex = trackPixel / kCellWidth + horizontalScrollOffset;
+        int visualIndex = visualTrackAtPixel (trackPixel);
         visualIndex = juce::jlimit (0, kNumTracks - 1, visualIndex);
 
         auto& group = trackLayout.getGroup (dragGroupIndex);
@@ -824,7 +965,7 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
         int trackPixel = event.x - kRowNumberWidth;
         if (trackPixel >= 0)
         {
-            int visualIndex = trackPixel / kCellWidth + horizontalScrollOffset;
+            int visualIndex = visualTrackAtPixel (trackPixel);
             visualIndex = juce::jlimit (0, kNumTracks - 1, visualIndex);
 
             if (isDraggingGroupAsWhole && dragGroupDragIndex >= 0
@@ -905,7 +1046,7 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
         {
             // Auto-scroll when dragging past edges
             int trackPixel = event.x - kRowNumberWidth;
-            int viFromPixel = trackPixel / kCellWidth + horizontalScrollOffset;
+            int viFromPixel = visualTrackAtPixel (trackPixel);
             int rowFromPixel = (event.y - effectiveHeaderH) / kRowHeight + scrollOffset;
 
             // Clamp to valid range
@@ -959,7 +1100,7 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
 
     if (isDraggingHeader)
     {
-        // Header drag complete — layout already updated during drag
+        // Header drag complete -- layout already updated during drag
         if (onTrackHeaderDragged)
             onTrackHeaderDragged (-1, -1); // signal completion
         isDraggingHeader = false;
@@ -993,7 +1134,7 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
                 int selRows = maxRow - minRow + 1;
                 int selTracks = maxViTrack - minViTrack + 1;
 
-                // Copy the selected block (visual columns → physical)
+                // Copy the selected block (visual columns -> physical)
                 std::vector<std::vector<Cell>> buffer (static_cast<size_t> (selRows),
                     std::vector<Cell> (static_cast<size_t> (selTracks)));
                 for (int r = 0; r < selRows; ++r)
@@ -1009,7 +1150,7 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
                     for (int vi = minViTrack; vi <= maxViTrack; ++vi)
                         pat.getCell (r, trackLayout.visualToPhysical (vi)).clear();
 
-                // Paste at destination (visual columns → physical)
+                // Paste at destination (visual columns -> physical)
                 for (int r = 0; r < selRows; ++r)
                 {
                     int dr = destRow + r;
@@ -1047,11 +1188,11 @@ void TrackerGrid::mouseDoubleClick (const juce::MouseEvent& event)
 {
     int effectiveHeaderH = getEffectiveHeaderHeight();
 
-    // Double-click on track header area → rename
+    // Double-click on track header area -> rename
     if (event.y < effectiveHeaderH && event.x >= kRowNumberWidth)
     {
         int trackPixel = event.x - kRowNumberWidth;
-        int visualIndex = trackPixel / kCellWidth + horizontalScrollOffset;
+        int visualIndex = visualTrackAtPixel (trackPixel);
         if (visualIndex < kNumTracks && onTrackHeaderDoubleClick)
             onTrackHeaderDoubleClick (trackLayout.visualToPhysical (visualIndex), event.getScreenPosition());
     }
@@ -1065,7 +1206,7 @@ void TrackerGrid::drawDragPreview (juce::Graphics& g)
     int minRow, maxRow, minViTrack, maxViTrack;
     getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
 
-    // All in visual space — grab offset and dragMoveTrack are visual
+    // All in visual space -- grab offset and dragMoveTrack are visual
     int rowOffset = (dragMoveRow - dragGrabRowOffset) - minRow;
     int trackOffset = (dragMoveTrack - dragGrabTrackOffset) - minViTrack;
 
@@ -1088,13 +1229,15 @@ void TrackerGrid::drawDragPreview (juce::Graphics& g)
             int screenVi = destVi - horizontalScrollOffset;
             if (screenVi < 0 || screenVi >= visibleTracks) continue;
 
-            int x = kRowNumberWidth + screenVi * kCellWidth;
+            int xOff = getTrackXOffset (destVi);
+            int x = kRowNumberWidth + xOff;
+            int cellW = getTrackWidth (destVi);
             int y = effectiveHeaderH + (destRow - scrollOffset) * kRowHeight;
 
             g.setColour (juce::Colour (0x445588cc));
-            g.fillRect (x, y, kCellWidth, kRowHeight);
+            g.fillRect (x, y, cellW, kRowHeight);
             g.setColour (juce::Colour (0x885588cc));
-            g.drawRect (x, y, kCellWidth, kRowHeight, 1);
+            g.drawRect (x, y, cellW, kRowHeight, 1);
         }
     }
 }
@@ -1116,7 +1259,7 @@ void TrackerGrid::filesDropped (const juce::StringArray& files, int x, int /*y*/
     int trackPixel = x - kRowNumberWidth;
     if (trackPixel < 0) return;
 
-    int visualIndex = trackPixel / kCellWidth + horizontalScrollOffset;
+    int visualIndex = visualTrackAtPixel (trackPixel);
     if (visualIndex >= kNumTracks) return;
 
     for (auto& f : files)
@@ -1301,43 +1444,69 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Tab: cycle through sub-columns, then to next track
+    // Tab: cycle through sub-columns (including multiple FX lanes), then to next track
     if (keyCode == juce::KeyPress::tabKey)
     {
         hexDigitCount = 0;
         hexAccumulator = 0;
+        int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
+
         if (shift)
         {
-            // Reverse: FX → Vol → Inst → Note → prev track's FX
+            // Reverse: FX(last lane) -> ... -> FX(0) -> Vol -> Inst -> Note -> prev track's FX(last)
             if (cursorSubColumn == SubColumn::Note)
             {
-                cursorSubColumn = SubColumn::FX;
+                // Move to previous track's last FX lane
                 moveCursor (0, -1);
+                int prevFxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
+                cursorSubColumn = SubColumn::FX;
+                cursorFxLane = prevFxLanes - 1;
             }
             else if (cursorSubColumn == SubColumn::Instrument)
                 cursorSubColumn = SubColumn::Note;
             else if (cursorSubColumn == SubColumn::Volume)
                 cursorSubColumn = SubColumn::Instrument;
             else if (cursorSubColumn == SubColumn::FX)
-                cursorSubColumn = SubColumn::Volume;
+            {
+                if (cursorFxLane > 0)
+                    cursorFxLane--;
+                else
+                    cursorSubColumn = SubColumn::Volume;
+            }
         }
         else
         {
-            // Forward: Note → Inst → Vol → FX → next track's Note
+            // Forward: Note -> Inst -> Vol -> FX(0) -> FX(1) -> ... -> FX(last) -> next track's Note
             if (cursorSubColumn == SubColumn::Note)
                 cursorSubColumn = SubColumn::Instrument;
             else if (cursorSubColumn == SubColumn::Instrument)
                 cursorSubColumn = SubColumn::Volume;
             else if (cursorSubColumn == SubColumn::Volume)
+            {
                 cursorSubColumn = SubColumn::FX;
+                cursorFxLane = 0;
+            }
             else if (cursorSubColumn == SubColumn::FX)
             {
-                cursorSubColumn = SubColumn::Note;
-                moveCursor (0, 1);
+                if (cursorFxLane < fxLanes - 1)
+                    cursorFxLane++;
+                else
+                {
+                    cursorSubColumn = SubColumn::Note;
+                    cursorFxLane = 0;
+                    moveCursor (0, 1);
+                }
             }
         }
         repaint();
         if (onCursorMoved) onCursorMoved();
+        return true;
+    }
+
+    // FX command popup: '/' or '?' when cursor is in FX sub-column
+    if (cursorSubColumn == SubColumn::FX && (key.getTextCharacter() == '/' || key.getTextCharacter() == '?'))
+    {
+        showFxCommandPopup();
         return true;
     }
 
@@ -1362,7 +1531,12 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 case SubColumn::Note:       cell.clear(); break;
                 case SubColumn::Instrument: cell.instrument = -1; break;
                 case SubColumn::Volume:     cell.volume = -1; break;
-                case SubColumn::FX:         cell.fx = 0; cell.fxParam = 0; break;
+                case SubColumn::FX:
+                {
+                    auto& slot = cell.getFxSlot (cursorFxLane);
+                    slot.clear();
+                    break;
+                }
             }
         }
         hexDigitCount = 0;
@@ -1482,11 +1656,15 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         if (hexVal >= 0)
         {
             Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+            int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
+            cell.ensureFxSlots (fxLanes);
+            auto& slot = cell.getFxSlot (cursorFxLane);
+
             if (hexDigitCount == 0)
             {
                 // First digit = effect command
-                cell.fx = hexVal;
-                cell.fxParam = 0;
+                slot.fx = hexVal;
+                slot.fxParam = 0;
                 hexAccumulator = 0;
                 hexDigitCount = 1;
             }
@@ -1494,12 +1672,12 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
             {
                 hexAccumulator = hexVal;
                 hexDigitCount = 2;
-                cell.fxParam = hexAccumulator;
+                slot.fxParam = hexAccumulator;
             }
             else
             {
                 hexAccumulator = (hexAccumulator << 4) | hexVal;
-                cell.fxParam = hexAccumulator & 0xFF;
+                slot.fxParam = hexAccumulator & 0xFF;
                 hexDigitCount = 0;
                 hexAccumulator = 0;
                 moveCursor (editStep, 0);

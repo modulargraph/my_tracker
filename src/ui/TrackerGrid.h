@@ -89,15 +89,28 @@ public:
     static constexpr int kRowNumberWidth = 30;
     static constexpr int kHeaderHeight = 22;
     static constexpr int kRowHeight = 18;
-    static constexpr int kCellWidth = 90;
 
     // Sub-column widths within a cell
     static constexpr int kNoteWidth = 28;
     static constexpr int kInstWidth = 18;
     static constexpr int kVolWidth = 18;
-    static constexpr int kFxWidth = 22;
-    static constexpr int kCellPadding = 4;
+    static constexpr int kFxWidth = 26;  // Increased from 22 for proper 3-char display
+    static constexpr int kCellPadding = 2;
+    static constexpr int kSubColSpace = 2; // Space between sub-columns (was 4)
     static constexpr int kGroupHeaderHeight = 16;
+
+    // Base cell width (1 FX lane): padding + Note + space + Inst + space + Vol + space + FX
+    static constexpr int kBaseCellWidth = kCellPadding + kNoteWidth + kSubColSpace + kInstWidth
+                                        + kSubColSpace + kVolWidth + kSubColSpace + kFxWidth;
+
+    // Compute cell width for a track with the given number of FX lanes
+    static int getCellWidth (int fxLaneCount)
+    {
+        return kBaseCellWidth + (fxLaneCount - 1) * (kFxWidth + kSubColSpace);
+    }
+
+    // Current cursor FX lane index (which FX lane the cursor is in)
+    int getCursorFxLane() const { return cursorFxLane; }
 
 private:
     PatternData& pattern;
@@ -107,6 +120,7 @@ private:
     int cursorRow = 0;
     int cursorTrack = 0;
     SubColumn cursorSubColumn = SubColumn::Note;
+    int cursorFxLane = 0;  // Which FX lane the cursor is in when SubColumn::FX
     int playbackRow = -1;
     bool isPlaying = false;
     int editStep = 1;
@@ -146,7 +160,7 @@ private:
     void drawRowNumbers (juce::Graphics& g);
     void drawCells (juce::Graphics& g);
     void drawCell (juce::Graphics& g, const Cell& cell, int x, int y, int width,
-                   bool isCursor, bool isCurrentRow, bool isPlaybackRow, int track);
+                   bool isCursor, bool isCurrentRow, bool isPlaybackRow, int track, int fxLaneCount);
     void drawSelection (juce::Graphics& g);
     void drawGroupHeaders (juce::Graphics& g);
     int getEffectiveHeaderHeight() const;
@@ -165,6 +179,15 @@ private:
 
     // Hit test: convert pixel position to grid coordinates
     bool hitTestGrid (int x, int y, int& outRow, int& outTrack, SubColumn& outSubCol) const;
+    bool hitTestGrid (int x, int y, int& outRow, int& outTrack, SubColumn& outSubCol, int& outFxLane) const;
+
+    // Variable-width track layout helpers
+    int getTrackXOffset (int visualIndex) const;  // pixel X for a visual track index
+    int getTrackWidth (int visualIndex) const;     // pixel width for a visual track
+    int visualTrackAtPixel (int pixelX) const;     // visual track index at pixel X (relative to row number area)
+
+    // FX command dropdown
+    void showFxCommandPopup();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackerGrid)
 };

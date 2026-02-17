@@ -1303,9 +1303,16 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
             menu.addItem (12, "Group Selected Tracks...");
     }
 
+    // FX lanes
+    menu.addSeparator();
+    int fxLanes = trackLayout.getTrackFxLaneCount (track);
+    menu.addItem (20, "Add FX Lane (" + juce::String (fxLanes) + " -> " + juce::String (fxLanes + 1) + ")", fxLanes < 8);
+    menu.addItem (21, "Remove FX Lane (" + juce::String (fxLanes) + " -> " + juce::String (fxLanes - 1) + ")", fxLanes > 1);
+
     int groupIdx = trackLayout.getGroupForTrack (track);
     if (groupIdx >= 0)
     {
+        menu.addSeparator();
         menu.addItem (13, "Remove from Group");
         menu.addItem (14, "Dissolve Group");
     }
@@ -1380,6 +1387,18 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                             else if (result == 14 && groupIdx >= 0)
                             {
                                 trackLayout.removeGroup (groupIdx);
+                                markDirty();
+                                trackerGrid->repaint();
+                            }
+                            else if (result == 20)
+                            {
+                                trackLayout.addFxLane (track);
+                                markDirty();
+                                trackerGrid->repaint();
+                            }
+                            else if (result == 21)
+                            {
+                                trackLayout.removeFxLane (track);
                                 markDirty();
                                 trackerGrid->repaint();
                             }
