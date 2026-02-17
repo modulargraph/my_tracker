@@ -12,7 +12,14 @@ endif()
 set(JUCE_ENABLE_MODULE_SOURCE_GROUPS ON)
 set(TE_ADD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
-add_subdirectory(modules/tracktion_engine)
+set(TRACKTION_ENGINE_DIR "$ENV{HOME}/Libraries/tracktion_engine" CACHE PATH "Path to tracktion_engine")
+set(JUCE_DIR "$ENV{HOME}/Libraries/JUCE" CACHE PATH "Path to JUCE")
+
+# Load JUCE first so tracktion_engine finds it already available
+add_subdirectory(${JUCE_DIR} ${CMAKE_BINARY_DIR}/juce)
+
+# Load tracktion_engine (skips its own JUCE since juce::juce_core already exists)
+add_subdirectory(${TRACKTION_ENGINE_DIR} ${CMAKE_BINARY_DIR}/tracktion_engine)
 
 juce_add_gui_app(TrackerAdjust
     BUNDLE_ID "com.trackeradjust.app"
