@@ -1,6 +1,8 @@
 #include "SampleEditorComponent.h"
 #include "NoteUtils.h"
 #include "FormatUtils.h"
+#include <algorithm>
+#include <cmath>
 
 //==============================================================================
 // LFO speed presets (descending, in steps)
@@ -71,6 +73,14 @@ void SampleEditorComponent::setInstrument (int instrumentIndex, const juce::File
     lastCommittedParams = params;
     paramsDirty = false;
 
+    // Reset zoom when switching instruments
+    viewStart = 0.0;
+    viewEnd = 1.0;
+    selectedSliceIndex = -1;
+    isWaveformDragging = false;
+    draggingMarker = MarkerType::None;
+    isPanning = false;
+
     thumbnail.clear();
     if (sampleFile.existsAsFile())
         thumbnail.setSource (new juce::FileInputSource (sampleFile));
@@ -94,6 +104,13 @@ void SampleEditorComponent::clearInstrument()
     lastCommittedParams = InstrumentParams();
     paramsDirty = false;
     isDragging = false;
+
+    viewStart = 0.0;
+    viewEnd = 1.0;
+    selectedSliceIndex = -1;
+    isWaveformDragging = false;
+    draggingMarker = MarkerType::None;
+    isPanning = false;
 
     thumbnail.clear();
     repaint();
@@ -309,8 +326,8 @@ int SampleEditorComponent::getColumnCount() const
             case InstrumentParams::PlayMode::ForwardLoop:
             case InstrumentParams::PlayMode::BackwardLoop:
             case InstrumentParams::PlayMode::PingpongLoop:                  return 5;
-            case InstrumentParams::PlayMode::Slice:
-            case InstrumentParams::PlayMode::BeatSlice:                     return 3;
+            case InstrumentParams::PlayMode::Slice:                          return 5; // Start, End, Slices, Sel, PlayMode
+            case InstrumentParams::PlayMode::BeatSlice:                     return 5; // Start, End, NumSlices, Sel, PlayMode
             case InstrumentParams::PlayMode::Granular:                      return 7;
         }
         return 4;
@@ -373,10 +390,15 @@ juce::String SampleEditorComponent::getColumnName (int col) const
                 break;
             }
             case InstrumentParams::PlayMode::Slice:
+            {
+                const char* n[] = { "Start", "End", "Slices", "Selected" };
+                if (col < 4) return n[col];
+                break;
+            }
             case InstrumentParams::PlayMode::BeatSlice:
             {
-                const char* n[] = { "Start", "End" };
-                if (col < 2) return n[col];
+                const char* n[] = { "Start", "End", "Num Slices", "Selected" };
+                if (col < 4) return n[col];
                 break;
             }
             case InstrumentParams::PlayMode::Granular:
@@ -479,6 +501,11 @@ juce::String SampleEditorComponent::getColumnValue (int col) const
                 {
                     case 0: return formatPosSec (currentParams.startPos, totalLen);
                     case 1: return formatPosSec (currentParams.endPos, totalLen);
+                    case 2: return juce::String (static_cast<int> (currentParams.slicePoints.size()));
+                    case 3:
+                        if (selectedSliceIndex >= 0 && selectedSliceIndex < static_cast<int> (currentParams.slicePoints.size()))
+                            return juce::String (selectedSliceIndex);
+                        return "--";
                 }
                 break;
 
@@ -991,10 +1018,17 @@ void SampleEditorComponent::drawModulationPage (juce::Graphics& g, juce::Rectang
 
 void SampleEditorComponent::drawPlaybackPage (juce::Graphics& g, juce::Rectangle<int> area)
 {
-    // Waveform fills the content area
+    // Reserve space for overview bar at bottom of content area
+    auto overviewArea = area.removeFromBottom (kOverviewBarHeight + 2);
+    overviewArea = overviewArea.reduced (4, 0).withTrimmedTop (2);
+
+    // Waveform fills the remaining content area
     auto waveArea = area.reduced (4, 4);
     drawWaveform (g, waveArea);
     drawWaveformMarkers (g, waveArea);
+
+    // Overview bar
+    drawOverviewBar (g, overviewArea);
 
     // Play mode list overlay in top-right corner of waveform
     int numCols = getColumnCount();
@@ -1040,21 +1074,25 @@ void SampleEditorComponent::drawWaveform (juce::Graphics& g, juce::Rectangle<int
     g.drawHorizontalLine (area.getCentreY(), static_cast<float> (area.getX()),
                           static_cast<float> (area.getRight()));
 
-    if (thumbnail.getTotalLength() > 0.0)
+    double totalLen = thumbnail.getTotalLength();
+    if (totalLen > 0.0)
     {
-        // Shade outside start/end
-        float startX = area.getX() + static_cast<float> (currentParams.startPos * area.getWidth());
-        float endX   = area.getX() + static_cast<float> (currentParams.endPos * area.getWidth());
+        // Shade outside start/end (in zoomed coordinates)
+        int startPx = normPosToPixel (currentParams.startPos, area);
+        int endPx   = normPosToPixel (currentParams.endPos, area);
 
         g.setColour (juce::Colour (0x40000000));
-        g.fillRect (static_cast<float> (area.getX()), static_cast<float> (area.getY()),
-                    startX - area.getX(), static_cast<float> (area.getHeight()));
-        g.fillRect (endX, static_cast<float> (area.getY()),
-                    static_cast<float> (area.getRight()) - endX,
-                    static_cast<float> (area.getHeight()));
+        if (startPx > area.getX())
+            g.fillRect (area.getX(), area.getY(), startPx - area.getX(), area.getHeight());
+        if (endPx < area.getRight())
+            g.fillRect (endPx, area.getY(), area.getRight() - endPx, area.getHeight());
+
+        // Draw the zoomed portion of the waveform
+        double drawStart = viewStart * totalLen;
+        double drawEnd   = viewEnd * totalLen;
 
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.7f));
-        thumbnail.drawChannels (g, area.reduced (1), 0.0, thumbnail.getTotalLength(), 1.0f);
+        thumbnail.drawChannels (g, area.reduced (1), drawStart, drawEnd, 1.0f);
     }
     else
     {
@@ -1068,36 +1106,69 @@ void SampleEditorComponent::drawWaveformMarkers (juce::Graphics& g, juce::Rectan
 {
     if (thumbnail.getTotalLength() <= 0.0) return;
 
-    auto drawMarker = [&] (double normPos, juce::Colour colour, const juce::String& label)
+    auto drawMarker = [&] (double normPos, juce::Colour colour, const juce::String& label,
+                           bool highlighted = false, bool thick = false)
     {
-        int x = area.getX() + juce::roundToInt (normPos * area.getWidth());
+        int x = normPosToPixel (normPos, area);
+        if (x < area.getX() - 2 || x > area.getRight() + 2) return; // off-screen
+
+        if (highlighted || thick)
+        {
+            g.setColour (colour.withAlpha (0.3f));
+            g.fillRect (x - 2, area.getY(), 5, area.getHeight());
+        }
+
         g.setColour (colour);
         g.drawVerticalLine (x, static_cast<float> (area.getY()),
                             static_cast<float> (area.getBottom()));
+        if (thick)
+            g.drawVerticalLine (x + 1, static_cast<float> (area.getY()),
+                                static_cast<float> (area.getBottom()));
+
         g.setFont (lookAndFeel.getMonoFont (9.0f));
         g.drawText (label, x + 2, area.getY() + 2, 30, 12, juce::Justification::centredLeft);
     };
 
-    drawMarker (currentParams.startPos, juce::Colour (0xff44cc44), "S");
-    drawMarker (currentParams.endPos, juce::Colour (0xffcc4444), "E");
+    auto startCol = juce::Colour (0xff44cc44);
+    auto endCol   = juce::Colour (0xffcc4444);
+    bool startHi = (hoveredMarker == MarkerType::Start || draggingMarker == MarkerType::Start);
+    bool endHi   = (hoveredMarker == MarkerType::End   || draggingMarker == MarkerType::End);
+
+    drawMarker (currentParams.startPos, startCol, "S", startHi, startHi);
+    drawMarker (currentParams.endPos,   endCol,   "E", endHi,   endHi);
 
     auto mode = currentParams.playMode;
     if (mode == InstrumentParams::PlayMode::ForwardLoop
         || mode == InstrumentParams::PlayMode::BackwardLoop
         || mode == InstrumentParams::PlayMode::PingpongLoop)
     {
-        drawMarker (currentParams.loopStart, juce::Colour (0xff4488ff), "LS");
-        drawMarker (currentParams.loopEnd, juce::Colour (0xff4488ff), "LE");
+        auto loopCol = juce::Colour (0xff4488ff);
+        bool lsHi = (hoveredMarker == MarkerType::LoopStart || draggingMarker == MarkerType::LoopStart);
+        bool leHi = (hoveredMarker == MarkerType::LoopEnd   || draggingMarker == MarkerType::LoopEnd);
+        drawMarker (currentParams.loopStart, loopCol, "LS", lsHi, lsHi);
+        drawMarker (currentParams.loopEnd,   loopCol, "LE", leHi, leHi);
     }
 
     if (mode == InstrumentParams::PlayMode::Slice || mode == InstrumentParams::PlayMode::BeatSlice)
     {
-        for (auto sp : currentParams.slicePoints)
-            drawMarker (sp, juce::Colour (0xffddcc44), "|");
+        auto sliceCol = juce::Colour (0xffddcc44);
+        for (int i = 0; i < static_cast<int> (currentParams.slicePoints.size()); ++i)
+        {
+            bool selected = (i == selectedSliceIndex);
+            bool dragging = (draggingMarker == MarkerType::Slice && draggingSliceIndex == i);
+            bool hi = selected || dragging
+                      || (hoveredMarker == MarkerType::Slice && draggingSliceIndex == -1);
+            auto col = selected ? sliceCol.brighter (0.3f) : sliceCol;
+            drawMarker (currentParams.slicePoints[static_cast<size_t> (i)], col,
+                        juce::String (i), hi, selected || dragging);
+        }
     }
 
     if (mode == InstrumentParams::PlayMode::Granular)
-        drawMarker (currentParams.granularPosition, juce::Colour (0xffffaa44), "G");
+    {
+        bool gHi = (hoveredMarker == MarkerType::GranPos || draggingMarker == MarkerType::GranPos);
+        drawMarker (currentParams.granularPosition, juce::Colour (0xffffaa44), "G", gHi, gHi);
+    }
 }
 
 //==============================================================================
@@ -1388,17 +1459,43 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
             case InstrumentParams::PlayMode::Slice:
             case InstrumentParams::PlayMode::BeatSlice:
             {
-                double step = fine ? 0.001 : (large ? 0.1 : 0.01);
                 switch (playbackColumn)
                 {
-                    case 0:
+                    case 0: // Start
+                    {
+                        double step = fine ? 0.001 : (large ? 0.1 : 0.01);
                         currentParams.startPos = juce::jlimit (0.0, currentParams.endPos,
                             currentParams.startPos + direction * step);
                         break;
-                    case 1:
+                    }
+                    case 1: // End
+                    {
+                        double step = fine ? 0.001 : (large ? 0.1 : 0.01);
                         currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0,
                             currentParams.endPos + direction * step);
                         break;
+                    }
+                    case 2: // Num Slices (BeatSlice: regenerate equal slices)
+                    {
+                        if (mode == InstrumentParams::PlayMode::BeatSlice)
+                        {
+                            int numSlices = static_cast<int> (currentParams.slicePoints.size()) + direction;
+                            numSlices = juce::jlimit (0, 128, numSlices);
+                            generateEqualSlices (numSlices);
+                        }
+                        // For Slice mode, Slices column is read-only (shows count)
+                        break;
+                    }
+                    case 3: // Selected slice
+                    {
+                        int numSlices = static_cast<int> (currentParams.slicePoints.size());
+                        if (numSlices > 0)
+                        {
+                            selectedSliceIndex += direction;
+                            selectedSliceIndex = juce::jlimit (0, numSlices - 1, selectedSliceIndex);
+                        }
+                        break;
+                    }
                 }
                 break;
             }
@@ -1684,6 +1781,27 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                         currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0,
                             currentParams.endPos + normDelta);
                         break;
+                    case 2: // Num Slices (BeatSlice: regenerate)
+                    {
+                        if (mode == InstrumentParams::PlayMode::BeatSlice)
+                        {
+                            int numSlices = static_cast<int> (currentParams.slicePoints.size())
+                                            + juce::roundToInt (normDelta * 32.0);
+                            numSlices = juce::jlimit (0, 128, numSlices);
+                            generateEqualSlices (numSlices);
+                        }
+                        break;
+                    }
+                    case 3: // Selected slice
+                    {
+                        int numSlices = static_cast<int> (currentParams.slicePoints.size());
+                        if (numSlices > 0)
+                        {
+                            int idx = selectedSliceIndex - juce::roundToInt (normDelta * static_cast<double> (numSlices));
+                            selectedSliceIndex = juce::jlimit (0, numSlices - 1, idx);
+                        }
+                        break;
+                    }
                 }
                 break;
 
@@ -1757,6 +1875,9 @@ bool SampleEditorComponent::isCurrentColumnDiscrete() const
         auto mode = currentParams.playMode;
         if (mode == InstrumentParams::PlayMode::OneShot && playbackColumn == 2)
             return true; // Reverse toggle
+        if ((mode == InstrumentParams::PlayMode::Slice || mode == InstrumentParams::PlayMode::BeatSlice)
+            && playbackColumn >= 2)
+            return true; // Slices count, Selected slice
         if (mode == InstrumentParams::PlayMode::Granular && playbackColumn >= 4)
             return true; // Shape, Loop
         return false;
@@ -1780,7 +1901,33 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
     bool shift = key.getModifiers().isShiftDown();
     bool cmd   = key.getModifiers().isCommandDown();
 
-    // Let Cmd shortcuts pass through to ApplicationCommandTarget
+    // Cmd+E: Equal chop (in Slice/BeatSlice mode on playback page)
+    if (cmd && (keyCode == 'E' || keyCode == 'e'))
+    {
+        if (displayMode == DisplayMode::InstrumentType
+            && (currentParams.playMode == InstrumentParams::PlayMode::Slice
+                || currentParams.playMode == InstrumentParams::PlayMode::BeatSlice))
+        {
+            int numSlices = static_cast<int> (currentParams.slicePoints.size());
+            if (numSlices < 2) numSlices = 8; // default to 8 slices
+            generateEqualSlices (numSlices);
+            notifyParamsChanged();
+            return true;
+        }
+    }
+
+    // Cmd+T: Auto-slice (transient detection)
+    if (cmd && (keyCode == 'T' || keyCode == 't'))
+    {
+        if (displayMode == DisplayMode::InstrumentType)
+        {
+            autoSlice();
+            notifyParamsChanged();
+            return true;
+        }
+    }
+
+    // Let other Cmd shortcuts pass through to ApplicationCommandTarget
     if (cmd) return false;
 
     // Backtick (`): toggle Parameters/Modulation sub-tab (in InstrumentEdit mode)
@@ -1826,6 +1973,113 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
             repaint();
         }
         return true;
+    }
+
+    // ── Zoom shortcuts (InstrumentType / playback page only) ──
+    if (displayMode == DisplayMode::InstrumentType)
+    {
+        // + / = : zoom in
+        if (key.getTextCharacter() == '+' || key.getTextCharacter() == '=')
+        {
+            double centre = (viewStart + viewEnd) * 0.5;
+            zoomAroundPoint (0.8, centre);
+            repaint();
+            return true;
+        }
+        // - : zoom out
+        if (key.getTextCharacter() == '-')
+        {
+            double centre = (viewStart + viewEnd) * 0.5;
+            zoomAroundPoint (1.25, centre);
+            repaint();
+            return true;
+        }
+        // 0 : reset zoom
+        if (key.getTextCharacter() == '0')
+        {
+            viewStart = 0.0;
+            viewEnd = 1.0;
+            repaint();
+            return true;
+        }
+
+        // ── Slice mode keyboard shortcuts ──
+        bool isSliceMode = (currentParams.playMode == InstrumentParams::PlayMode::Slice
+                            || currentParams.playMode == InstrumentParams::PlayMode::BeatSlice);
+
+        if (isSliceMode)
+        {
+            // Shift+Left/Right: select different slice points
+            if (shift && keyCode == juce::KeyPress::leftKey)
+            {
+                int numSlices = static_cast<int> (currentParams.slicePoints.size());
+                if (numSlices > 0)
+                {
+                    selectedSliceIndex = juce::jmax (0, selectedSliceIndex - 1);
+                    repaint();
+                }
+                return true;
+            }
+            if (shift && keyCode == juce::KeyPress::rightKey)
+            {
+                int numSlices = static_cast<int> (currentParams.slicePoints.size());
+                if (numSlices > 0)
+                {
+                    selectedSliceIndex = juce::jmin (numSlices - 1, selectedSliceIndex + 1);
+                    repaint();
+                }
+                return true;
+            }
+
+            // Shift+Up/Down: nudge selected slice position
+            if (shift && keyCode == juce::KeyPress::upKey)
+            {
+                if (selectedSliceIndex >= 0 && selectedSliceIndex < static_cast<int> (currentParams.slicePoints.size()))
+                {
+                    double step = 0.005;
+                    currentParams.slicePoints[static_cast<size_t> (selectedSliceIndex)] =
+                        juce::jlimit (currentParams.startPos, currentParams.endPos,
+                            currentParams.slicePoints[static_cast<size_t> (selectedSliceIndex)] + step);
+                    notifyParamsChanged();
+                }
+                return true;
+            }
+            if (shift && keyCode == juce::KeyPress::downKey)
+            {
+                if (selectedSliceIndex >= 0 && selectedSliceIndex < static_cast<int> (currentParams.slicePoints.size()))
+                {
+                    double step = 0.005;
+                    currentParams.slicePoints[static_cast<size_t> (selectedSliceIndex)] =
+                        juce::jlimit (currentParams.startPos, currentParams.endPos,
+                            currentParams.slicePoints[static_cast<size_t> (selectedSliceIndex)] - step);
+                    notifyParamsChanged();
+                }
+                return true;
+            }
+
+            // Delete or Backspace: remove selected slice
+            if (keyCode == juce::KeyPress::deleteKey || keyCode == juce::KeyPress::backspaceKey)
+            {
+                if (selectedSliceIndex >= 0)
+                {
+                    removeSlice (selectedSliceIndex);
+                    notifyParamsChanged();
+                }
+                return true;
+            }
+
+            // 'a' key (not mapped to note in this context, check): add slice at view centre
+            // We need to be careful not to conflict with note keys. 'a' is not a note key
+            // in the tracker layout, so it is safe.
+            if (key.getTextCharacter() == 'a' && ! shift)
+            {
+                // Note: 'a' is not in the note-key mapping (NoteUtils), so it's free
+                double centrePos = (viewStart + viewEnd) * 0.5;
+                addSliceAtPosition (centrePos);
+                notifyParamsChanged();
+                return true;
+            }
+        }
     }
 
     // Up/Down: adjust value in current column
@@ -1934,9 +2188,149 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
         return;
     }
 
-    // Click in content area: determine column
+    // Click in content area
     if (event.y >= contentTop && event.y < contentBottom)
     {
+        // ── InstrumentType / Playback page: waveform interaction ──
+        if (displayMode == DisplayMode::InstrumentType)
+        {
+            auto waveArea = getWaveformArea();
+
+            // Check if click is in the mode list area (top-right overlay)
+            int numCols = getColumnCount();
+            int listW = 140;
+            int listX = waveArea.getRight() - listW - 2;
+            int listY = waveArea.getY() + 2;
+            int listH = 7 * kListItemHeight + 2;
+
+            if (event.x >= listX && event.x <= listX + listW
+                && event.y >= listY && event.y <= listY + listH)
+            {
+                setFocusedColumn (numCols - 1);
+                int itemIdx = (event.y - listY) / kListItemHeight;
+                if (itemIdx >= 0 && itemIdx < 7)
+                {
+                    currentParams.playMode = static_cast<InstrumentParams::PlayMode> (itemIdx);
+                    if (playbackColumn >= getColumnCount())
+                        playbackColumn = getColumnCount() - 1;
+                    notifyParamsChanged();
+                }
+                repaint();
+                return;
+            }
+
+            // Check if click is in waveform area
+            if (waveArea.contains (event.x, event.y))
+            {
+                bool isSliceMode = (currentParams.playMode == InstrumentParams::PlayMode::Slice
+                                    || currentParams.playMode == InstrumentParams::PlayMode::BeatSlice);
+
+                // Middle mouse button or Alt+click: start panning
+                if (event.mods.isMiddleButtonDown()
+                    || (event.mods.isLeftButtonDown() && event.mods.isAltDown()))
+                {
+                    isPanning = true;
+                    panStartX = event.position.x;
+                    panStartViewStart = viewStart;
+                    panStartViewEnd = viewEnd;
+                    return;
+                }
+
+                // Shift+click in slice mode: remove nearest slice
+                if (isSliceMode && event.mods.isShiftDown() && event.mods.isLeftButtonDown())
+                {
+                    int sliceIdx = hitTestSlice (event.x, waveArea);
+                    if (sliceIdx >= 0)
+                    {
+                        removeSlice (sliceIdx);
+                        notifyParamsChanged();
+                    }
+                    return;
+                }
+
+                // Right-click in slice mode: remove nearest slice
+                if (isSliceMode && event.mods.isPopupMenu())
+                {
+                    int sliceIdx = hitTestSlice (event.x, waveArea);
+                    if (sliceIdx >= 0)
+                    {
+                        removeSlice (sliceIdx);
+                        notifyParamsChanged();
+                    }
+                    return;
+                }
+
+                // Left click: check for marker hit first
+                auto marker = hitTestMarker (event.x, waveArea);
+
+                if (marker != MarkerType::None)
+                {
+                    // Start dragging a marker
+                    isWaveformDragging = true;
+                    draggingMarker = marker;
+                    waveformDragStartX = event.position.x;
+                    if (marker == MarkerType::Slice)
+                    {
+                        draggingSliceIndex = hitTestSlice (event.x, waveArea);
+                        selectedSliceIndex = draggingSliceIndex;
+                    }
+                    repaint();
+                    return;
+                }
+
+                // No marker hit: mode-specific behavior
+                if (isSliceMode)
+                {
+                    // Click on waveform in slice mode: add a slice point
+                    double normPos = pixelToNormPos (event.x, waveArea);
+                    addSliceAtPosition (normPos);
+                    notifyParamsChanged();
+                    return;
+                }
+
+                // For other modes: set the focused column's value to clicked position
+                double normPos = pixelToNormPos (event.x, waveArea);
+                auto mode = currentParams.playMode;
+                switch (mode)
+                {
+                    case InstrumentParams::PlayMode::OneShot:
+                        switch (playbackColumn)
+                        {
+                            case 0: currentParams.startPos = juce::jlimit (0.0, currentParams.endPos, normPos); break;
+                            case 1: currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0, normPos); break;
+                            default: break;
+                        }
+                        break;
+                    case InstrumentParams::PlayMode::ForwardLoop:
+                    case InstrumentParams::PlayMode::BackwardLoop:
+                    case InstrumentParams::PlayMode::PingpongLoop:
+                        switch (playbackColumn)
+                        {
+                            case 0: currentParams.startPos = juce::jlimit (0.0, currentParams.endPos, normPos); break;
+                            case 1: currentParams.loopStart = juce::jlimit (0.0, currentParams.loopEnd, normPos); break;
+                            case 2: currentParams.loopEnd = juce::jlimit (currentParams.loopStart, 1.0, normPos); break;
+                            case 3: currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0, normPos); break;
+                            default: break;
+                        }
+                        break;
+                    case InstrumentParams::PlayMode::Granular:
+                        switch (playbackColumn)
+                        {
+                            case 0: currentParams.startPos = juce::jlimit (0.0, currentParams.endPos, normPos); break;
+                            case 1: currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0, normPos); break;
+                            case 2: currentParams.granularPosition = juce::jlimit (0.0, 1.0, normPos); break;
+                            default: break;
+                        }
+                        break;
+                    default: break;
+                }
+                notifyParamsChanged();
+                return;
+            }
+            return;
+        }
+
+        // ── InstrumentEdit page: column-based interaction ──
         int contentWidth = getWidth() - contentLeftOffset;
         int contentX = event.x - contentLeftOffset;
         if (contentX < 0) return;
@@ -1948,34 +2342,10 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
             int col = contentX / juce::jmax (1, colW);
             col = juce::jlimit (0, numCols - 1, col);
 
-            // For playback page, the content area is waveform + mode list overlay.
-            if (displayMode == DisplayMode::InstrumentType)
-            {
-                // Check if click is in the mode list area
-                int listW = 140;
-                int listX = getWidth() - 4 - listW - 2;
-                if (event.x >= listX)
-                {
-                    setFocusedColumn (numCols - 1); // Focus play mode column
-                    // Calculate which mode item was clicked
-                    int listY = contentTop + 4 + 2;
-                    int itemIdx = (event.y - listY) / kListItemHeight;
-                    if (itemIdx >= 0 && itemIdx < 7)
-                    {
-                        currentParams.playMode = static_cast<InstrumentParams::PlayMode> (itemIdx);
-                        if (playbackColumn >= getColumnCount())
-                            playbackColumn = getColumnCount() - 1;
-                        notifyParamsChanged();
-                    }
-                    repaint();
-                }
-                return;
-            }
-
             setFocusedColumn (col);
 
             // For list columns in modulation page, handle item clicks
-            if (displayMode == DisplayMode::InstrumentEdit && editSubTab == EditSubTab::Modulation)
+            if (editSubTab == EditSubTab::Modulation)
             {
                 int contentH = contentBottom - contentTop;
                 int relY = event.y - contentTop;
@@ -2014,7 +2384,6 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                 else if (col == 3 && currentParams.modulations[static_cast<size_t> (modDestIndex)].type
                                       == InstrumentParams::Modulation::Type::LFO)
                 {
-                    // Shape list
                     int itemIdx = relY / juce::jmax (1, kListItemHeight);
                     if (itemIdx >= 0 && itemIdx < 5)
                     {
@@ -2026,7 +2395,6 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                 else if (col == 4 && currentParams.modulations[static_cast<size_t> (modDestIndex)].type
                                       == InstrumentParams::Modulation::Type::LFO)
                 {
-                    // Speed list - calculate which preset was clicked
                     int numVisible = contentH / kListItemHeight;
                     auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
                     int curSpeedIdx = 0;
@@ -2046,12 +2414,10 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                     notifyParamsChanged();
                     return;
                 }
-                // Bar columns (attack, decay, sustain, release, amount) fall through to drag
             }
 
             // For parameters page, handle filter type list clicks (col 4)
-            if (displayMode == DisplayMode::InstrumentEdit
-                && editSubTab == EditSubTab::Parameters && col == 4)
+            if (editSubTab == EditSubTab::Parameters && col == 4)
             {
                 int relY = event.y - contentTop;
                 int itemIdx = relY / juce::jmax (1, kListItemHeight);
@@ -2086,6 +2452,80 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
 
 void SampleEditorComponent::mouseDrag (const juce::MouseEvent& event)
 {
+    // ── Waveform panning ──
+    if (isPanning)
+    {
+        auto waveArea = getWaveformArea();
+        float deltaX = event.position.x - panStartX;
+        double viewWidth = panStartViewEnd - panStartViewStart;
+        double normDelta = -static_cast<double> (deltaX) / static_cast<double> (juce::jmax (1, waveArea.getWidth())) * viewWidth;
+
+        double newStart = panStartViewStart + normDelta;
+        double newEnd = panStartViewEnd + normDelta;
+
+        // Clamp to 0-1 range
+        if (newStart < 0.0) { newEnd -= newStart; newStart = 0.0; }
+        if (newEnd > 1.0)   { newStart -= (newEnd - 1.0); newEnd = 1.0; }
+        newStart = juce::jlimit (0.0, 1.0, newStart);
+        newEnd = juce::jlimit (0.0, 1.0, newEnd);
+
+        viewStart = newStart;
+        viewEnd = newEnd;
+        repaint();
+        return;
+    }
+
+    // ── Waveform marker dragging ──
+    if (isWaveformDragging && draggingMarker != MarkerType::None)
+    {
+        auto waveArea = getWaveformArea();
+        double normPos = pixelToNormPos (juce::roundToInt (event.position.x), waveArea);
+        normPos = juce::jlimit (0.0, 1.0, normPos);
+
+        switch (draggingMarker)
+        {
+            case MarkerType::Start:
+                currentParams.startPos = juce::jlimit (0.0, currentParams.endPos, normPos);
+                break;
+            case MarkerType::End:
+                currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0, normPos);
+                break;
+            case MarkerType::LoopStart:
+                currentParams.loopStart = juce::jlimit (0.0, currentParams.loopEnd, normPos);
+                break;
+            case MarkerType::LoopEnd:
+                currentParams.loopEnd = juce::jlimit (currentParams.loopStart, 1.0, normPos);
+                break;
+            case MarkerType::GranPos:
+                currentParams.granularPosition = juce::jlimit (0.0, 1.0, normPos);
+                break;
+            case MarkerType::Slice:
+                if (draggingSliceIndex >= 0 && draggingSliceIndex < static_cast<int> (currentParams.slicePoints.size()))
+                {
+                    currentParams.slicePoints[static_cast<size_t> (draggingSliceIndex)] =
+                        juce::jlimit (currentParams.startPos, currentParams.endPos, normPos);
+                    // Keep sorted
+                    std::sort (currentParams.slicePoints.begin(), currentParams.slicePoints.end());
+                    // Update index after sort
+                    for (int i = 0; i < static_cast<int> (currentParams.slicePoints.size()); ++i)
+                    {
+                        if (std::abs (currentParams.slicePoints[static_cast<size_t> (i)] - normPos) < 0.0001)
+                        {
+                            draggingSliceIndex = i;
+                            selectedSliceIndex = i;
+                            break;
+                        }
+                    }
+                }
+                break;
+            case MarkerType::None:
+                break;
+        }
+        notifyParamsChanged();
+        return;
+    }
+
+    // ── Column bar/list drag (InstrumentEdit pages) ──
     if (! isDragging) return;
 
     float deltaY = dragStartY - event.position.y;
@@ -2104,6 +2544,28 @@ void SampleEditorComponent::mouseDrag (const juce::MouseEvent& event)
 
 void SampleEditorComponent::mouseUp (const juce::MouseEvent&)
 {
+    if (isPanning)
+    {
+        isPanning = false;
+        return;
+    }
+
+    if (isWaveformDragging)
+    {
+        isWaveformDragging = false;
+        draggingMarker = MarkerType::None;
+        draggingSliceIndex = -1;
+
+        // Full commit on mouse-up
+        stopTimer();
+        paramsDirty = false;
+        if (onParamsChanged)
+            onParamsChanged (currentInstrument, currentParams);
+        lastCommittedParams = currentParams;
+        repaint();
+        return;
+    }
+
     if (isDragging)
     {
         isDragging = false;
@@ -2123,6 +2585,44 @@ void SampleEditorComponent::mouseWheelMove (const juce::MouseEvent& event, const
     float delta = wheel.deltaY;
     if (std::abs (delta) < 0.001f) return;
 
+    // ── Waveform zoom/scroll (InstrumentType page) ──
+    if (displayMode == DisplayMode::InstrumentType)
+    {
+        auto waveArea = getWaveformArea();
+        if (waveArea.contains (event.x, event.y))
+        {
+            // Cmd/Ctrl + scroll: zoom
+            if (event.mods.isCommandDown())
+            {
+                double normPos = pixelToNormPos (event.x, waveArea);
+                double zoomFactor = (delta > 0) ? 0.85 : 1.18;
+                zoomAroundPoint (zoomFactor, normPos);
+                repaint();
+                return;
+            }
+
+            // Shift + scroll: horizontal pan
+            if (event.mods.isShiftDown())
+            {
+                double viewWidth = viewEnd - viewStart;
+                double scrollAmount = -static_cast<double> (delta) * viewWidth * 0.15;
+                scrollView (scrollAmount);
+                repaint();
+                return;
+            }
+
+            // Plain scroll on waveform: also horizontal pan (natural for zoomed waveforms)
+            {
+                double viewWidth = viewEnd - viewStart;
+                double scrollAmount = -static_cast<double> (delta) * viewWidth * 0.15;
+                scrollView (scrollAmount);
+                repaint();
+                return;
+            }
+        }
+    }
+
+    // ── Column-based scroll (InstrumentEdit pages or bottom bar) ──
     // For discrete/list columns: step one item per scroll event
     if (isCurrentColumnDiscrete())
     {
@@ -2137,4 +2637,427 @@ void SampleEditorComponent::mouseWheelMove (const juce::MouseEvent& event, const
         normDelta *= 0.1;
 
     adjustCurrentValueByDelta (normDelta);
+}
+
+//==============================================================================
+// Mouse move (for hover feedback)
+//==============================================================================
+
+void SampleEditorComponent::mouseMove (const juce::MouseEvent& event)
+{
+    if (currentInstrument < 0 || displayMode != DisplayMode::InstrumentType)
+    {
+        if (hoveredMarker != MarkerType::None)
+        {
+            hoveredMarker = MarkerType::None;
+            setMouseCursor (juce::MouseCursor::NormalCursor);
+            repaint();
+        }
+        return;
+    }
+
+    auto waveArea = getWaveformArea();
+    if (waveArea.contains (event.x, event.y))
+    {
+        auto marker = hitTestMarker (event.x, waveArea);
+        if (marker != hoveredMarker)
+        {
+            hoveredMarker = marker;
+            if (marker != MarkerType::None)
+                setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
+            else
+                setMouseCursor (juce::MouseCursor::NormalCursor);
+            repaint();
+        }
+    }
+    else
+    {
+        if (hoveredMarker != MarkerType::None)
+        {
+            hoveredMarker = MarkerType::None;
+            setMouseCursor (juce::MouseCursor::NormalCursor);
+            repaint();
+        }
+    }
+}
+
+//==============================================================================
+// Waveform coordinate helpers
+//==============================================================================
+
+juce::Rectangle<int> SampleEditorComponent::getWaveformArea() const
+{
+    int contentTop = kHeaderHeight;
+    int contentBottom = getHeight() - kBottomBarHeight;
+    auto contentArea = juce::Rectangle<int> (0, contentTop, getWidth(), contentBottom - contentTop);
+    // Remove overview bar space at bottom
+    contentArea = contentArea.withTrimmedBottom (kOverviewBarHeight + 2);
+    return contentArea.reduced (4, 4);
+}
+
+double SampleEditorComponent::pixelToNormPos (int pixelX, juce::Rectangle<int> waveArea) const
+{
+    double frac = static_cast<double> (pixelX - waveArea.getX())
+                  / static_cast<double> (juce::jmax (1, waveArea.getWidth()));
+    frac = juce::jlimit (0.0, 1.0, frac);
+    // Map from view coordinates to normalized sample position
+    return viewStart + frac * (viewEnd - viewStart);
+}
+
+int SampleEditorComponent::normPosToPixel (double normPos, juce::Rectangle<int> waveArea) const
+{
+    double viewWidth = viewEnd - viewStart;
+    if (viewWidth <= 0.0) viewWidth = 1.0;
+    double frac = (normPos - viewStart) / viewWidth;
+    return waveArea.getX() + juce::roundToInt (frac * waveArea.getWidth());
+}
+
+SampleEditorComponent::MarkerType SampleEditorComponent::hitTestMarker (int pixelX, juce::Rectangle<int> waveArea) const
+{
+    constexpr int kHitRadius = 6; // pixels
+
+    auto mode = currentParams.playMode;
+
+    // Check slice markers first (they can be numerous)
+    if (mode == InstrumentParams::PlayMode::Slice || mode == InstrumentParams::PlayMode::BeatSlice)
+    {
+        for (int i = 0; i < static_cast<int> (currentParams.slicePoints.size()); ++i)
+        {
+            int px = normPosToPixel (currentParams.slicePoints[static_cast<size_t> (i)], waveArea);
+            if (std::abs (pixelX - px) <= kHitRadius)
+                return MarkerType::Slice;
+        }
+    }
+
+    // Start marker
+    {
+        int px = normPosToPixel (currentParams.startPos, waveArea);
+        if (std::abs (pixelX - px) <= kHitRadius)
+            return MarkerType::Start;
+    }
+
+    // End marker
+    {
+        int px = normPosToPixel (currentParams.endPos, waveArea);
+        if (std::abs (pixelX - px) <= kHitRadius)
+            return MarkerType::End;
+    }
+
+    // Loop markers
+    if (mode == InstrumentParams::PlayMode::ForwardLoop
+        || mode == InstrumentParams::PlayMode::BackwardLoop
+        || mode == InstrumentParams::PlayMode::PingpongLoop)
+    {
+        int lsPx = normPosToPixel (currentParams.loopStart, waveArea);
+        if (std::abs (pixelX - lsPx) <= kHitRadius)
+            return MarkerType::LoopStart;
+
+        int lePx = normPosToPixel (currentParams.loopEnd, waveArea);
+        if (std::abs (pixelX - lePx) <= kHitRadius)
+            return MarkerType::LoopEnd;
+    }
+
+    // Granular position marker
+    if (mode == InstrumentParams::PlayMode::Granular)
+    {
+        int gPx = normPosToPixel (currentParams.granularPosition, waveArea);
+        if (std::abs (pixelX - gPx) <= kHitRadius)
+            return MarkerType::GranPos;
+    }
+
+    return MarkerType::None;
+}
+
+int SampleEditorComponent::hitTestSlice (int pixelX, juce::Rectangle<int> waveArea) const
+{
+    constexpr int kHitRadius = 6;
+    int bestIdx = -1;
+    int bestDist = kHitRadius + 1;
+
+    for (int i = 0; i < static_cast<int> (currentParams.slicePoints.size()); ++i)
+    {
+        int px = normPosToPixel (currentParams.slicePoints[static_cast<size_t> (i)], waveArea);
+        int dist = std::abs (pixelX - px);
+        if (dist < bestDist)
+        {
+            bestDist = dist;
+            bestIdx = i;
+        }
+    }
+    return bestIdx;
+}
+
+//==============================================================================
+// Zoom helpers
+//==============================================================================
+
+void SampleEditorComponent::zoomAroundPoint (double zoomFactor, double normPos)
+{
+    double viewWidth = viewEnd - viewStart;
+    double newWidth = viewWidth * zoomFactor;
+
+    // Clamp minimum zoom (don't zoom in past ~0.1% of sample)
+    newWidth = juce::jlimit (0.001, 1.0, newWidth);
+
+    // Calculate where normPos sits in the current view (0-1 fraction)
+    double viewFrac = (viewWidth > 0.0) ? (normPos - viewStart) / viewWidth : 0.5;
+    viewFrac = juce::jlimit (0.0, 1.0, viewFrac);
+
+    double newStart = normPos - viewFrac * newWidth;
+    double newEnd = newStart + newWidth;
+
+    // Clamp to 0-1
+    if (newStart < 0.0) { newEnd -= newStart; newStart = 0.0; }
+    if (newEnd > 1.0)   { newStart -= (newEnd - 1.0); newEnd = 1.0; }
+    newStart = juce::jlimit (0.0, 1.0, newStart);
+    newEnd   = juce::jlimit (0.0, 1.0, newEnd);
+
+    viewStart = newStart;
+    viewEnd = newEnd;
+}
+
+void SampleEditorComponent::scrollView (double deltaNorm)
+{
+    double viewWidth = viewEnd - viewStart;
+    double newStart = viewStart + deltaNorm;
+    double newEnd = newStart + viewWidth;
+
+    if (newStart < 0.0) { newEnd -= newStart; newStart = 0.0; }
+    if (newEnd > 1.0)   { newStart -= (newEnd - 1.0); newEnd = 1.0; }
+    newStart = juce::jlimit (0.0, 1.0, newStart);
+    newEnd   = juce::jlimit (0.0, 1.0, newEnd);
+
+    viewStart = newStart;
+    viewEnd = newEnd;
+}
+
+//==============================================================================
+// Slice operations
+//==============================================================================
+
+void SampleEditorComponent::addSliceAtPosition (double normPos)
+{
+    normPos = juce::jlimit (currentParams.startPos, currentParams.endPos, normPos);
+
+    // Check for duplicate (within small tolerance)
+    for (auto sp : currentParams.slicePoints)
+    {
+        if (std::abs (sp - normPos) < 0.001)
+            return;
+    }
+
+    currentParams.slicePoints.push_back (normPos);
+    std::sort (currentParams.slicePoints.begin(), currentParams.slicePoints.end());
+
+    // Set play mode to Slice if not already a slice mode
+    if (currentParams.playMode != InstrumentParams::PlayMode::Slice
+        && currentParams.playMode != InstrumentParams::PlayMode::BeatSlice)
+    {
+        currentParams.playMode = InstrumentParams::PlayMode::Slice;
+        playbackColumn = juce::jmin (playbackColumn, getColumnCount() - 1);
+    }
+
+    // Select the newly added slice
+    for (int i = 0; i < static_cast<int> (currentParams.slicePoints.size()); ++i)
+    {
+        if (std::abs (currentParams.slicePoints[static_cast<size_t> (i)] - normPos) < 0.001)
+        {
+            selectedSliceIndex = i;
+            break;
+        }
+    }
+}
+
+void SampleEditorComponent::removeSlice (int sliceIdx)
+{
+    if (sliceIdx < 0 || sliceIdx >= static_cast<int> (currentParams.slicePoints.size()))
+        return;
+
+    currentParams.slicePoints.erase (currentParams.slicePoints.begin() + sliceIdx);
+
+    // Adjust selected index
+    int numSlices = static_cast<int> (currentParams.slicePoints.size());
+    if (numSlices == 0)
+        selectedSliceIndex = -1;
+    else if (selectedSliceIndex >= numSlices)
+        selectedSliceIndex = numSlices - 1;
+}
+
+void SampleEditorComponent::generateEqualSlices (int numSlices)
+{
+    currentParams.slicePoints.clear();
+
+    if (numSlices <= 0) return;
+
+    double range = currentParams.endPos - currentParams.startPos;
+    if (range <= 0.0) return;
+
+    // Generate numSlices - 1 internal slice points (numSlices regions between start and end)
+    // Actually, numSlices slice points creates numSlices+1 regions. For equal chop into N pieces,
+    // we need N-1 slice points.
+    // But conventionally "N slices" means N slice points creating N+1 regions, or
+    // N regions requiring N-1 points.
+    // Let's follow the convention: user specifies number of resulting pieces.
+    // So for N pieces we need N-1 internal slice points.
+    // However the bottom bar shows "Num Slices" as the count of slicePoints, so let's
+    // keep it simple: numSlices = number of slice points.
+    for (int i = 0; i < numSlices; ++i)
+    {
+        double frac = static_cast<double> (i + 1) / static_cast<double> (numSlices + 1);
+        double pos = currentParams.startPos + frac * range;
+        currentParams.slicePoints.push_back (pos);
+    }
+
+    if (numSlices > 0)
+        selectedSliceIndex = 0;
+}
+
+void SampleEditorComponent::autoSlice()
+{
+    if (! currentFile.existsAsFile()) return;
+
+    // Read the audio file
+    std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (currentFile));
+    if (reader == nullptr) return;
+
+    auto numSamples = static_cast<int> (reader->lengthInSamples);
+    if (numSamples <= 0) return;
+
+    // Read mono audio data
+    juce::AudioBuffer<float> buffer (1, numSamples);
+    reader->read (&buffer, 0, numSamples, 0, true, false);
+
+    auto* data = buffer.getReadPointer (0);
+
+    // Compute energy envelope with a short window
+    int windowSize = juce::jmax (64, static_cast<int> (reader->sampleRate * 0.005)); // ~5ms window
+    int hopSize = windowSize / 2;
+    int numFrames = (numSamples - windowSize) / hopSize;
+    if (numFrames <= 0) return;
+
+    std::vector<double> energy (static_cast<size_t> (numFrames), 0.0);
+    double maxEnergy = 0.0;
+
+    for (int f = 0; f < numFrames; ++f)
+    {
+        int offset = f * hopSize;
+        double e = 0.0;
+        for (int i = 0; i < windowSize; ++i)
+        {
+            double s = static_cast<double> (data[offset + i]);
+            e += s * s;
+        }
+        e /= static_cast<double> (windowSize);
+        energy[static_cast<size_t> (f)] = e;
+        if (e > maxEnergy) maxEnergy = e;
+    }
+
+    if (maxEnergy <= 0.0) return;
+
+    // Normalize energy
+    for (auto& e : energy)
+        e /= maxEnergy;
+
+    // Compute spectral flux (difference between consecutive frames)
+    std::vector<double> flux (energy.size(), 0.0);
+    for (size_t i = 1; i < energy.size(); ++i)
+    {
+        double diff = energy[i] - energy[i - 1];
+        flux[i] = juce::jmax (0.0, diff); // Only positive flux (onsets)
+    }
+
+    // Compute adaptive threshold
+    double meanFlux = 0.0;
+    for (auto f : flux) meanFlux += f;
+    meanFlux /= static_cast<double> (flux.size());
+
+    // Sensitivity maps: 0.0 = very sensitive (low threshold), 1.0 = less sensitive (high threshold)
+    double threshold = meanFlux * (1.0 + (1.0 - autoSliceSensitivity) * 8.0);
+
+    // Minimum distance between slices (in frames) - about 50ms
+    int minDist = juce::jmax (1, static_cast<int> (reader->sampleRate * 0.05) / hopSize);
+
+    // Find peaks above threshold
+    currentParams.slicePoints.clear();
+    int lastSliceFrame = -minDist;
+
+    for (int f = 1; f < numFrames - 1; ++f)
+    {
+        if (flux[static_cast<size_t> (f)] > threshold
+            && flux[static_cast<size_t> (f)] > flux[static_cast<size_t> (f - 1)]
+            && flux[static_cast<size_t> (f)] >= flux[static_cast<size_t> (f + 1)]
+            && (f - lastSliceFrame) >= minDist)
+        {
+            double normPos = static_cast<double> (f * hopSize) / static_cast<double> (numSamples);
+            if (normPos > currentParams.startPos && normPos < currentParams.endPos)
+            {
+                currentParams.slicePoints.push_back (normPos);
+                lastSliceFrame = f;
+            }
+        }
+    }
+
+    // Switch to Slice mode
+    if (! currentParams.slicePoints.empty())
+    {
+        if (currentParams.playMode != InstrumentParams::PlayMode::Slice
+            && currentParams.playMode != InstrumentParams::PlayMode::BeatSlice)
+        {
+            currentParams.playMode = InstrumentParams::PlayMode::Slice;
+            playbackColumn = juce::jmin (playbackColumn, getColumnCount() - 1);
+        }
+        selectedSliceIndex = 0;
+    }
+}
+
+//==============================================================================
+// Drawing: Overview bar
+//==============================================================================
+
+void SampleEditorComponent::drawOverviewBar (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    auto bg = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
+    auto gridCol = lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId);
+
+    // Background
+    g.setColour (bg.brighter (0.03f));
+    g.fillRect (area);
+
+    // Border
+    g.setColour (gridCol);
+    g.drawRect (area, 1);
+
+    double totalLen = thumbnail.getTotalLength();
+    if (totalLen <= 0.0) return;
+
+    auto inner = area.reduced (1);
+
+    // Draw full waveform thumbnail (small)
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.4f));
+    thumbnail.drawChannels (g, inner, 0.0, totalLen, 0.6f);
+
+    // Draw start/end shading
+    int startPx = inner.getX() + juce::roundToInt (currentParams.startPos * inner.getWidth());
+    int endPx   = inner.getX() + juce::roundToInt (currentParams.endPos * inner.getWidth());
+
+    g.setColour (juce::Colour (0x30000000));
+    if (startPx > inner.getX())
+        g.fillRect (inner.getX(), inner.getY(), startPx - inner.getX(), inner.getHeight());
+    if (endPx < inner.getRight())
+        g.fillRect (endPx, inner.getY(), inner.getRight() - endPx, inner.getHeight());
+
+    // Draw view rectangle (highlight showing current zoomed region)
+    int viewStartPx = inner.getX() + juce::roundToInt (viewStart * inner.getWidth());
+    int viewEndPx   = inner.getX() + juce::roundToInt (viewEnd * inner.getWidth());
+    int viewW = juce::jmax (2, viewEndPx - viewStartPx);
+
+    auto viewRect = juce::Rectangle<int> (viewStartPx, inner.getY(), viewW, inner.getHeight());
+
+    // Semi-transparent fill for view area
+    g.setColour (juce::Colour (0x20ffffff));
+    g.fillRect (viewRect);
+
+    // Border for view area
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.6f));
+    g.drawRect (viewRect, 1);
 }

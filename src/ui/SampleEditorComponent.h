@@ -43,6 +43,7 @@ public:
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
+    void mouseMove (const juce::MouseEvent& event) override;
     void mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
 
 private:
@@ -73,16 +74,43 @@ private:
     static constexpr int kBottomBarHeight = 40;
     static constexpr int kListItemHeight = 22;
     static constexpr int kSubTabWidth = 80;
+    static constexpr int kOverviewBarHeight = 20;
 
     // LFO speed presets
     static const int kLfoSpeeds[];
     static constexpr int kNumLfoSpeeds = 14;
 
-    // Drag state
+    // Drag state (for bar/list column drags)
     bool isDragging = false;
     float dragStartY = 0.0f;
     InstrumentParams dragStartParams;
     int dragStartModDestIndex = 0;
+
+    // ── Waveform zoom ──
+    double viewStart = 0.0;  // normalized 0-1 left edge of zoomed view
+    double viewEnd   = 1.0;  // normalized 0-1 right edge of zoomed view
+
+    // ── Waveform marker dragging ──
+    enum class MarkerType { None, Start, End, LoopStart, LoopEnd, GranPos, Slice };
+    MarkerType draggingMarker = MarkerType::None;
+    int draggingSliceIndex = -1;         // which slice point is being dragged
+    bool isWaveformDragging = false;     // true when dragging a marker on waveform
+    float waveformDragStartX = 0.0f;
+
+    // ── Slice selection ──
+    int selectedSliceIndex = -1;         // currently selected slice in Slice modes
+
+    // ── Hover state for cursor feedback ──
+    MarkerType hoveredMarker = MarkerType::None;
+
+    // ── Waveform panning ──
+    bool isPanning = false;
+    double panStartViewStart = 0.0;
+    double panStartViewEnd = 0.0;
+    float panStartX = 0.0f;
+
+    // ── Auto-slice sensitivity ──
+    double autoSliceSensitivity = 0.5;   // 0.0 - 1.0
 
     // Debounced apply
     bool paramsDirty = false;
@@ -116,6 +144,7 @@ private:
     void drawPlaybackPage (juce::Graphics& g, juce::Rectangle<int> area);
     void drawWaveform (juce::Graphics& g, juce::Rectangle<int> area);
     void drawWaveformMarkers (juce::Graphics& g, juce::Rectangle<int> area);
+    void drawOverviewBar (juce::Graphics& g, juce::Rectangle<int> area);
     void drawSubTabBar (juce::Graphics& g, juce::Rectangle<int> area);
 
     // Bottom bar content
@@ -124,6 +153,23 @@ private:
 
     // Note preview
     int keyToNote (const juce::KeyPress& key) const;
+
+    // ── Waveform coordinate helpers ──
+    juce::Rectangle<int> getWaveformArea() const;
+    double pixelToNormPos (int pixelX, juce::Rectangle<int> waveArea) const;
+    int normPosToPixel (double normPos, juce::Rectangle<int> waveArea) const;
+    MarkerType hitTestMarker (int pixelX, juce::Rectangle<int> waveArea) const;
+    int hitTestSlice (int pixelX, juce::Rectangle<int> waveArea) const;
+
+    // ── Zoom helpers ──
+    void zoomAroundPoint (double zoomFactor, double normPos);
+    void scrollView (double deltaNorm);
+
+    // ── Slice operations ──
+    void addSliceAtPosition (double normPos);
+    void removeSlice (int sliceIdx);
+    void generateEqualSlices (int numSlices);
+    void autoSlice();
 
     // String helpers
     juce::String getPlayModeName (InstrumentParams::PlayMode mode) const;
