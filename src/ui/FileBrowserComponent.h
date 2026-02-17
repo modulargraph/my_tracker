@@ -22,6 +22,21 @@ public:
     // Callback: instrument index + file to load
     std::function<void (int instrument, const juce::File& file)> onLoadSample;
 
+    // Callbacks for audio file preview
+    std::function<void (const juce::File& file)> onPreviewFile;
+    std::function<void (int instrumentIndex)> onPreviewInstrument;
+    std::function<void()> onStopPreview;
+
+    // Callback when the browsed directory changes
+    std::function<void (const juce::File& dir)> onDirectoryChanged;
+
+    // Get the current directory path
+    juce::File getCurrentDirectory() const { return currentDirectory; }
+
+    // Auto-advance to next empty instrument slot after loading
+    bool autoAdvance = true;
+    void advanceToNextEmptySlot();
+
 private:
     TrackerLookAndFeel& lookAndFeel;
 
@@ -77,6 +92,8 @@ private:
 
     void ensureFileSelectionVisible();
     void ensureInstrumentSelectionVisible();
+    void triggerPreviewForSelection();
+    void triggerInstrumentPreview();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SampleBrowserComponent)
 };

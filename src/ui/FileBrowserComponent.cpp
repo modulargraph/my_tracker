@@ -120,6 +120,9 @@ void SampleBrowserComponent::setCurrentDirectory (const juce::File& dir)
     {
         currentDirectory = dir;
         refreshFileList();
+
+        if (onDirectoryChanged)
+            onDirectoryChanged (dir);
     }
 }
 
@@ -396,7 +399,7 @@ void SampleBrowserComponent::paintInfoBar (juce::Graphics& g, juce::Rectangle<in
     g.drawText (info, bounds.getX() + 8, bounds.getY(), bounds.getWidth() / 2, bounds.getHeight(),
                 juce::Justification::centredLeft);
 
-    // Right: hint
+    // Center: hint
     juce::String hint;
     if (activePane == Pane::Files)
     {
@@ -414,9 +417,28 @@ void SampleBrowserComponent::paintInfoBar (juce::Graphics& g, juce::Rectangle<in
         hint = juce::String::formatted ("Slot %02X selected", instrumentSelection);
     }
 
+    int checkboxWidth = 120;
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
-    g.drawText (hint, bounds.getX(), bounds.getY(), bounds.getWidth() - 8, bounds.getHeight(),
+    g.drawText (hint, bounds.getX(), bounds.getY(),
+                bounds.getWidth() - checkboxWidth - 12, bounds.getHeight(),
                 juce::Justification::centredRight);
+
+    // Right: auto-advance checkbox
+    int cbX = bounds.getRight() - checkboxWidth - 4;
+    int cbY = bounds.getY() + (bounds.getHeight() - 12) / 2;
+
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawRect (cbX, cbY, 12, 12, 1);
+
+    if (autoAdvance)
+    {
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId));
+        g.fillRect (cbX + 2, cbY + 2, 8, 8);
+    }
+
+    g.setColour (textCol.withAlpha (0.6f));
+    g.drawText ("Auto-advance", cbX + 16, bounds.getY(), checkboxWidth - 16, bounds.getHeight(),
+                juce::Justification::centredLeft);
 }
 
 //==============================================================================
@@ -430,13 +452,21 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
     // Left/Right: switch pane
     if (keyCode == juce::KeyPress::leftKey)
     {
-        activePane = Pane::Files;
+        if (activePane != Pane::Files)
+        {
+            activePane = Pane::Files;
+            triggerPreviewForSelection();
+        }
         repaint();
         return true;
     }
     if (keyCode == juce::KeyPress::rightKey)
     {
-        activePane = Pane::Instruments;
+        if (activePane != Pane::Instruments)
+        {
+            activePane = Pane::Instruments;
+            triggerInstrumentPreview();
+        }
         repaint();
         return true;
     }
@@ -448,11 +478,13 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
         {
             fileSelection = juce::jmax (0, fileSelection - 1);
             ensureFileSelectionVisible();
+            triggerPreviewForSelection();
         }
         else
         {
             instrumentSelection = juce::jmax (0, instrumentSelection - 1);
             ensureInstrumentSelectionVisible();
+            triggerInstrumentPreview();
         }
         repaint();
         return true;
@@ -463,11 +495,13 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
         {
             fileSelection = juce::jmin (static_cast<int> (fileEntries.size()) - 1, fileSelection + 1);
             ensureFileSelectionVisible();
+            triggerPreviewForSelection();
         }
         else
         {
             instrumentSelection = juce::jmin (255, instrumentSelection + 1);
             ensureInstrumentSelectionVisible();
+            triggerInstrumentPreview();
         }
         repaint();
         return true;
@@ -480,11 +514,13 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
         {
             fileSelection = juce::jmax (0, fileSelection - getFileVisibleRows());
             ensureFileSelectionVisible();
+            triggerPreviewForSelection();
         }
         else
         {
             instrumentSelection = juce::jmax (0, instrumentSelection - getInstrumentVisibleRows());
             ensureInstrumentSelectionVisible();
+            triggerInstrumentPreview();
         }
         repaint();
         return true;
@@ -496,11 +532,13 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
             fileSelection = juce::jmin (static_cast<int> (fileEntries.size()) - 1,
                                         fileSelection + getFileVisibleRows());
             ensureFileSelectionVisible();
+            triggerPreviewForSelection();
         }
         else
         {
             instrumentSelection = juce::jmin (255, instrumentSelection + getInstrumentVisibleRows());
             ensureInstrumentSelectionVisible();
+            triggerInstrumentPreview();
         }
         repaint();
         return true;
@@ -510,13 +548,19 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
     if (keyCode == juce::KeyPress::returnKey)
     {
         if (activePane == Pane::Files)
+        {
+            if (onStopPreview)
+                onStopPreview();
             loadSelectedFile();
+        }
         return true;
     }
 
     // Backspace: parent directory
     if (keyCode == juce::KeyPress::backspaceKey)
     {
+        if (onStopPreview)
+            onStopPreview();
         if (! currentDirectory.isRoot())
             navigateInto (currentDirectory.getParentDirectory());
         return true;
@@ -531,6 +575,21 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
 
 void SampleBrowserComponent::mouseDown (const juce::MouseEvent& event)
 {
+    // Check auto-advance checkbox hit
+    auto infoBounds = getInfoBarBounds();
+    if (infoBounds.contains (event.getPosition()))
+    {
+        int checkboxWidth = 120;
+        int cbX = infoBounds.getRight() - checkboxWidth - 4;
+        int cbRight = infoBounds.getRight();
+        if (event.x >= cbX && event.x <= cbRight)
+        {
+            autoAdvance = ! autoAdvance;
+            repaint();
+            return;
+        }
+    }
+
     auto fileBounds = getFilePaneBounds();
     auto instBounds = getInstrumentPaneBounds();
 
@@ -542,6 +601,7 @@ void SampleBrowserComponent::mouseDown (const juce::MouseEvent& event)
             && event.y > fileBounds.getY() + kHeaderHeight)
         {
             fileSelection = row;
+            triggerPreviewForSelection();
         }
     }
     else if (instBounds.contains (event.getPosition()))
@@ -551,6 +611,7 @@ void SampleBrowserComponent::mouseDown (const juce::MouseEvent& event)
         if (row >= 0 && row < 256 && event.y > instBounds.getY() + kHeaderHeight)
         {
             instrumentSelection = row;
+            triggerInstrumentPreview();
         }
     }
 
@@ -610,4 +671,62 @@ void SampleBrowserComponent::ensureInstrumentSelectionVisible()
         instrumentScrollOffset = instrumentSelection;
     else if (instrumentSelection >= instrumentScrollOffset + visibleRows)
         instrumentScrollOffset = instrumentSelection - visibleRows + 1;
+}
+
+void SampleBrowserComponent::triggerPreviewForSelection()
+{
+    if (activePane != Pane::Files)
+        return;
+
+    if (fileSelection >= 0 && fileSelection < static_cast<int> (fileEntries.size()))
+    {
+        auto& entry = fileEntries[static_cast<size_t> (fileSelection)];
+        if (! entry.isDirectory && onPreviewFile)
+            onPreviewFile (entry.file);
+        else if (entry.isDirectory && onStopPreview)
+            onStopPreview();
+    }
+}
+
+void SampleBrowserComponent::triggerInstrumentPreview()
+{
+    if (activePane != Pane::Instruments)
+        return;
+
+    if (instrumentSelection >= 0 && instrumentSelection < 256
+        && instrumentSlots[static_cast<size_t> (instrumentSelection)].hasData
+        && onPreviewInstrument)
+    {
+        onPreviewInstrument (instrumentSelection);
+    }
+}
+
+void SampleBrowserComponent::advanceToNextEmptySlot()
+{
+    if (! autoAdvance)
+        return;
+
+    // Search forward from current selection for the next empty slot
+    for (int i = instrumentSelection + 1; i < 256; ++i)
+    {
+        if (! instrumentSlots[static_cast<size_t> (i)].hasData)
+        {
+            instrumentSelection = i;
+            ensureInstrumentSelectionVisible();
+            repaint();
+            return;
+        }
+    }
+
+    // Wrap around from the beginning
+    for (int i = 0; i < instrumentSelection; ++i)
+    {
+        if (! instrumentSlots[static_cast<size_t> (i)].hasData)
+        {
+            instrumentSelection = i;
+            ensureInstrumentSelectionVisible();
+            repaint();
+            return;
+        }
+    }
 }

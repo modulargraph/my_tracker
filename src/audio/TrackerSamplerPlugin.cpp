@@ -526,7 +526,11 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
         }
 
-        triggerNote (voice, pNote, pVel, *bank, params);
+        // Preview notes always play as OneShot (no looping)
+        InstrumentParams previewParams = params;
+        previewParams.playMode = InstrumentParams::PlayMode::OneShot;
+        triggerNote (voice, pNote, pVel, *bank, previewParams);
+        voiceTriggeredByPreview = true;
     }
 
     if (previewStop.exchange (false))
@@ -585,6 +589,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
                 triggerNote (voice, m.getNoteNumber(),
                              m.getVelocity() / 127.0f, *bank, params);
+                voiceTriggeredByPreview = false;
             }
             else if (m.isNoteOff())
             {
@@ -658,5 +663,14 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     }
 
     // --- Render main voice ---
-    renderVoice (voice, buffer, startSample, numSamples, *bank, params);
+    if (voiceTriggeredByPreview)
+    {
+        InstrumentParams previewParams = params;
+        previewParams.playMode = InstrumentParams::PlayMode::OneShot;
+        renderVoice (voice, buffer, startSample, numSamples, *bank, previewParams);
+    }
+    else
+    {
+        renderVoice (voice, buffer, startSample, numSamples, *bank, params);
+    }
 }

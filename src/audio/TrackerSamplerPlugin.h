@@ -122,6 +122,7 @@ private:
     // Audio thread state
     double outputSampleRate = 44100.0;
     juce::AudioBuffer<float> scratchBuffer;
+    bool voiceTriggeredByPreview = false;
 
     // Rendering
     void triggerNote (Voice& v, int note, float vel,

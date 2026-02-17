@@ -5,7 +5,8 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
                                             const std::map<int, juce::File>& loadedSamples,
                                             const std::map<int, InstrumentParams>& instrumentParams,
                                             const Arrangement& arrangement,
-                                            const TrackLayout& trackLayout)
+                                            const TrackLayout& trackLayout,
+                                            const juce::String& browserDir)
 {
     juce::ValueTree root ("TrackerAdjustProject");
     root.setProperty ("version", 2, nullptr);
@@ -15,6 +16,8 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
     settings.setProperty ("bpm", bpm, nullptr);
     settings.setProperty ("rowsPerBeat", rowsPerBeat, nullptr);
     settings.setProperty ("currentPattern", patternData.getCurrentPatternIndex(), nullptr);
+    if (browserDir.isNotEmpty())
+        settings.setProperty ("browserDir", browserDir, nullptr);
     root.addChild (settings, -1, nullptr);
 
     // Samples
@@ -99,6 +102,8 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
             modTree.setProperty ("decayS", mod.decayS, nullptr);
             modTree.setProperty ("sustain", mod.sustain, nullptr);
             modTree.setProperty ("releaseS", mod.releaseS, nullptr);
+            if (mod.modMode != InstrumentParams::Modulation::ModMode::PerNote)
+                modTree.setProperty ("modMode", static_cast<int> (mod.modMode), nullptr);
             paramTree.addChild (modTree, -1, nullptr);
         }
 
@@ -210,7 +215,8 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                                               std::map<int, juce::File>& loadedSamples,
                                               std::map<int, InstrumentParams>& instrumentParams,
                                               Arrangement& arrangement,
-                                              TrackLayout& trackLayout)
+                                              TrackLayout& trackLayout,
+                                              juce::String* browserDir)
 {
     auto xml = juce::XmlDocument::parse (file);
     if (xml == nullptr)
@@ -228,6 +234,9 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
     {
         bpm = settings.getProperty ("bpm", 120.0);
         rowsPerBeat = settings.getProperty ("rowsPerBeat", 4);
+
+        if (browserDir != nullptr)
+            *browserDir = settings.getProperty ("browserDir", "").toString();
     }
 
     // Samples
@@ -331,6 +340,8 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                     mod.decayS   = modTree.getProperty ("decayS", 0.030);
                     mod.sustain  = modTree.getProperty ("sustain", 100);
                     mod.releaseS = modTree.getProperty ("releaseS", 0.050);
+                    mod.modMode  = static_cast<InstrumentParams::Modulation::ModMode> (
+                        static_cast<int> (modTree.getProperty ("modMode", 0)));
                 }
             }
             else
@@ -546,4 +557,50 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
             pattern.setCell (row, track, cell);
         }
     }
+}
+
+//==============================================================================
+// Global browser directory persistence
+//==============================================================================
+
+static juce::File getGlobalPrefsFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+               .getChildFile ("TrackerAdjust")
+               .getChildFile ("prefs.xml");
+}
+
+void ProjectSerializer::saveGlobalBrowserDir (const juce::String& dir)
+{
+    auto prefsFile = getGlobalPrefsFile();
+    prefsFile.getParentDirectory().createDirectory();
+
+    juce::ValueTree root ("TrackerAdjustPrefs");
+
+    // Load existing prefs if any
+    if (prefsFile.existsAsFile())
+    {
+        auto xml = juce::XmlDocument::parse (prefsFile);
+        if (xml != nullptr)
+            root = juce::ValueTree::fromXml (*xml);
+    }
+
+    root.setProperty ("browserDir", dir, nullptr);
+
+    if (auto xml = root.createXml())
+        xml->writeTo (prefsFile);
+}
+
+juce::String ProjectSerializer::loadGlobalBrowserDir()
+{
+    auto prefsFile = getGlobalPrefsFile();
+    if (! prefsFile.existsAsFile())
+        return {};
+
+    auto xml = juce::XmlDocument::parse (prefsFile);
+    if (xml == nullptr)
+        return {};
+
+    auto root = juce::ValueTree::fromXml (*xml);
+    return root.getProperty ("browserDir", "").toString();
 }

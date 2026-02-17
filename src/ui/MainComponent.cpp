@@ -264,40 +264,55 @@ MainComponent::MainComponent()
     };
     sampleEditor->onPreviewRequested = [this] (int inst, int note)
     {
-        // Ensure the instrument's home track has this instrument loaded for preview
-        if (inst >= 0 && inst < kNumTracks && trackerEngine.getTrackInstrument (inst) != inst)
-        {
-            auto sampleFile = trackerEngine.getSampler().getSampleFile (inst);
-            if (sampleFile.existsAsFile())
-            {
-                trackerEngine.loadSampleForTrack (inst, sampleFile);
-                auto params = trackerEngine.getSampler().getParams (inst);
-                auto* track = trackerEngine.getTrack (inst);
-                if (track != nullptr)
-                    trackerEngine.getSampler().applyParams (*track, inst);
-            }
-        }
-        trackerEngine.previewNote (inst, note);
+        // Preview on track 0 (or any available track) with the requested instrument
+        trackerEngine.previewNote (trackerGrid->getCursorTrack(), inst, note);
     };
 
     // Create file browser (hidden by default)
     fileBrowser = std::make_unique<SampleBrowserComponent> (trackerLookAndFeel);
     addChildComponent (*fileBrowser);
+
+    // Restore last browser directory from global prefs
+    {
+        auto savedDir = ProjectSerializer::loadGlobalBrowserDir();
+        if (savedDir.isNotEmpty())
+        {
+            juce::File dir (savedDir);
+            if (dir.isDirectory())
+                fileBrowser->setCurrentDirectory (dir);
+        }
+    }
+
+    fileBrowser->onDirectoryChanged = [] (const juce::File& dir)
+    {
+        ProjectSerializer::saveGlobalBrowserDir (dir.getFullPathName());
+    };
     fileBrowser->onLoadSample = [this] (int instrument, const juce::File& file)
     {
-        auto error = trackerEngine.loadSampleForTrack (instrument, file);
+        auto error = trackerEngine.loadSampleForInstrument (instrument, file);
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Load Error", error);
         else
         {
-            if (instrument < kNumTracks)
-                trackerGrid->trackHasSample[static_cast<size_t> (instrument)] = true;
             trackerGrid->repaint();
             updateToolbar();
             updateInstrumentPanel();
             fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
+            fileBrowser->advanceToNextEmptySlot();
             markDirty();
         }
+    };
+    fileBrowser->onPreviewFile = [this] (const juce::File& file)
+    {
+        trackerEngine.previewAudioFile (file);
+    };
+    fileBrowser->onPreviewInstrument = [this] (int instrumentIndex)
+    {
+        trackerEngine.previewInstrument (instrumentIndex);
+    };
+    fileBrowser->onStopPreview = [this]()
+    {
+        trackerEngine.stopPreview();
     };
 
     // Create the grid
@@ -305,9 +320,9 @@ MainComponent::MainComponent()
     addAndMakeVisible (*trackerGrid);
 
     // Note preview callback
-    trackerGrid->onNoteEntered = [this] (int note, int /*instrument*/)
+    trackerGrid->onNoteEntered = [this] (int note, int instrument)
     {
-        trackerEngine.previewNote (trackerGrid->getCursorTrack(), note);
+        trackerEngine.previewNote (trackerGrid->getCursorTrack(), instrument, note);
         markDirty();
     };
 
@@ -357,14 +372,14 @@ MainComponent::MainComponent()
     };
 
     // File drop on track
-    trackerGrid->onFileDroppedOnTrack = [this] (int track, const juce::File& file)
+    trackerGrid->onFileDroppedOnTrack = [this] (int /*track*/, const juce::File& file)
     {
-        auto error = trackerEngine.loadSampleForTrack (track, file);
+        int inst = trackerGrid->getCurrentInstrument();
+        auto error = trackerEngine.loadSampleForInstrument (inst, file);
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Load Error", error);
         else
         {
-            trackerGrid->trackHasSample[static_cast<size_t> (track)] = true;
             trackerGrid->repaint();
             updateToolbar();
             updateInstrumentPanel();
@@ -1098,8 +1113,8 @@ void MainComponent::updateToolbar()
     toolbar->setPlayState (trackerEngine.isPlaying());
     toolbar->setPlaybackMode (songMode);
 
-    // Show sample name for current track
-    auto sampleFile = trackerEngine.getSampler().getSampleFile (trackerGrid->getCursorTrack());
+    // Show sample name for current instrument
+    auto sampleFile = trackerEngine.getSampler().getSampleFile (trackerGrid->getCurrentInstrument());
     toolbar->setSampleName (sampleFile.existsAsFile() ? sampleFile.getFileNameWithoutExtension() : "");
 }
 
@@ -1116,14 +1131,13 @@ void MainComponent::loadSampleForCurrentTrack()
                               auto file = fc.getResult();
                               if (file.existsAsFile())
                               {
-                                  int trackIdx = trackerGrid->getCursorTrack();
-                                  auto error = trackerEngine.loadSampleForTrack (trackIdx, file);
+                                  int inst = trackerGrid->getCurrentInstrument();
+                                  auto error = trackerEngine.loadSampleForInstrument (inst, file);
                                   if (error.isNotEmpty())
                                       juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                                               "Load Error", error);
                                   else
                                   {
-                                      trackerGrid->trackHasSample[static_cast<size_t> (trackIdx)] = true;
                                       trackerGrid->repaint();
                                       updateToolbar();
                                       updateInstrumentPanel();
@@ -1440,7 +1454,8 @@ void MainComponent::openProject()
                               std::map<int, juce::File> samples;
                               std::map<int, InstrumentParams> instParams;
 
-                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams, arrangement, trackLayout);
+                              juce::String browserDir;
+                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams, arrangement, trackLayout, &browserDir);
                               if (error.isNotEmpty())
                               {
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
@@ -1453,29 +1468,13 @@ void MainComponent::openProject()
 
                               // Reload samples
                               trackerEngine.getSampler().clearLoadedSamples();
-                              for (int i = 0; i < kNumTracks; ++i)
-                                  trackerGrid->trackHasSample[static_cast<size_t> (i)] = false;
 
                               for (auto& [index, sampleFile] : samples)
-                              {
-                                  if (index < kNumTracks)
-                                  {
-                                      trackerEngine.loadSampleForTrack (index, sampleFile);
-                                      trackerGrid->trackHasSample[static_cast<size_t> (index)] = true;
-                                  }
-                              }
+                                  trackerEngine.loadSampleForInstrument (index, sampleFile);
 
-                              // Restore instrument params and apply processing
+                              // Restore instrument params
                               for (auto& [index, params] : instParams)
-                              {
                                   trackerEngine.getSampler().setParams (index, params);
-                                  if (! params.isDefault())
-                                  {
-                                      auto* track = trackerEngine.getTrack (index);
-                                      if (track != nullptr)
-                                          trackerEngine.getSampler().applyParams (*track, index);
-                                  }
-                              }
 
                               // Invalidate track instrument cache so next sync re-loads correctly
                               trackerEngine.invalidateTrackInstruments();
@@ -1492,6 +1491,15 @@ void MainComponent::openProject()
                               updateToolbar();
                               updateInstrumentPanel();
                               fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
+
+                              // Restore browser directory from project
+                              if (browserDir.isNotEmpty())
+                              {
+                                  juce::File dir (browserDir);
+                                  if (dir.isDirectory())
+                                      fileBrowser->setCurrentDirectory (dir);
+                              }
+
                               trackerGrid->repaint();
                           });
 }
@@ -1506,7 +1514,8 @@ void MainComponent::saveProject()
                                                      trackerEngine.getSampler().getLoadedSamples(),
                                                      trackerEngine.getSampler().getAllParams(),
                                                      arrangement,
-                                                     trackLayout);
+                                                     trackLayout,
+                                                     fileBrowser->getCurrentDirectory().getFullPathName());
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Save Error", error);
         else
@@ -1542,7 +1551,8 @@ void MainComponent::saveProjectAs()
                                                                           trackerEngine.getSampler().getLoadedSamples(),
                                                                           trackerEngine.getSampler().getAllParams(),
                                                                           arrangement,
-                                                                          trackLayout);
+                                                                          trackLayout,
+                                                                          fileBrowser->getCurrentDirectory().getFullPathName());
                               if (error.isNotEmpty())
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                                           "Save Error", error);
@@ -1856,14 +1866,12 @@ void MainComponent::loadSampleForInstrument (int instrument)
                               auto file = fc.getResult();
                               if (file.existsAsFile())
                               {
-                                  auto error = trackerEngine.loadSampleForTrack (instrument, file);
+                                  auto error = trackerEngine.loadSampleForInstrument (instrument, file);
                                   if (error.isNotEmpty())
                                       juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                                               "Load Error", error);
                                   else
                                   {
-                                      if (instrument < kNumTracks)
-                                          trackerGrid->trackHasSample[static_cast<size_t> (instrument)] = true;
                                       trackerGrid->repaint();
                                       updateToolbar();
                                       updateInstrumentPanel();
@@ -1896,6 +1904,11 @@ std::array<bool, kNumTracks> MainComponent::getReleaseModes() const
 void MainComponent::switchToTab (Tab tab)
 {
     if (activeTab == tab) return;
+
+    // Stop file preview when leaving browser tab
+    if (activeTab == Tab::Browser)
+        trackerEngine.stopPreview();
+
     activeTab = tab;
     tabBar->setActiveTab (tab);
 

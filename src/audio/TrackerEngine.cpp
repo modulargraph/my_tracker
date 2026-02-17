@@ -10,6 +10,8 @@ TrackerEngine::TrackerEngine()
 
 TrackerEngine::~TrackerEngine()
 {
+    stopTimer();
+
     if (edit != nullptr)
     {
         auto& transport = edit->getTransport();
@@ -40,8 +42,8 @@ void TrackerEngine::initialise()
     edit = te::createEmptyEdit (*engine, editFile);
     edit->playInStopEnabled = true;
 
-    // Create 16 audio tracks
-    edit->ensureNumberOfAudioTracks (kNumTracks);
+    // Create 16 audio tracks + 1 dedicated preview track
+    edit->ensureNumberOfAudioTracks (kNumTracks + 1);
 
     // Listen for transport changes
     edit->getTransport().addChangeListener (this);
@@ -86,27 +88,45 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
 
         // Build MIDI sequence from pattern data
         juce::MidiMessageSequence midiSeq;
-        bool isRelease = releaseMode[static_cast<size_t> (trackIdx)];
+        bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
         int lastPlayingNote = -1;
         int currentInst = -1;
 
         for (int row = 0; row < pattern.numRows; ++row)
         {
             const auto& cell = pattern.getCell (row, trackIdx);
+
+            // Compute row time for ALL rows (effects can exist without notes)
+            double startBeat = static_cast<double> (row) / static_cast<double> (rowsPerBeat);
+            auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
+
+            // Process effect commands (before note check — effects work independently)
+            if (cell.fx > 0)
+            {
+                if (cell.fx == 0x8) // Panning: 8xx → CC 10
+                {
+                    int ccVal = juce::jlimit (0, 127, cell.fxParam / 2);
+                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 10, ccVal),
+                                      rowTime.inSeconds() - 0.00005);
+                }
+                else if (cell.fx == 0xE) // Mod mode: Exy → CC 85
+                {
+                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 85, cell.fxParam),
+                                      rowTime.inSeconds() - 0.00005);
+                }
+            }
+
+            // Skip note-less rows for note processing
             if (cell.note < 0)
                 continue;
-
-            double startBeat = static_cast<double> (row) / static_cast<double> (rowsPerBeat);
-
-            auto noteStart = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
 
             // OFF (255) → graceful release (noteOff for last playing note)
             if (cell.note == 255)
             {
                 if (lastPlayingNote >= 0)
-                    midiSeq.addEvent (juce::MidiMessage::noteOff (1, lastPlayingNote), noteStart.inSeconds());
+                    midiSeq.addEvent (juce::MidiMessage::noteOff (1, lastPlayingNote), rowTime.inSeconds());
                 else
-                    midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), noteStart.inSeconds());
+                    midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), rowTime.inSeconds());
                 lastPlayingNote = -1;
                 continue;
             }
@@ -114,7 +134,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
             // KILL (254) → hard cut (allSoundOff, CC#120)
             if (cell.note == 254)
             {
-                midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), noteStart.inSeconds());
+                midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), rowTime.inSeconds());
                 lastPlayingNote = -1;
                 continue;
             }
@@ -124,37 +144,33 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
             {
                 currentInst = cell.instrument;
                 midiSeq.addEvent (juce::MidiMessage::programChange (1, currentInst),
-                                  noteStart.inSeconds() - 0.0001);
+                                  rowTime.inSeconds() - 0.0001);
             }
 
-            // Calculate note end time
-            double endBeat;
-            if (isRelease)
+            // Calculate note end time: sustain until next note/OFF/KILL or pattern end
+            int endRow = pattern.numRows;
+            for (int nextRow = row + 1; nextRow < pattern.numRows; ++nextRow)
             {
-                // Release mode: note sustains until next note/OFF/KILL or pattern end
-                int endRow = pattern.numRows;
-                for (int nextRow = row + 1; nextRow < pattern.numRows; ++nextRow)
+                if (pattern.getCell (nextRow, trackIdx).note >= 0)
                 {
-                    if (pattern.getCell (nextRow, trackIdx).note >= 0)
-                    {
-                        endRow = nextRow;
-                        break;
-                    }
+                    endRow = nextRow;
+                    break;
                 }
-                endBeat = static_cast<double> (endRow) / static_cast<double> (rowsPerBeat);
             }
-            else
-            {
-                // Kill mode: note lasts exactly one row
-                endBeat = startBeat + (1.0 / static_cast<double> (rowsPerBeat));
-            }
+            double endBeat = static_cast<double> (endRow) / static_cast<double> (rowsPerBeat);
 
             auto noteEnd = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (endBeat));
 
             int velocity = cell.volume >= 0 ? cell.volume : 127;
 
             midiSeq.addEvent (juce::MidiMessage::noteOn (1, cell.note, static_cast<juce::uint8> (velocity)),
-                              noteStart.inSeconds());
+                              rowTime.inSeconds());
+
+            // Kill mode: hard-cut at end (allSoundOff before noteOff)
+            // Release mode: graceful noteOff so release envelope plays
+            if (isKill)
+                midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), noteEnd.inSeconds());
+
             midiSeq.addEvent (juce::MidiMessage::noteOff (1, cell.note),
                               noteEnd.inSeconds());
 
@@ -203,7 +219,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
 
         juce::MidiMessageSequence midiSeq;
         double beatOffset = 0.0;
-        bool isRelease = releaseMode[static_cast<size_t> (trackIdx)];
+        bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
         int lastPlayingNote = -1;
         int currentInst = -1;
 
@@ -216,19 +232,38 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                 for (int row = 0; row < pattern->numRows; ++row)
                 {
                     const auto& cell = pattern->getCell (row, trackIdx);
+
+                    // Compute row time for ALL rows (effects can exist without notes)
+                    double startBeat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
+                    auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
+
+                    // Process effect commands (before note check)
+                    if (cell.fx > 0)
+                    {
+                        if (cell.fx == 0x8) // Panning: 8xx → CC 10
+                        {
+                            int ccVal = juce::jlimit (0, 127, cell.fxParam / 2);
+                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 10, ccVal),
+                                              rowTime.inSeconds() - 0.00005);
+                        }
+                        else if (cell.fx == 0xE) // Mod mode: Exy → CC 85
+                        {
+                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 85, cell.fxParam),
+                                              rowTime.inSeconds() - 0.00005);
+                        }
+                    }
+
+                    // Skip note-less rows for note processing
                     if (cell.note < 0)
                         continue;
-
-                    double startBeat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
-                    auto noteStart = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
 
                     // OFF (255) → graceful release
                     if (cell.note == 255)
                     {
                         if (lastPlayingNote >= 0)
-                            midiSeq.addEvent (juce::MidiMessage::noteOff (1, lastPlayingNote), noteStart.inSeconds());
+                            midiSeq.addEvent (juce::MidiMessage::noteOff (1, lastPlayingNote), rowTime.inSeconds());
                         else
-                            midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), noteStart.inSeconds());
+                            midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), rowTime.inSeconds());
                         lastPlayingNote = -1;
                         continue;
                     }
@@ -236,7 +271,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     // KILL (254) → hard cut
                     if (cell.note == 254)
                     {
-                        midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), noteStart.inSeconds());
+                        midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), rowTime.inSeconds());
                         lastPlayingNote = -1;
                         continue;
                     }
@@ -246,29 +281,19 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     {
                         currentInst = cell.instrument;
                         midiSeq.addEvent (juce::MidiMessage::programChange (1, currentInst),
-                                          noteStart.inSeconds() - 0.0001);
+                                          rowTime.inSeconds() - 0.0001);
                     }
 
-                    // Calculate note end time
-                    double endBeat;
-                    if (isRelease)
+                    // Calculate note end time: sustain until next note/OFF/KILL or end of repeat
+                    double repeatEndBeat = beatOffset + patternLengthBeats;
+                    double endBeat = repeatEndBeat;
+                    for (int nextRow = row + 1; nextRow < pattern->numRows; ++nextRow)
                     {
-                        // Release mode: sustain until next note/OFF/KILL in this repeat, or end of repeat
-                        double repeatEndBeat = beatOffset + patternLengthBeats;
-                        endBeat = repeatEndBeat; // default: sustain to end of this pattern repeat
-                        for (int nextRow = row + 1; nextRow < pattern->numRows; ++nextRow)
+                        if (pattern->getCell (nextRow, trackIdx).note >= 0)
                         {
-                            if (pattern->getCell (nextRow, trackIdx).note >= 0)
-                            {
-                                endBeat = beatOffset + static_cast<double> (nextRow) / static_cast<double> (rpb);
-                                break;
-                            }
+                            endBeat = beatOffset + static_cast<double> (nextRow) / static_cast<double> (rpb);
+                            break;
                         }
-                    }
-                    else
-                    {
-                        // Kill mode: note lasts exactly one row
-                        endBeat = startBeat + (1.0 / static_cast<double> (rpb));
                     }
 
                     auto noteEnd = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (endBeat));
@@ -276,7 +301,13 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     int velocity = cell.volume >= 0 ? cell.volume : 127;
 
                     midiSeq.addEvent (juce::MidiMessage::noteOn (1, cell.note, static_cast<juce::uint8> (velocity)),
-                                      noteStart.inSeconds());
+                                      rowTime.inSeconds());
+
+                    // Kill mode: hard-cut at end (allSoundOff before noteOff)
+                    // Release mode: graceful noteOff so release envelope plays
+                    if (isKill)
+                        midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), noteEnd.inSeconds());
+
                     midiSeq.addEvent (juce::MidiMessage::noteOff (1, cell.note),
                                       noteEnd.inSeconds());
 
@@ -385,16 +416,33 @@ double TrackerEngine::getBpm() const
     return edit->tempoSequence.getTempos()[0]->getBpm();
 }
 
-juce::String TrackerEngine::loadSampleForTrack (int trackIndex, const juce::File& sampleFile)
+juce::String TrackerEngine::loadSampleForInstrument (int instrumentIndex, const juce::File& sampleFile)
 {
+    auto result = sampler.loadInstrumentSample (sampleFile, instrumentIndex);
+    if (result.isEmpty())
+    {
+        // Invalidate all tracks using this instrument so they pick up the new bank
+        for (int t = 0; t < kNumTracks; ++t)
+            if (currentTrackInstrument[static_cast<size_t> (t)] == instrumentIndex)
+                currentTrackInstrument[static_cast<size_t> (t)] = -1;
+    }
+    return result;
+}
+
+void TrackerEngine::ensureTrackHasInstrument (int trackIndex, int instrumentIndex)
+{
+    if (trackIndex < 0 || trackIndex >= kNumTracks || instrumentIndex < 0)
+        return;
+
     auto* track = getTrack (trackIndex);
     if (track == nullptr)
-        return "Track not found";
+        return;
 
-    auto result = sampler.loadSample (*track, sampleFile, trackIndex);
-    if (result.isEmpty())
-        currentTrackInstrument[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, trackIndex))] = trackIndex;
-    return result;
+    if (currentTrackInstrument[static_cast<size_t> (trackIndex)] != instrumentIndex)
+    {
+        sampler.applyParams (*track, instrumentIndex);
+        currentTrackInstrument[static_cast<size_t> (trackIndex)] = instrumentIndex;
+    }
 }
 
 void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
@@ -420,20 +468,15 @@ void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
             }
         }
 
-        // If no instrument specified in pattern, default to track index
+        // If no instrument specified in pattern, skip this track
         if (firstInst < 0)
-            firstInst = t;
+            continue;
 
         // Load the first (default) instrument onto this track
         if (firstInst != currentTrackInstrument[static_cast<size_t> (t)])
         {
-            auto sampleFile = sampler.getSampleFile (firstInst);
-            if (sampleFile.existsAsFile())
-            {
-                sampler.loadSample (*tracks[t], sampleFile, firstInst);
-                sampler.applyParams (*tracks[t], firstInst);
-                currentTrackInstrument[static_cast<size_t> (t)] = firstInst;
-            }
+            sampler.applyParams (*tracks[t], firstInst);
+            currentTrackInstrument[static_cast<size_t> (t)] = firstInst;
         }
 
         // Pre-load all banks for multi-instrument support
@@ -450,6 +493,13 @@ void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
             if (auto* samplerPlugin = tracks[t]->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
                 samplerPlugin->preloadBanks (banks);
         }
+
+        // Configure effects plugin with rowsPerBeat and global mod state
+        if (auto* fxPlugin = sampler.getOrCreateEffectsPlugin (*tracks[t], firstInst))
+        {
+            fxPlugin->setRowsPerBeat (rowsPerBeat);
+            fxPlugin->setGlobalModState (sampler.getOrCreateGlobalModState (firstInst));
+        }
     }
 }
 
@@ -465,11 +515,138 @@ void TrackerEngine::invalidateTrackInstruments()
     currentTrackInstrument.fill (-1);
 }
 
-void TrackerEngine::previewNote (int trackIndex, int midiNote)
+void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNote)
 {
     auto* track = getTrack (trackIndex);
-    if (track != nullptr)
-        sampler.playNote (*track, midiNote);
+    if (track == nullptr)
+        return;
+
+    ensureTrackHasInstrument (trackIndex, instrumentIndex);
+    sampler.playNote (*track, midiNote);
+
+    // Auto-stop after preview duration
+    activePreviewTrack = trackIndex;
+    startTimer (kPreviewDurationMs);
+}
+
+void TrackerEngine::previewAudioFile (const juce::File& file)
+{
+    if (edit == nullptr)
+        return;
+
+    // Stop any current preview
+    stopPreview();
+
+    // Load the audio file into a temporary bank
+    juce::AudioFormatManager formatManager;
+    formatManager.registerBasicFormats();
+
+    std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
+    if (reader == nullptr)
+        return;
+
+    auto bank = std::make_shared<SampleBank>();
+    bank->sampleRate = reader->sampleRate;
+    bank->numChannels = static_cast<int> (reader->numChannels);
+    bank->totalSamples = static_cast<juce::int64> (reader->lengthInSamples);
+    bank->sourceFile = file;
+    bank->buffer.setSize (bank->numChannels, static_cast<int> (reader->lengthInSamples));
+    reader->read (&bank->buffer, 0, static_cast<int> (reader->lengthInSamples), 0, true, true);
+
+    // Keep bank alive
+    previewBank = bank;
+
+    // Ensure preview track has a sampler plugin
+    auto* track = getTrack (kPreviewTrack);
+    if (track == nullptr)
+        return;
+
+    auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>();
+    if (samplerPlugin == nullptr)
+    {
+        if (auto plugin = dynamic_cast<TrackerSamplerPlugin*> (
+                track->edit.getPluginCache().createNewPlugin (TrackerSamplerPlugin::xmlTypeName, {}).get()))
+        {
+            track->pluginList.insertPlugin (*plugin, 0, nullptr);
+            samplerPlugin = plugin;
+        }
+    }
+
+    if (samplerPlugin == nullptr)
+        return;
+
+    samplerPlugin->setSampleBank (bank);
+    samplerPlugin->playNote (60, 1.0f);
+
+    activePreviewTrack = kPreviewTrack;
+    startTimer (kPreviewDurationMs);
+}
+
+void TrackerEngine::previewInstrument (int instrumentIndex)
+{
+    if (edit == nullptr)
+        return;
+
+    auto bank = sampler.getSampleBank (instrumentIndex);
+    if (bank == nullptr)
+        return;
+
+    // Stop any current preview
+    stopPreview();
+
+    auto* track = getTrack (kPreviewTrack);
+    if (track == nullptr)
+        return;
+
+    auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>();
+    if (samplerPlugin == nullptr)
+    {
+        if (auto plugin = dynamic_cast<TrackerSamplerPlugin*> (
+                track->edit.getPluginCache().createNewPlugin (TrackerSamplerPlugin::xmlTypeName, {}).get()))
+        {
+            track->pluginList.insertPlugin (*plugin, 0, nullptr);
+            samplerPlugin = plugin;
+        }
+    }
+
+    if (samplerPlugin == nullptr)
+        return;
+
+    samplerPlugin->setSampleBank (bank);
+    samplerPlugin->playNote (60, 1.0f);
+
+    activePreviewTrack = kPreviewTrack;
+    startTimer (kPreviewDurationMs);
+}
+
+void TrackerEngine::stopPreview()
+{
+    stopTimer();
+
+    if (activePreviewTrack >= 0)
+    {
+        auto* track = getTrack (activePreviewTrack);
+        if (track != nullptr)
+            sampler.stopNote (*track);
+
+        activePreviewTrack = -1;
+    }
+
+    previewBank = nullptr;
+}
+
+void TrackerEngine::timerCallback()
+{
+    stopTimer();
+
+    if (activePreviewTrack >= 0)
+    {
+        auto* track = getTrack (activePreviewTrack);
+        if (track != nullptr)
+            sampler.stopNote (*track);
+
+        activePreviewTrack = -1;
+    }
 }
 
 te::AudioTrack* TrackerEngine::getTrack (int index)

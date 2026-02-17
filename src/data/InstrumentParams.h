@@ -60,7 +60,7 @@ struct InstrumentParams
         enum class LFOShape { RevSaw, Saw, Triangle, Square, Random };
         LFOShape lfoShape = LFOShape::Triangle;
         int lfoSpeed      = 24;   // step-based speed value
-        int amount        = 100;  // 0-100
+        int amount        = 0;    // 0-100 (starts at 0 for safety)
 
         // Envelope
         double attackS  = 0.020;  // seconds (0-10)
@@ -68,16 +68,21 @@ struct InstrumentParams
         int    sustain  = 100;    // 0-100
         double releaseS = 0.050;
 
+        // Modulation mode: PerNote resets per note, Global is shared across tracks
+        enum class ModMode { PerNote, Global };
+        ModMode modMode = ModMode::PerNote;
+
         bool isDefault() const
         {
             return type == Type::Off
                 && lfoShape == LFOShape::Triangle
                 && lfoSpeed == 24
-                && amount == 100
+                && amount == 0
                 && attackS == 0.020
                 && decayS == 0.030
                 && sustain == 100
-                && releaseS == 0.050;
+                && releaseS == 0.050
+                && modMode == ModMode::PerNote;
         }
     };
 

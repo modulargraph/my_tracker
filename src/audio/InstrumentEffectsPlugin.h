@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <JuceHeader.h>
 #include <tracktion_engine/tracktion_engine.h>
 #include "InstrumentParams.h"
@@ -7,6 +8,7 @@
 namespace te = tracktion;
 
 class SimpleSampler;
+struct GlobalModState;
 
 class InstrumentEffectsPlugin : public te::Plugin
 {
@@ -34,6 +36,8 @@ public:
 
     void setSamplerSource (SimpleSampler* s) { sampler = s; }
     void setInstrumentIndex (int index);
+    void setGlobalModState (GlobalModState* state) { globalModState = state; }
+    void setRowsPerBeat (int rpb) { rowsPerBeat = rpb; }
 
 private:
     SimpleSampler* sampler = nullptr;
@@ -41,6 +45,22 @@ private:
 
     // Current instrument state
     int currentInstrument = -1;
+
+    // Per-track overrides (set via effect commands, only accessed on audio thread)
+    struct TrackOverrides
+    {
+        int panningOverride = -1;  // -1 = no override, 0-127 = CC10 value (64=center)
+        std::array<int, InstrumentParams::kNumModDests> modModeOverride;  // -1 = use default
+
+        TrackOverrides() { modModeOverride.fill (-1); }
+    };
+    TrackOverrides overrides;
+
+    // Global modulation support
+    GlobalModState* globalModState = nullptr;
+    double currentTransportBeat = 0.0;
+    int rowsPerBeat = 4;
+    static std::atomic<uint64_t> blockCounter;
 
     // Parameter smoothing
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedGainL { 1.0f };
@@ -50,6 +70,7 @@ private:
     // Filter
     juce::dsp::StateVariableTPTFilter<float> svfFilter;
     bool filterInitialized = false;
+    InstrumentParams::FilterType lastFilterType = InstrumentParams::FilterType::Disabled;
 
     // LFO state per destination
     struct LFOState
@@ -82,10 +103,16 @@ private:
     void processVolumeAndPan (juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
                               const InstrumentParams& params, float volumeMod, float panMod);
 
-    // Modulation
+    // Modulation (per-note)
     float computeLFO (LFOState& state, const InstrumentParams::Modulation& mod, double bpm, int numSamples);
     float advanceEnvelope (EnvState& state, const InstrumentParams::Modulation& mod, int numSamples);
     float getModulationValue (int destIndex, const InstrumentParams& params, double bpm, int numSamples);
+
+    // Global modulation
+    float computeGlobalLFO (const InstrumentParams::Modulation& mod);
+    float readGlobalEnvelope (int destIndex, const InstrumentParams::Modulation& mod);
+    void advanceGlobalEnvelopes (const InstrumentParams& params);
+    bool isModModeGlobal (int destIndex, const InstrumentParams& params) const;
 
     void triggerEnvelopes();
     void releaseEnvelopes();

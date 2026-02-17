@@ -1,6 +1,18 @@
 #include "SimpleSampler.h"
 #include "InstrumentEffectsPlugin.h"
 
+GlobalModState* SimpleSampler::getOrCreateGlobalModState (int instrumentIndex)
+{
+    auto it = globalModStates.find (instrumentIndex);
+    if (it != globalModStates.end())
+        return it->second.get();
+
+    auto state = std::make_unique<GlobalModState>();
+    auto* ptr = state.get();
+    globalModStates[instrumentIndex] = std::move (state);
+    return ptr;
+}
+
 TrackerSamplerPlugin* SimpleSampler::getOrCreateTrackerSampler (te::AudioTrack& track)
 {
     if (auto* existing = track.pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
@@ -51,12 +63,11 @@ void SimpleSampler::setupPluginChain (te::AudioTrack& track, int instrumentIndex
 // Load sample
 //==============================================================================
 
-juce::String SimpleSampler::loadSample (te::AudioTrack& track, const juce::File& sampleFile, int instrumentIndex)
+juce::String SimpleSampler::loadInstrumentSample (const juce::File& sampleFile, int instrumentIndex)
 {
     if (! sampleFile.existsAsFile())
         return "File not found: " + sampleFile.getFullPathName();
 
-    // Read entire file into SampleBank
     juce::AudioFormatManager formatManager;
     formatManager.registerBasicFormats();
 
@@ -78,17 +89,16 @@ juce::String SimpleSampler::loadSample (te::AudioTrack& track, const juce::File&
     if (instrumentParams.find (instrumentIndex) == instrumentParams.end())
         instrumentParams[instrumentIndex] = InstrumentParams{};
 
-    auto* sampler = getOrCreateTrackerSampler (track);
-    if (sampler == nullptr)
-        return "Failed to create sampler plugin";
-
-    sampler->setSampleBank (bank);
-    sampler->setSamplerSource (this);
-    sampler->setInstrumentIndex (instrumentIndex);
-
-    setupPluginChain (track, instrumentIndex);
-
     return {};
+}
+
+juce::String SimpleSampler::loadSample (te::AudioTrack& track, const juce::File& sampleFile, int instrumentIndex)
+{
+    auto result = loadInstrumentSample (sampleFile, instrumentIndex);
+    if (result.isNotEmpty())
+        return result;
+
+    return applyParams (track, instrumentIndex);
 }
 
 juce::File SimpleSampler::getSampleFile (int instrumentIndex) const

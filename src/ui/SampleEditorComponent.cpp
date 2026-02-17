@@ -298,7 +298,7 @@ int SampleEditorComponent::getColumnCount() const
         if (editSubTab == EditSubTab::Parameters)
             return 11; // Vol, Pan, Tune, Fine, Filter, Cutoff, Rez, OD, BitDepth, Reverb, Delay
         else
-            return 7; // Modulation page
+            return 8; // Modulation page
     }
     else // InstrumentType
     {
@@ -335,17 +335,18 @@ juce::String SampleEditorComponent::getColumnName (int col) const
         {
             if (col == 0) return "Destination";
             if (col == 1) return "Type";
+            if (col == 2) return "Mode";
 
             auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
             if (mod.type == InstrumentParams::Modulation::Type::LFO)
             {
-                const char* names[] = { "", "", "Shape", "Speed", "Amount" };
-                if (col >= 2 && col < 5) return names[col];
+                const char* names[] = { "", "", "", "Shape", "Speed", "Amount" };
+                if (col >= 3 && col < 6) return names[col];
             }
             else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
             {
-                const char* names[] = { "", "", "Attack", "Decay", "Sustain", "Release", "Amount" };
-                if (col >= 2 && col < 7) return names[col];
+                const char* names[] = { "", "", "", "Attack", "Decay", "Sustain", "Release", "Amount" };
+                if (col >= 3 && col < 8) return names[col];
             }
         }
     }
@@ -418,25 +419,27 @@ juce::String SampleEditorComponent::getColumnValue (int col) const
             auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
             if (col == 0) return getModDestFullName (modDestIndex);
             if (col == 1) return getModTypeName (mod.type);
+            if (col == 2) return mod.modMode == InstrumentParams::Modulation::ModMode::Global
+                                     ? "Global" : "Per-Note";
 
             if (mod.type == InstrumentParams::Modulation::Type::LFO)
             {
                 switch (col)
                 {
-                    case 2: return getLfoShapeName (mod.lfoShape);
-                    case 3: return formatLfoSpeed (mod.lfoSpeed);
-                    case 4: return juce::String (mod.amount);
+                    case 3: return getLfoShapeName (mod.lfoShape);
+                    case 4: return formatLfoSpeed (mod.lfoSpeed);
+                    case 5: return juce::String (mod.amount);
                 }
             }
             else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
             {
                 switch (col)
                 {
-                    case 2: return formatSeconds (mod.attackS);
-                    case 3: return formatSeconds (mod.decayS);
-                    case 4: return juce::String (mod.sustain);
-                    case 5: return formatSeconds (mod.releaseS);
-                    case 6: return juce::String (mod.amount);
+                    case 3: return formatSeconds (mod.attackS);
+                    case 4: return formatSeconds (mod.decayS);
+                    case 5: return juce::String (mod.sustain);
+                    case 6: return formatSeconds (mod.releaseS);
+                    case 7: return juce::String (mod.amount);
                 }
             }
         }
@@ -880,7 +883,7 @@ void SampleEditorComponent::drawParametersPage (juce::Graphics& g, juce::Rectang
 void SampleEditorComponent::drawModulationPage (juce::Graphics& g, juce::Rectangle<int> area)
 {
     auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
-    int numCols = 7;
+    int numCols = 8;
     int colW = area.getWidth() / numCols;
     auto orangeCol = juce::Colour (0xffffaa44);
     auto gridCol = lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId);
@@ -898,6 +901,12 @@ void SampleEditorComponent::drawModulationPage (juce::Graphics& g, juce::Rectang
     drawListColumn (g, { area.getX() + colW, area.getY(), colW, area.getHeight() },
                     typeItems, typeIdx, modColumn == 1, orangeCol);
 
+    // Col 2: Mode list
+    juce::StringArray modeItems = { "Per-Note", "Global" };
+    int modeIdx = static_cast<int> (mod.modMode);
+    drawListColumn (g, { area.getX() + 2 * colW, area.getY(), colW, area.getHeight() },
+                    modeItems, modeIdx, modColumn == 2, orangeCol);
+
     // Helper to draw an empty column with just a border
     auto drawEmptyCol = [&] (int c)
     {
@@ -909,13 +918,13 @@ void SampleEditorComponent::drawModulationPage (juce::Graphics& g, juce::Rectang
 
     if (mod.type == InstrumentParams::Modulation::Type::LFO)
     {
-        // Col 2: Shape list
+        // Col 3: Shape list
         juce::StringArray shapeItems = { "Rev Saw", "Saw", "Triangle", "Square", "Random" };
         int shapeIdx = static_cast<int> (mod.lfoShape);
-        drawListColumn (g, { area.getX() + 2 * colW, area.getY(), colW, area.getHeight() },
-                        shapeItems, shapeIdx, modColumn == 2, orangeCol);
+        drawListColumn (g, { area.getX() + 3 * colW, area.getY(), colW, area.getHeight() },
+                        shapeItems, shapeIdx, modColumn == 3, orangeCol);
 
-        // Col 3: Speed list
+        // Col 4: Speed list
         juce::StringArray speedItems;
         int speedSelectedIdx = -1;
         for (int i = 0; i < kNumLfoSpeeds; ++i)
@@ -929,49 +938,49 @@ void SampleEditorComponent::drawModulationPage (juce::Graphics& g, juce::Rectang
             speedItems.add (formatLfoSpeed (mod.lfoSpeed));
             speedSelectedIdx = speedItems.size() - 1;
         }
-        drawListColumn (g, { area.getX() + 3 * colW, area.getY(), colW, area.getHeight() },
-                        speedItems, speedSelectedIdx, modColumn == 3, orangeCol);
+        drawListColumn (g, { area.getX() + 4 * colW, area.getY(), colW, area.getHeight() },
+                        speedItems, speedSelectedIdx, modColumn == 4, orangeCol);
 
-        // Col 4: Amount bar
+        // Col 5: Amount bar
         float amt01 = static_cast<float> (mod.amount) / 100.0f;
-        drawBarMeter (g, { area.getX() + 4 * colW, area.getY(), colW, area.getHeight() },
-                      amt01, modColumn == 4, orangeCol);
+        drawBarMeter (g, { area.getX() + 5 * colW, area.getY(), colW, area.getHeight() },
+                      amt01, modColumn == 5, orangeCol);
 
-        // Cols 5-6: Empty
-        for (int c = 5; c < numCols; ++c)
+        // Cols 6-7: Empty
+        for (int c = 6; c < numCols; ++c)
             drawEmptyCol (c);
     }
     else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
     {
-        // Col 2: Attack bar
+        // Col 3: Attack bar
         float atk01 = static_cast<float> (mod.attackS / 10.0);
-        drawBarMeter (g, { area.getX() + 2 * colW, area.getY(), colW, area.getHeight() },
-                      atk01, modColumn == 2, orangeCol);
-
-        // Col 3: Decay bar
-        float dec01 = static_cast<float> (mod.decayS / 10.0);
         drawBarMeter (g, { area.getX() + 3 * colW, area.getY(), colW, area.getHeight() },
-                      dec01, modColumn == 3, orangeCol);
+                      atk01, modColumn == 3, orangeCol);
 
-        // Col 4: Sustain bar
-        float sus01 = static_cast<float> (mod.sustain) / 100.0f;
+        // Col 4: Decay bar
+        float dec01 = static_cast<float> (mod.decayS / 10.0);
         drawBarMeter (g, { area.getX() + 4 * colW, area.getY(), colW, area.getHeight() },
-                      sus01, modColumn == 4, orangeCol);
+                      dec01, modColumn == 4, orangeCol);
 
-        // Col 5: Release bar
-        float rel01 = static_cast<float> (mod.releaseS / 10.0);
+        // Col 5: Sustain bar
+        float sus01 = static_cast<float> (mod.sustain) / 100.0f;
         drawBarMeter (g, { area.getX() + 5 * colW, area.getY(), colW, area.getHeight() },
-                      rel01, modColumn == 5, orangeCol);
+                      sus01, modColumn == 5, orangeCol);
 
-        // Col 6: Amount bar
+        // Col 6: Release bar
+        float rel01 = static_cast<float> (mod.releaseS / 10.0);
+        drawBarMeter (g, { area.getX() + 6 * colW, area.getY(), colW, area.getHeight() },
+                      rel01, modColumn == 6, orangeCol);
+
+        // Col 7: Amount bar
         float amt01 = static_cast<float> (mod.amount) / 100.0f;
-        int lastColW = area.getWidth() - 6 * colW;
-        drawBarMeter (g, { area.getX() + 6 * colW, area.getY(), lastColW, area.getHeight() },
-                      amt01, modColumn == 6, orangeCol);
+        int lastColW = area.getWidth() - 7 * colW;
+        drawBarMeter (g, { area.getX() + 7 * colW, area.getY(), lastColW, area.getHeight() },
+                      amt01, modColumn == 7, orangeCol);
     }
     else // Off
     {
-        for (int c = 2; c < numCols; ++c)
+        for (int c = 3; c < numCols; ++c)
             drawEmptyCol (c);
     }
 }
@@ -1133,9 +1142,20 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                 }
                 case 4: // Filter type
                 {
-                    int v = static_cast<int> (currentParams.filterType);
+                    auto oldType = currentParams.filterType;
+                    int v = static_cast<int> (oldType);
                     v = (v - direction + 4) % 4;
                     currentParams.filterType = static_cast<InstrumentParams::FilterType> (v);
+                    if (currentParams.filterType != oldType)
+                    {
+                        switch (currentParams.filterType)
+                        {
+                            case InstrumentParams::FilterType::HighPass:  currentParams.cutoff = 5;  break;
+                            case InstrumentParams::FilterType::BandPass:  currentParams.cutoff = 50; break;
+                            case InstrumentParams::FilterType::LowPass:   currentParams.cutoff = 100; break;
+                            default: break;
+                        }
+                    }
                     break;
                 }
                 case 5: // Cutoff
@@ -1192,13 +1212,24 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
 
                 case 1: // Type
                 {
+                    auto oldType = mod.type;
                     int v = static_cast<int> (mod.type);
                     v = (v - direction + 3) % 3;
                     mod.type = static_cast<InstrumentParams::Modulation::Type> (v);
+                    if (mod.type != oldType)
+                        mod.amount = 0;
                     break;
                 }
 
-                case 2: // Shape (LFO) or Attack (Envelope)
+                case 2: // Mode (Per-Note / Global)
+                {
+                    int v = static_cast<int> (mod.modMode);
+                    v = (v - direction + 2) % 2;
+                    mod.modMode = static_cast<InstrumentParams::Modulation::ModMode> (v);
+                    break;
+                }
+
+                case 3: // Shape (LFO) or Attack (Envelope)
                 {
                     if (mod.type == InstrumentParams::Modulation::Type::LFO)
                     {
@@ -1214,7 +1245,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     break;
                 }
 
-                case 3: // Speed (LFO) or Decay (Envelope)
+                case 4: // Speed (LFO) or Decay (Envelope)
                 {
                     if (mod.type == InstrumentParams::Modulation::Type::LFO)
                     {
@@ -1247,7 +1278,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     break;
                 }
 
-                case 4: // Amount (LFO) or Sustain (Envelope)
+                case 5: // Amount (LFO) or Sustain (Envelope)
                 {
                     if (mod.type == InstrumentParams::Modulation::Type::LFO)
                     {
@@ -1262,7 +1293,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     break;
                 }
 
-                case 5: // Release (Envelope only)
+                case 6: // Release (Envelope only)
                 {
                     if (mod.type == InstrumentParams::Modulation::Type::Envelope)
                     {
@@ -1272,7 +1303,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     break;
                 }
 
-                case 6: // Amount (Envelope only)
+                case 7: // Amount (Envelope only)
                 {
                     if (mod.type == InstrumentParams::Modulation::Type::Envelope)
                     {
@@ -1457,10 +1488,21 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                     break;
                 case 4: // Filter type (list - drag inverted)
                 {
-                    int v = static_cast<int> (currentParams.filterType)
+                    auto oldType = currentParams.filterType;
+                    int v = static_cast<int> (oldType)
                             - juce::roundToInt (normDelta * 4.0);
                     currentParams.filterType = static_cast<InstrumentParams::FilterType> (
                         juce::jlimit (0, 3, v));
+                    if (currentParams.filterType != oldType)
+                    {
+                        switch (currentParams.filterType)
+                        {
+                            case InstrumentParams::FilterType::HighPass:  currentParams.cutoff = 5;  break;
+                            case InstrumentParams::FilterType::BandPass:  currentParams.cutoff = 50; break;
+                            case InstrumentParams::FilterType::LowPass:   currentParams.cutoff = 100; break;
+                            default: break;
+                        }
+                    }
                     break;
                 }
                 case 5: // Cutoff 0-100
@@ -1504,13 +1546,24 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                 }
                 case 1: // Type (3 items, list)
                 {
+                    auto oldType = mod.type;
                     int v = static_cast<int> (mod.type)
                             - juce::roundToInt (normDelta * 3.0);
                     mod.type = static_cast<InstrumentParams::Modulation::Type> (
                         juce::jlimit (0, 2, v));
+                    if (mod.type != oldType)
+                        mod.amount = 0;
                     break;
                 }
-                case 2: // Shape (LFO list) or Attack (Env bar 0-10)
+                case 2: // Mode (2 items, list)
+                {
+                    int v = static_cast<int> (mod.modMode)
+                            - juce::roundToInt (normDelta * 2.0);
+                    mod.modMode = static_cast<InstrumentParams::Modulation::ModMode> (
+                        juce::jlimit (0, 1, v));
+                    break;
+                }
+                case 3: // Shape (LFO list) or Attack (Env bar 0-10)
                 {
                     if (mod.type == InstrumentParams::Modulation::Type::LFO)
                     {
@@ -1523,7 +1576,7 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                         mod.attackS = juce::jlimit (0.0, 10.0, mod.attackS + normDelta * 10.0);
                     break;
                 }
-                case 3: // Speed (LFO list) or Decay (Env bar 0-10)
+                case 4: // Speed (LFO list) or Decay (Env bar 0-10)
                 {
                     if (mod.type == InstrumentParams::Modulation::Type::LFO)
                     {
@@ -1538,7 +1591,7 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                         mod.decayS = juce::jlimit (0.0, 10.0, mod.decayS + normDelta * 10.0);
                     break;
                 }
-                case 4: // Amount (LFO 0-100) or Sustain (Env 0-100)
+                case 5: // Amount (LFO 0-100) or Sustain (Env 0-100)
                 {
                     if (mod.type == InstrumentParams::Modulation::Type::LFO)
                         mod.amount = juce::jlimit (0, 100,
@@ -1548,11 +1601,11 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                             mod.sustain + juce::roundToInt (normDelta * 100.0));
                     break;
                 }
-                case 5: // Release (Env 0-10)
+                case 6: // Release (Env 0-10)
                     if (mod.type == InstrumentParams::Modulation::Type::Envelope)
                         mod.releaseS = juce::jlimit (0.0, 10.0, mod.releaseS + normDelta * 10.0);
                     break;
-                case 6: // Amount (Env 0-100)
+                case 7: // Amount (Env 0-100)
                     if (mod.type == InstrumentParams::Modulation::Type::Envelope)
                         mod.amount = juce::jlimit (0, 100,
                             mod.amount + juce::roundToInt (normDelta * 100.0));
@@ -1689,10 +1742,10 @@ bool SampleEditorComponent::isCurrentColumnDiscrete() const
             return parametersColumn == 4; // Filter type list
 
         // Modulation
-        if (modColumn <= 1) return true; // Destination, Type are always lists
+        if (modColumn <= 2) return true; // Destination, Type, Mode are always lists
         auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
         if (mod.type == InstrumentParams::Modulation::Type::LFO)
-            return modColumn == 2 || modColumn == 3; // Shape, Speed lists
+            return modColumn == 3 || modColumn == 4; // Shape, Speed lists
         if (mod.type == InstrumentParams::Modulation::Type::Off)
             return true; // Empty columns
         return false;
@@ -1941,11 +1994,24 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                     if (itemIdx >= 0 && itemIdx < 3)
                     {
                         auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
+                        auto oldType = mod.type;
                         mod.type = static_cast<InstrumentParams::Modulation::Type> (itemIdx);
+                        if (mod.type != oldType)
+                            mod.amount = 0;
                     }
                     handledAsList = true;
                 }
-                else if (col == 2 && currentParams.modulations[static_cast<size_t> (modDestIndex)].type
+                else if (col == 2) // Mode list
+                {
+                    int itemIdx = relY / juce::jmax (1, kListItemHeight);
+                    if (itemIdx >= 0 && itemIdx < 2)
+                    {
+                        auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
+                        mod.modMode = static_cast<InstrumentParams::Modulation::ModMode> (itemIdx);
+                    }
+                    handledAsList = true;
+                }
+                else if (col == 3 && currentParams.modulations[static_cast<size_t> (modDestIndex)].type
                                       == InstrumentParams::Modulation::Type::LFO)
                 {
                     // Shape list
@@ -1957,7 +2023,7 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                     }
                     handledAsList = true;
                 }
-                else if (col == 3 && currentParams.modulations[static_cast<size_t> (modDestIndex)].type
+                else if (col == 4 && currentParams.modulations[static_cast<size_t> (modDestIndex)].type
                                       == InstrumentParams::Modulation::Type::LFO)
                 {
                     // Speed list - calculate which preset was clicked
@@ -1990,7 +2056,20 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                 int relY = event.y - contentTop;
                 int itemIdx = relY / juce::jmax (1, kListItemHeight);
                 if (itemIdx >= 0 && itemIdx < 4)
+                {
+                    auto oldType = currentParams.filterType;
                     currentParams.filterType = static_cast<InstrumentParams::FilterType> (itemIdx);
+                    if (currentParams.filterType != oldType)
+                    {
+                        switch (currentParams.filterType)
+                        {
+                            case InstrumentParams::FilterType::HighPass:  currentParams.cutoff = 5;  break;
+                            case InstrumentParams::FilterType::BandPass:  currentParams.cutoff = 50; break;
+                            case InstrumentParams::FilterType::LowPass:   currentParams.cutoff = 100; break;
+                            default: break;
+                        }
+                    }
+                }
                 notifyParamsChanged();
                 return;
             }

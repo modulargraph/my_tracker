@@ -8,7 +8,8 @@
 
 namespace te = tracktion;
 
-class TrackerEngine : private juce::ChangeListener
+class TrackerEngine : private juce::ChangeListener,
+                      private juce::Timer
 {
 public:
     TrackerEngine();
@@ -45,8 +46,11 @@ public:
     void setRowsPerBeat (int rpb) { rowsPerBeat = rpb; }
     int getRowsPerBeat() const { return rowsPerBeat; }
 
-    // Sample loading
-    juce::String loadSampleForTrack (int trackIndex, const juce::File& sampleFile);
+    // Sample loading (instrument-only, no track coupling)
+    juce::String loadSampleForInstrument (int instrumentIndex, const juce::File& sampleFile);
+
+    // Ensure a track's plugin is configured for a specific instrument
+    void ensureTrackHasInstrument (int trackIndex, int instrumentIndex);
 
     // Ensure correct instruments are loaded on each track based on pattern data
     void prepareTracksForPattern (const Pattern& pattern);
@@ -57,8 +61,17 @@ public:
     // Force re-load of instruments on next sync (call after loading a project)
     void invalidateTrackInstruments();
 
-    // Preview a note on a track
-    void previewNote (int trackIndex, int midiNote);
+    // Preview a note on a track using a specific instrument (auto-stops after ~3s)
+    void previewNote (int trackIndex, int instrumentIndex, int midiNote);
+
+    // Preview an audio file from disk (for browser, plays on dedicated preview track)
+    void previewAudioFile (const juce::File& file);
+
+    // Preview an already-loaded instrument (plays note C-4 on dedicated preview track)
+    void previewInstrument (int instrumentIndex);
+
+    // Stop any active preview (file or note)
+    void stopPreview();
 
     // Get audio track
     te::AudioTrack* getTrack (int index);
@@ -76,6 +89,13 @@ private:
     int rowsPerBeat = 4;
     std::array<int, kNumTracks> currentTrackInstrument {};
 
+    // Preview state
+    static constexpr int kPreviewTrack = kNumTracks;
+    static constexpr int kPreviewDurationMs = 3000;
+    int activePreviewTrack = -1;
+    std::shared_ptr<SampleBank> previewBank;
+
+    void timerCallback() override;
     void changeListenerCallback (juce::ChangeBroadcaster* source) override;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackerEngine)
