@@ -15,6 +15,8 @@
 #include "TrackLayout.h"
 #include "TabBarComponent.h"
 #include "FileBrowserComponent.h"
+#include "MixerComponent.h"
+#include "MixerState.h"
 
 class MainComponent : public juce::Component,
                       public juce::KeyListener,
@@ -90,6 +92,8 @@ private:
     std::unique_ptr<InstrumentPanel> instrumentPanel;
     std::unique_ptr<SampleEditorComponent> sampleEditor;
     std::unique_ptr<SampleBrowserComponent> fileBrowser;
+    std::unique_ptr<MixerComponent> mixerComponent;
+    MixerState mixerState;
     bool arrangementVisible = false;
     bool instrumentPanelVisible = true;
     bool songMode = false;

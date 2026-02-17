@@ -268,6 +268,35 @@ MainComponent::MainComponent()
         trackerEngine.previewNote (trackerGrid->getCursorTrack(), inst, note);
     };
 
+    // Create mixer component (hidden by default)
+    mixerComponent = std::make_unique<MixerComponent> (trackerLookAndFeel, mixerState, trackLayout);
+    addChildComponent (*mixerComponent);
+
+    mixerComponent->onMuteChanged = [this] (int track, bool muted)
+    {
+        auto* t = trackerEngine.getTrack (track);
+        if (t != nullptr)
+        {
+            t->setMute (muted);
+            updateMuteSoloState();
+        }
+        markDirty();
+    };
+    mixerComponent->onSoloChanged = [this] (int track, bool soloed)
+    {
+        auto* t = trackerEngine.getTrack (track);
+        if (t != nullptr)
+        {
+            t->setSolo (soloed);
+            updateMuteSoloState();
+        }
+        markDirty();
+    };
+    mixerComponent->onMixStateChanged = [this]
+    {
+        markDirty();
+    };
+
     // Create file browser (hidden by default)
     fileBrowser = std::make_unique<SampleBrowserComponent> (trackerLookAndFeel);
     addChildComponent (*fileBrowser);
@@ -435,11 +464,12 @@ MainComponent::MainComponent()
     // Playback cursor update timer
     startTimerHz (30);
 
-    // Register as key listener on the grid, sample editor, and file browser
+    // Register as key listener on the grid, sample editor, file browser, and mixer
     trackerGrid->addKeyListener (this);
     trackerGrid->addKeyListener (commandManager.getKeyMappings());
     sampleEditor->addKeyListener (this);
     fileBrowser->addKeyListener (this);
+    mixerComponent->addKeyListener (this);
 
     setSize (1280, 720);
     setWantsKeyboardFocus (true);
@@ -451,6 +481,7 @@ MainComponent::~MainComponent()
    #if JUCE_MAC
     juce::MenuBarModel::setMacMainMenu (nullptr);
    #endif
+    mixerComponent->removeKeyListener (this);
     fileBrowser->removeKeyListener (this);
     sampleEditor->removeKeyListener (this);
     trackerGrid->removeKeyListener (commandManager.getKeyMappings());
@@ -487,6 +518,7 @@ void MainComponent::resized()
     trackerGrid->setVisible (false);
     sampleEditor->setVisible (false);
     fileBrowser->setVisible (false);
+    mixerComponent->setVisible (false);
 
     switch (activeTab)
     {
@@ -539,6 +571,12 @@ void MainComponent::resized()
             sampleEditor->setVisible (true);
             break;
         }
+        case Tab::Mixer:
+        {
+            mixerComponent->setBounds (r);
+            mixerComponent->setVisible (true);
+            break;
+        }
         case Tab::Browser:
         {
             fileBrowser->setBounds (r);
@@ -555,11 +593,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     bool shift = key.getModifiers().isShiftDown();
     auto textChar = key.getTextCharacter();
 
-    // F1-F4: switch tabs (always available)
+    // F1-F5: switch tabs (always available)
     if (keyCode == juce::KeyPress::F1Key) { switchToTab (Tab::Tracker); return true; }
     if (keyCode == juce::KeyPress::F2Key) { switchToTab (Tab::InstrumentEdit); return true; }
     if (keyCode == juce::KeyPress::F3Key) { switchToTab (Tab::InstrumentType); return true; }
-    if (keyCode == juce::KeyPress::F4Key) { switchToTab (Tab::Browser); return true; }
+    if (keyCode == juce::KeyPress::F4Key) { switchToTab (Tab::Mixer); return true; }
+    if (keyCode == juce::KeyPress::F5Key) { switchToTab (Tab::Browser); return true; }
 
     // Escape in non-Tracker tabs: return to Tracker
     if (keyCode == juce::KeyPress::escapeKey && activeTab != Tab::Tracker)
@@ -718,8 +757,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     }
 
     // F-key alternatives (still work if user holds Fn)
-    if (keyCode == juce::KeyPress::F5Key)  { toggleArrangementPanel(); return true; }
-    if (keyCode == juce::KeyPress::F6Key)  { toggleSongMode(); return true; }
+    if (keyCode == juce::KeyPress::F6Key)  { toggleArrangementPanel(); return true; }
+    if (keyCode == juce::KeyPress::F7Key)  { toggleSongMode(); return true; }
 
     if (keyCode == juce::KeyPress::F9Key)
     {
@@ -1420,6 +1459,7 @@ void MainComponent::newProject()
     }
     trackerEngine.setBpm (120.0);
     trackerEngine.invalidateTrackInstruments();
+    mixerState.reset();
     undoManager.clearUndoHistory();
     currentProjectFile = juce::File();
     isDirty = false;
@@ -1626,7 +1666,8 @@ void MainComponent::showHelpOverlay()
                     "F1                Tracker tab",
                     "F2                Inst Edit tab",
                     "F3                Inst Type tab",
-                    "F4                Browser tab",
+                    "F4                Mixer tab",
+                    "F5                Browser tab",
                     "Escape            Return to Tracker",
                     "` (in edit tabs)  Params / Mod",
                     "Note keys         Preview sample" }},
@@ -1927,6 +1968,20 @@ void MainComponent::switchToTab (Tab tab)
         sampleEditor->setOctave (trackerGrid->getOctave());
     }
 
+    // Sync mute/solo state when switching to mixer
+    if (tab == Tab::Mixer)
+    {
+        for (int i = 0; i < kNumTracks; ++i)
+        {
+            auto* t = trackerEngine.getTrack (i);
+            if (t != nullptr)
+            {
+                mixerComponent->setTrackMuteState (i, t->isMuted (false));
+                mixerComponent->setTrackSoloState (i, t->isSolo (false));
+            }
+        }
+    }
+
     resized();
 
     // Focus the right component
@@ -1938,6 +1993,9 @@ void MainComponent::switchToTab (Tab tab)
         case Tab::InstrumentEdit:
         case Tab::InstrumentType:
             sampleEditor->grabKeyboardFocus();
+            break;
+        case Tab::Mixer:
+            mixerComponent->grabKeyboardFocus();
             break;
         case Tab::Browser:
             fileBrowser->grabKeyboardFocus();
@@ -1952,9 +2010,15 @@ void MainComponent::updateMuteSoloState()
         auto* t = trackerEngine.getTrack (i);
         if (t != nullptr)
         {
-            trackerGrid->trackMuted[static_cast<size_t> (i)] = t->isMuted (false);
-            trackerGrid->trackSoloed[static_cast<size_t> (i)] = t->isSolo (false);
+            bool muted = t->isMuted (false);
+            bool soloed = t->isSolo (false);
+            trackerGrid->trackMuted[static_cast<size_t> (i)] = muted;
+            trackerGrid->trackSoloed[static_cast<size_t> (i)] = soloed;
+            mixerComponent->setTrackMuteState (i, muted);
+            mixerComponent->setTrackSoloState (i, soloed);
         }
     }
     trackerGrid->repaint();
+    if (activeTab == Tab::Mixer)
+        mixerComponent->repaint();
 }

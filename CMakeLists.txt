@@ -45,7 +45,8 @@ target_sources(TrackerAdjust PRIVATE
     src/ui/InstrumentPanel.cpp
     src/ui/SampleEditorComponent.cpp
     src/ui/TabBarComponent.cpp
-    src/ui/FileBrowserComponent.cpp)
+    src/ui/FileBrowserComponent.cpp
+    src/ui/MixerComponent.cpp)
 
 target_include_directories(TrackerAdjust PRIVATE src src/data src/audio src/ui)
 
