@@ -2,6 +2,7 @@
 #include "TrackerEngine.h"
 #include "InstrumentEffectsPlugin.h"
 #include "TrackerSamplerPlugin.h"
+#include "MetronomePlugin.h"
 
 TrackerEngine::TrackerEngine()
 {
@@ -32,6 +33,7 @@ void TrackerEngine::initialise()
     // Register custom plugin types
     engine->getPluginManager().createBuiltInType<InstrumentEffectsPlugin>();
     engine->getPluginManager().createBuiltInType<TrackerSamplerPlugin>();
+    engine->getPluginManager().createBuiltInType<MetronomePlugin>();
 
     // Create an edit
     auto editFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
@@ -42,8 +44,18 @@ void TrackerEngine::initialise()
     edit = te::createEmptyEdit (*engine, editFile);
     edit->playInStopEnabled = true;
 
-    // Create 16 audio tracks + 1 dedicated preview track
-    edit->ensureNumberOfAudioTracks (kNumTracks + 1);
+    // Create 16 audio tracks + 1 preview track + 1 metronome track
+    edit->ensureNumberOfAudioTracks (kNumTracks + 2);
+
+    // Set up the metronome track with MetronomePlugin
+    if (auto* metroTrack = getTrack (kMetronomeTrack))
+    {
+        if (auto plugin = dynamic_cast<MetronomePlugin*> (
+                edit->getPluginCache().createNewPlugin (MetronomePlugin::xmlTypeName, {}).get()))
+        {
+            metroTrack->pluginList.insertPlugin (*plugin, 0, nullptr);
+        }
+    }
 
     // Listen for transport changes
     edit->getTransport().addChangeListener (this);
@@ -659,6 +671,52 @@ te::AudioTrack* TrackerEngine::getTrack (int index)
         return tracks[index];
 
     return nullptr;
+}
+
+void TrackerEngine::setMetronomeEnabled (bool enabled)
+{
+    if (auto* track = getTrack (kMetronomeTrack))
+    {
+        if (auto* metro = track->pluginList.findFirstPluginOfType<MetronomePlugin>())
+            metro->setEnabled (enabled);
+    }
+}
+
+bool TrackerEngine::isMetronomeEnabled() const
+{
+    if (edit == nullptr)
+        return false;
+
+    auto tracks = te::getAudioTracks (*edit);
+    if (kMetronomeTrack < tracks.size())
+    {
+        if (auto* metro = tracks[kMetronomeTrack]->pluginList.findFirstPluginOfType<MetronomePlugin>())
+            return metro->isEnabled();
+    }
+    return false;
+}
+
+void TrackerEngine::setMetronomeVolume (float gainLinear)
+{
+    if (auto* track = getTrack (kMetronomeTrack))
+    {
+        if (auto* metro = track->pluginList.findFirstPluginOfType<MetronomePlugin>())
+            metro->setVolume (gainLinear);
+    }
+}
+
+float TrackerEngine::getMetronomeVolume() const
+{
+    if (edit == nullptr)
+        return 0.7f;
+
+    auto tracks = te::getAudioTracks (*edit);
+    if (kMetronomeTrack < tracks.size())
+    {
+        if (auto* metro = tracks[kMetronomeTrack]->pluginList.findFirstPluginOfType<MetronomePlugin>())
+            return metro->getVolume();
+    }
+    return 0.7f;
 }
 
 void TrackerEngine::changeListenerCallback (juce::ChangeBroadcaster*)
