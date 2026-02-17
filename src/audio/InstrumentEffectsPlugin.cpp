@@ -380,22 +380,35 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         if (fc.bufferForMidiMessages->isAllNotesOff)
         {
             releaseEnvelopes();
-            currentInstrument = -1;
         }
 
         for (auto& m : *fc.bufferForMidiMessages)
         {
-            if (m.isNoteOn())
+            if (m.isProgramChange())
             {
-                // The instrument index is determined by the track's loaded instrument
-                // We trigger envelopes and reset LFOs on note-on
+                // Multi-instrument support: update current instrument on program change
+                currentInstrument = m.getProgramChangeNumber();
+            }
+            else if (m.isNoteOn())
+            {
                 triggerEnvelopes();
                 for (auto& lfo : lfoStates)
                     lfo.phase = 0.0;
             }
-            else if (m.isNoteOff() || m.isAllNotesOff() || m.isAllSoundOff())
+            else if (m.isNoteOff() || m.isAllNotesOff())
             {
+                // Graceful release (OFF) — ADSR release stage plays
                 releaseEnvelopes();
+            }
+            else if (m.isAllSoundOff())
+            {
+                // Hard cut (KILL) — immediate silence, no release tail
+                for (auto& env : envStates)
+                {
+                    env.stage = EnvState::Stage::Idle;
+                    env.level = 0.0f;
+                }
+                noteActive = false;
             }
         }
     }

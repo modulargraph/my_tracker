@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <JuceHeader.h>
 #include <tracktion_engine/tracktion_engine.h>
 #include "InstrumentParams.h"
@@ -46,6 +47,12 @@ public:
     void setSampleBank (std::shared_ptr<const SampleBank> bank);
     void setSamplerSource (SimpleSampler* s) { samplerSource = s; }
     void setInstrumentIndex (int index) { instrumentIndex = index; }
+
+    // Pre-load multiple banks for multi-instrument per track
+    void preloadBanks (const std::map<int, std::shared_ptr<const SampleBank>>& banks)
+    {
+        preloadedBanks = banks;
+    }
 
     // Preview support (called from message thread, consumed on audio thread)
     void playNote (int note, float velocity);
@@ -99,6 +106,9 @@ private:
     // Thread-safe sample bank access
     juce::SpinLock bankLock;
     std::shared_ptr<const SampleBank> sharedBank;
+
+    // Pre-loaded banks for multi-instrument per track (instrument index → bank)
+    std::map<int, std::shared_ptr<const SampleBank>> preloadedBanks;
 
     // Params access (same pattern as InstrumentEffectsPlugin)
     SimpleSampler* samplerSource = nullptr;

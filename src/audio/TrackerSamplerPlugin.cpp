@@ -545,13 +545,32 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     {
         if (fc.bufferForMidiMessages->isAllNotesOff)
         {
-            voice.state = Voice::State::Idle;
-            fadeOutVoice.state = Voice::State::Idle;
+            // Graceful fade (same as noteOff)
+            if (voice.state == Voice::State::Playing)
+            {
+                fadeOutVoice = voice;
+                fadeOutVoice.state = Voice::State::FadingOut;
+                fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
+                voice.state = Voice::State::Idle;
+            }
         }
 
         for (auto& m : *fc.bufferForMidiMessages)
         {
-            if (m.isNoteOn())
+            if (m.isProgramChange())
+            {
+                // Switch to a preloaded bank for multi-instrument support
+                int progNum = m.getProgramChangeNumber();
+                auto it = preloadedBanks.find (progNum);
+                if (it != preloadedBanks.end() && it->second != nullptr)
+                {
+                    const juce::SpinLock::ScopedLockType lock (bankLock);
+                    sharedBank = it->second;
+                    bank = sharedBank;
+                    instrumentIndex = progNum;
+                }
+            }
+            else if (m.isNoteOn())
             {
                 if (voice.state == Voice::State::Playing)
                 {
@@ -560,11 +579,16 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
                 }
 
+                // Re-read params for the current instrument (may have changed via program change)
+                if (samplerSource != nullptr && instrumentIndex >= 0)
+                    params = samplerSource->getParams (instrumentIndex);
+
                 triggerNote (voice, m.getNoteNumber(),
                              m.getVelocity() / 127.0f, *bank, params);
             }
             else if (m.isNoteOff())
             {
+                // Graceful fade-out with crossfade
                 if (voice.state == Voice::State::Playing)
                 {
                     fadeOutVoice = voice;
@@ -573,8 +597,20 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     voice.state = Voice::State::Idle;
                 }
             }
-            else if (m.isAllNotesOff() || m.isAllSoundOff())
+            else if (m.isAllNotesOff())
             {
+                // Graceful fade (OFF) — same as noteOff
+                if (voice.state == Voice::State::Playing)
+                {
+                    fadeOutVoice = voice;
+                    fadeOutVoice.state = Voice::State::FadingOut;
+                    fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
+                    voice.state = Voice::State::Idle;
+                }
+            }
+            else if (m.isAllSoundOff())
+            {
+                // Hard cut (KILL) — immediate silence
                 voice.state = Voice::State::Idle;
                 fadeOutVoice.state = Voice::State::Idle;
             }

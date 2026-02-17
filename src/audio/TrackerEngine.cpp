@@ -1,3 +1,4 @@
+#include <set>
 #include "TrackerEngine.h"
 #include "InstrumentEffectsPlugin.h"
 #include "TrackerSamplerPlugin.h"
@@ -86,6 +87,8 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
         // Build MIDI sequence from pattern data
         juce::MidiMessageSequence midiSeq;
         bool isRelease = releaseMode[static_cast<size_t> (trackIdx)];
+        int lastPlayingNote = -1;
+        int currentInst = -1;
 
         for (int row = 0; row < pattern.numRows; ++row)
         {
@@ -97,11 +100,31 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
 
             auto noteStart = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
 
-            // OFF (255) or KILL (254) → all notes off
-            if (cell.note == 255 || cell.note == 254)
+            // OFF (255) → graceful release (noteOff for last playing note)
+            if (cell.note == 255)
             {
-                midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), noteStart.inSeconds());
+                if (lastPlayingNote >= 0)
+                    midiSeq.addEvent (juce::MidiMessage::noteOff (1, lastPlayingNote), noteStart.inSeconds());
+                else
+                    midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), noteStart.inSeconds());
+                lastPlayingNote = -1;
                 continue;
+            }
+
+            // KILL (254) → hard cut (allSoundOff, CC#120)
+            if (cell.note == 254)
+            {
+                midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), noteStart.inSeconds());
+                lastPlayingNote = -1;
+                continue;
+            }
+
+            // Insert program change if instrument changes
+            if (cell.instrument >= 0 && cell.instrument != currentInst)
+            {
+                currentInst = cell.instrument;
+                midiSeq.addEvent (juce::MidiMessage::programChange (1, currentInst),
+                                  noteStart.inSeconds() - 0.0001);
             }
 
             // Calculate note end time
@@ -134,6 +157,8 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                               noteStart.inSeconds());
             midiSeq.addEvent (juce::MidiMessage::noteOff (1, cell.note),
                               noteEnd.inSeconds());
+
+            lastPlayingNote = cell.note;
         }
 
         midiSeq.updateMatchedPairs();
@@ -147,8 +172,9 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
     if (edit == nullptr || sequence.empty())
         return;
 
-    // Prepare instruments based on the first pattern in the arrangement
-    prepareTracksForPattern (*sequence[0].first);
+    // Prepare instruments for all patterns in the arrangement
+    for (auto& [pattern, repeats] : sequence)
+        prepareTracksForPattern (*pattern);
 
     auto tracks = te::getAudioTracks (*edit);
 
@@ -178,6 +204,8 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
         juce::MidiMessageSequence midiSeq;
         double beatOffset = 0.0;
         bool isRelease = releaseMode[static_cast<size_t> (trackIdx)];
+        int lastPlayingNote = -1;
+        int currentInst = -1;
 
         for (auto& [pattern, repeats] : sequence)
         {
@@ -194,11 +222,31 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     double startBeat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
                     auto noteStart = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
 
-                    // OFF (255) or KILL (254) → all notes off
-                    if (cell.note == 255 || cell.note == 254)
+                    // OFF (255) → graceful release
+                    if (cell.note == 255)
                     {
-                        midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), noteStart.inSeconds());
+                        if (lastPlayingNote >= 0)
+                            midiSeq.addEvent (juce::MidiMessage::noteOff (1, lastPlayingNote), noteStart.inSeconds());
+                        else
+                            midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), noteStart.inSeconds());
+                        lastPlayingNote = -1;
                         continue;
+                    }
+
+                    // KILL (254) → hard cut
+                    if (cell.note == 254)
+                    {
+                        midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), noteStart.inSeconds());
+                        lastPlayingNote = -1;
+                        continue;
+                    }
+
+                    // Insert program change if instrument changes
+                    if (cell.instrument >= 0 && cell.instrument != currentInst)
+                    {
+                        currentInst = cell.instrument;
+                        midiSeq.addEvent (juce::MidiMessage::programChange (1, currentInst),
+                                          noteStart.inSeconds() - 0.0001);
                     }
 
                     // Calculate note end time
@@ -231,6 +279,8 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                                       noteStart.inSeconds());
                     midiSeq.addEvent (juce::MidiMessage::noteOff (1, cell.note),
                                       noteEnd.inSeconds());
+
+                    lastPlayingNote = cell.note;
                 }
 
                 beatOffset += patternLengthBeats;
@@ -356,32 +406,49 @@ void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
 
     for (int t = 0; t < kNumTracks && t < tracks.size(); ++t)
     {
-        // Find the first instrument used on this track
-        int neededInst = -1;
+        // Collect ALL unique instruments used on this track
+        std::set<int> usedInstruments;
+        int firstInst = -1;
         for (int row = 0; row < pattern.numRows; ++row)
         {
-            if (pattern.getCell (row, t).instrument >= 0)
+            int inst = pattern.getCell (row, t).instrument;
+            if (inst >= 0)
             {
-                neededInst = pattern.getCell (row, t).instrument;
-                break;
+                usedInstruments.insert (inst);
+                if (firstInst < 0)
+                    firstInst = inst;
             }
         }
 
         // If no instrument specified in pattern, default to track index
-        if (neededInst < 0)
-            neededInst = t;
+        if (firstInst < 0)
+            firstInst = t;
 
-        // Skip if already loaded
-        if (neededInst == currentTrackInstrument[static_cast<size_t> (t)])
-            continue;
-
-        // Load the instrument onto this track
-        auto sampleFile = sampler.getSampleFile (neededInst);
-        if (sampleFile.existsAsFile())
+        // Load the first (default) instrument onto this track
+        if (firstInst != currentTrackInstrument[static_cast<size_t> (t)])
         {
-            sampler.loadSample (*tracks[t], sampleFile, neededInst);
-            sampler.applyParams (*tracks[t], neededInst);
-            currentTrackInstrument[static_cast<size_t> (t)] = neededInst;
+            auto sampleFile = sampler.getSampleFile (firstInst);
+            if (sampleFile.existsAsFile())
+            {
+                sampler.loadSample (*tracks[t], sampleFile, firstInst);
+                sampler.applyParams (*tracks[t], firstInst);
+                currentTrackInstrument[static_cast<size_t> (t)] = firstInst;
+            }
+        }
+
+        // Pre-load all banks for multi-instrument support
+        if (usedInstruments.size() > 1)
+        {
+            std::map<int, std::shared_ptr<const SampleBank>> banks;
+            for (int inst : usedInstruments)
+            {
+                auto bank = sampler.getSampleBank (inst);
+                if (bank != nullptr)
+                    banks[inst] = bank;
+            }
+
+            if (auto* samplerPlugin = tracks[t]->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+                samplerPlugin->preloadBanks (banks);
         }
     }
 }

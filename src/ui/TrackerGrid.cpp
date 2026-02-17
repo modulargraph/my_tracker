@@ -1372,8 +1372,8 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Note-off with backtick (`)
-    if (key.getTextCharacter() == '`' && cursorSubColumn == SubColumn::Note)
+    // Note-off with equals (=)
+    if (key.getTextCharacter() == '=' && cursorSubColumn == SubColumn::Note)
     {
         Cell& cell = pattern.getCell (cursorRow, cursorTrack);
         cell.note = 255; // note-off marker (OFF ===)
@@ -1384,8 +1384,8 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Note-kill with tilde (~)
-    if (key.getTextCharacter() == '~' && cursorSubColumn == SubColumn::Note)
+    // Note-kill with minus (-)
+    if (key.getTextCharacter() == '-' && cursorSubColumn == SubColumn::Note)
     {
         Cell& cell = pattern.getCell (cursorRow, cursorTrack);
         cell.note = 254; // note-kill marker (KILL ^^^)
