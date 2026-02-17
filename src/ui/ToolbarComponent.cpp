@@ -139,6 +139,16 @@ void ToolbarComponent::paint (juce::Graphics& g)
     auto folStr = followModeVal == 0 ? "FOL" : (followModeVal == 1 ? "CTR" : "PGE");
     g.drawText (folStr, followBounds, juce::Justification::centred);
     g.setFont (lookAndFeel.getMonoFont (13.0f));
+    x += 32;
+
+    // Metronome toggle
+    metronomeBounds = { x, 6, 28, 24 };
+    g.setColour (metronomeOn ? juce::Colour (0xffd4a843) : juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (metronomeBounds.toFloat(), 3.0f);
+    g.setColour (metronomeOn ? juce::Colours::white : textCol);
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.drawText ("MET", metronomeBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
 
     // Instrument panel toggle (right-aligned)
     instrumentToggleBounds = { getWidth() - 32, 6, 24, 24 };
@@ -190,6 +200,11 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
     if (followBounds.contains (pos) && onFollowToggle)
     {
         onFollowToggle();
+        return;
+    }
+    if (metronomeBounds.contains (pos) && onMetronomeToggle)
+    {
+        onMetronomeToggle();
         return;
     }
 

@@ -66,7 +66,8 @@ public:
         cmdShowHelp     = 0x1050,
         cmdToggleArrangement = 0x1051,
         cmdToggleSongMode    = 0x1052,
-        cmdToggleInstrumentPanel = 0x1053
+        cmdToggleInstrumentPanel = 0x1053,
+        cmdToggleMetronome       = 0x1054
     };
 
     // Access for serialization

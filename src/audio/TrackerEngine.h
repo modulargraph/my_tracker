@@ -5,6 +5,7 @@
 #include "PatternData.h"
 #include "SimpleSampler.h"
 #include "InstrumentEffectsPlugin.h"
+#include "MetronomePlugin.h"
 
 namespace te = tracktion;
 
@@ -81,6 +82,12 @@ public:
     // Stop any active preview (file or note)
     void stopPreview();
 
+    // Metronome
+    void setMetronomeEnabled (bool enabled);
+    bool isMetronomeEnabled() const;
+    void setMetronomeVolume (float gainLinear);
+    float getMetronomeVolume() const;
+
     // Get audio track
     te::AudioTrack* getTrack (int index);
 
@@ -97,8 +104,9 @@ private:
     int rowsPerBeat = 4;
     std::array<int, kNumTracks> currentTrackInstrument {};
 
-    // Preview state
+    // Preview and metronome track indices
     static constexpr int kPreviewTrack = kNumTracks;
+    static constexpr int kMetronomeTrack = kNumTracks + 1;
     static constexpr int kPreviewDurationMs = 3000;
     int activePreviewTrack = -1;
     std::shared_ptr<SampleBank> previewBank;

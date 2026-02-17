@@ -185,6 +185,13 @@ MainComponent::MainComponent()
         toolbar->setFollowMode (static_cast<int> (followMode));
     };
 
+    toolbar->onMetronomeToggle = [this]
+    {
+        bool enabled = ! trackerEngine.isMetronomeEnabled();
+        trackerEngine.setMetronomeEnabled (enabled);
+        toolbar->setMetronomeEnabled (enabled);
+    };
+
     // Create arrangement panel (hidden by default)
     arrangementComponent = std::make_unique<ArrangementComponent> (arrangement, patternData, trackerLookAndFeel);
     addChildComponent (*arrangementComponent);
@@ -781,6 +788,7 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
     commands.add (cmdToggleArrangement);
     commands.add (cmdToggleSongMode);
     commands.add (cmdToggleInstrumentPanel);
+    commands.add (cmdToggleMetronome);
 }
 
 void MainComponent::getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result)
@@ -857,6 +865,10 @@ void MainComponent::getCommandInfo (juce::CommandID commandID, juce::Application
         case cmdToggleInstrumentPanel:
             result.setInfo ("Toggle Instruments", "Show/hide instrument panel", "View", 0);
             result.addDefaultKeypress ('I', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+            break;
+        case cmdToggleMetronome:
+            result.setInfo ("Toggle Metronome", "Toggle the metronome on/off", "View", 0);
+            result.addDefaultKeypress ('K', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
             break;
         default: break;
     }
@@ -936,6 +948,13 @@ bool MainComponent::perform (const InvocationInfo& info)
             toolbar->setInstrumentPanelVisible (instrumentPanelVisible);
             resized();
             return true;
+        case cmdToggleMetronome:
+        {
+            bool enabled = ! trackerEngine.isMetronomeEnabled();
+            trackerEngine.setMetronomeEnabled (enabled);
+            toolbar->setMetronomeEnabled (enabled);
+            return true;
+        }
         default: return false;
     }
 }
@@ -980,6 +999,7 @@ juce::PopupMenu MainComponent::getMenuForIndex (int menuIndex, const juce::Strin
         menu.addCommandItem (&commandManager, cmdToggleInstrumentPanel);
         menu.addSeparator();
         menu.addCommandItem (&commandManager, cmdToggleSongMode);
+        menu.addCommandItem (&commandManager, cmdToggleMetronome);
     }
     else if (menuIndex == 3)
     {
@@ -1657,6 +1677,7 @@ void MainComponent::showHelpOverlay()
                     "Cmd+Shift+A       Arrangement",
                     "Cmd+Shift+I       Instruments",
                     "Cmd+Shift+P       PAT / SONG mode",
+                    "Cmd+Shift+K       Metronome",
                     "Cmd+/             Show this help" }}
             };
         }
