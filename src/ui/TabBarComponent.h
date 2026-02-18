@@ -3,7 +3,7 @@
 #include <JuceHeader.h>
 #include "TrackerLookAndFeel.h"
 
-enum class Tab { Tracker, InstrumentEdit, InstrumentType, Mixer, Browser };
+enum class Tab { Tracker, InstrumentEdit, InstrumentType, Mixer, Effects, Browser };
 
 class TabBarComponent : public juce::Component
 {
@@ -30,7 +30,7 @@ private:
         Tab tab;
         juce::Rectangle<int> bounds;
     };
-    std::array<TabInfo, 5> tabs;
+    std::array<TabInfo, 6> tabs;
 
     static constexpr int kTabWidth = 100;
 

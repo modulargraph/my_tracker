@@ -17,6 +17,7 @@
 #include "FileBrowserComponent.h"
 #include "MixerComponent.h"
 #include "MixerState.h"
+#include "SendEffectsComponent.h"
 
 class MainComponent : public juce::Component,
                       public juce::KeyListener,
@@ -95,6 +96,7 @@ private:
     std::unique_ptr<SampleBrowserComponent> fileBrowser;
     std::unique_ptr<MixerComponent> mixerComponent;
     MixerState mixerState;
+    std::unique_ptr<SendEffectsComponent> sendEffectsComponent;
     bool arrangementVisible = false;
     bool instrumentPanelVisible = true;
     bool songMode = false;

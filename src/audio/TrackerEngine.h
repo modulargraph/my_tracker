@@ -6,6 +6,8 @@
 #include "SimpleSampler.h"
 #include "InstrumentEffectsPlugin.h"
 #include "MetronomePlugin.h"
+#include "SendEffectsPlugin.h"
+#include "SendEffectsParams.h"
 
 namespace te = tracktion;
 
@@ -97,6 +99,13 @@ public:
     te::Engine& getEngine() { return *engine; }
     SimpleSampler& getSampler() { return sampler; }
 
+    // Send effects access
+    SendEffectsPlugin* getSendEffectsPlugin() { return sendEffectsPlugin; }
+    void setDelayParams (const DelayParams& params);
+    void setReverbParams (const ReverbParams& params);
+    DelayParams getDelayParams() const;
+    ReverbParams getReverbParams() const;
+
 private:
     std::unique_ptr<te::Engine> engine;
     std::unique_ptr<te::Edit> edit;
@@ -104,9 +113,12 @@ private:
     int rowsPerBeat = 4;
     std::array<int, kNumTracks> currentTrackInstrument {};
 
-    // Preview and metronome track indices
+    // Preview, metronome, and send effects track indices
     static constexpr int kPreviewTrack = kNumTracks;
     static constexpr int kMetronomeTrack = kNumTracks + 1;
+    static constexpr int kSendEffectsTrack = kNumTracks + 2;
+    SendEffectsPlugin* sendEffectsPlugin = nullptr;
+    void setupSendEffectsTrack();
     static constexpr int kPreviewDurationMs = 3000;
     int activePreviewTrack = -1;
     std::shared_ptr<SampleBank> previewBank;

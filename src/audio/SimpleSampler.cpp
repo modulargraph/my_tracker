@@ -36,6 +36,7 @@ InstrumentEffectsPlugin* SimpleSampler::getOrCreateEffectsPlugin (te::AudioTrack
         {
             fx->setSamplerSource (this);
             fx->setInstrumentIndex (instrumentIndex);
+            fx->setSendBuffers (&sendBuffers);
             return fx;
         }
     }
@@ -47,6 +48,7 @@ InstrumentEffectsPlugin* SimpleSampler::getOrCreateEffectsPlugin (te::AudioTrack
         track.pluginList.insertPlugin (*fx, insertPos, nullptr);
         fx->setSamplerSource (this);
         fx->setInstrumentIndex (instrumentIndex);
+        fx->setSendBuffers (&sendBuffers);
         return fx;
     }
 

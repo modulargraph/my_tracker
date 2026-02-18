@@ -796,6 +796,24 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 data[i] = juce::jlimit (-kSafetyLimit, kSafetyLimit, data[i]);
         }
     }
+
+    // Send to delay/reverb buffers (post effects chain, post safety limiter)
+    if (sendBuffers != nullptr)
+    {
+        // Reverb send: convert dB to linear gain
+        if (params->reverbSend > -99.0)
+        {
+            float reverbGain = juce::Decibels::decibelsToGain (static_cast<float> (params->reverbSend));
+            sendBuffers->addToReverb (buffer, startSample, numSamples, reverbGain);
+        }
+
+        // Delay send: convert dB to linear gain
+        if (params->delaySend > -99.0)
+        {
+            float delayGain = juce::Decibels::decibelsToGain (static_cast<float> (params->delaySend));
+            sendBuffers->addToDelay (buffer, startSample, numSamples, delayGain);
+        }
+    }
 }
 
 void InstrumentEffectsPlugin::setInstrumentIndex (int index)

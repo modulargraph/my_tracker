@@ -358,6 +358,20 @@ MainComponent::MainComponent()
         trackerEngine.stopPreview();
     };
 
+    // Create send effects component
+    sendEffectsComponent = std::make_unique<SendEffectsComponent> (trackerLookAndFeel);
+    addChildComponent (*sendEffectsComponent);
+
+    sendEffectsComponent->setDelayParams (trackerEngine.getDelayParams());
+    sendEffectsComponent->setReverbParams (trackerEngine.getReverbParams());
+
+    sendEffectsComponent->onParamsChanged = [this] (const DelayParams& dp, const ReverbParams& rp)
+    {
+        trackerEngine.setDelayParams (dp);
+        trackerEngine.setReverbParams (rp);
+        markDirty();
+    };
+
     // Create the grid
     trackerGrid = std::make_unique<TrackerGrid> (patternData, trackerLookAndFeel, trackLayout);
     addAndMakeVisible (*trackerGrid);
@@ -482,12 +496,13 @@ MainComponent::MainComponent()
     // Playback cursor update timer
     startTimerHz (30);
 
-    // Register as key listener on the grid, sample editor, file browser, and mixer
+    // Register as key listener on the grid, sample editor, file browser, mixer, and effects
     trackerGrid->addKeyListener (this);
     trackerGrid->addKeyListener (commandManager.getKeyMappings());
     sampleEditor->addKeyListener (this);
     fileBrowser->addKeyListener (this);
     mixerComponent->addKeyListener (this);
+    sendEffectsComponent->addKeyListener (this);
 
     setSize (1280, 720);
     setWantsKeyboardFocus (true);
@@ -500,6 +515,7 @@ MainComponent::~MainComponent()
     juce::MenuBarModel::setMacMainMenu (nullptr);
    #endif
     mixerComponent->removeKeyListener (this);
+    sendEffectsComponent->removeKeyListener (this);
     fileBrowser->removeKeyListener (this);
     sampleEditor->removeKeyListener (this);
     trackerGrid->removeKeyListener (commandManager.getKeyMappings());
@@ -537,6 +553,7 @@ void MainComponent::resized()
     sampleEditor->setVisible (false);
     fileBrowser->setVisible (false);
     mixerComponent->setVisible (false);
+    sendEffectsComponent->setVisible (false);
 
     switch (activeTab)
     {
@@ -595,6 +612,12 @@ void MainComponent::resized()
             mixerComponent->setVisible (true);
             break;
         }
+        case Tab::Effects:
+        {
+            sendEffectsComponent->setBounds (r);
+            sendEffectsComponent->setVisible (true);
+            break;
+        }
         case Tab::Browser:
         {
             fileBrowser->setBounds (r);
@@ -616,7 +639,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     if (keyCode == juce::KeyPress::F2Key) { switchToTab (Tab::InstrumentEdit); return true; }
     if (keyCode == juce::KeyPress::F3Key) { switchToTab (Tab::InstrumentType); return true; }
     if (keyCode == juce::KeyPress::F4Key) { switchToTab (Tab::Mixer); return true; }
-    if (keyCode == juce::KeyPress::F5Key) { switchToTab (Tab::Browser); return true; }
+    if (keyCode == juce::KeyPress::F5Key) { switchToTab (Tab::Effects); return true; }
+    if (keyCode == juce::KeyPress::F6Key) { switchToTab (Tab::Browser); return true; }
 
     // Escape in non-Tracker tabs: return to Tracker
     if (keyCode == juce::KeyPress::escapeKey && activeTab != Tab::Tracker)
@@ -775,8 +799,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     }
 
     // F-key alternatives (still work if user holds Fn)
-    if (keyCode == juce::KeyPress::F6Key)  { toggleArrangementPanel(); return true; }
-    if (keyCode == juce::KeyPress::F7Key)  { toggleSongMode(); return true; }
+    if (keyCode == juce::KeyPress::F7Key)  { toggleArrangementPanel(); return true; }
+    if (keyCode == juce::KeyPress::F8Key)  { toggleSongMode(); return true; }
 
     if (keyCode == juce::KeyPress::F9Key)
     {
@@ -1724,7 +1748,8 @@ void MainComponent::showHelpOverlay()
                     "F2                Inst Edit tab",
                     "F3                Inst Type tab",
                     "F4                Mixer tab",
-                    "F5                Browser tab",
+                    "F5                Effects tab",
+                    "F6                Browser tab",
                     "Escape            Return to Tracker",
                     "` (in edit tabs)  Params / Mod",
                     "Note keys         Preview sample" }},
@@ -2046,6 +2071,13 @@ void MainComponent::switchToTab (Tab tab)
 
     resized();
 
+    // Refresh effects params when switching to effects tab
+    if (tab == Tab::Effects)
+    {
+        sendEffectsComponent->setDelayParams (trackerEngine.getDelayParams());
+        sendEffectsComponent->setReverbParams (trackerEngine.getReverbParams());
+    }
+
     // Focus the right component
     switch (tab)
     {
@@ -2058,6 +2090,9 @@ void MainComponent::switchToTab (Tab tab)
             break;
         case Tab::Mixer:
             mixerComponent->grabKeyboardFocus();
+            break;
+        case Tab::Effects:
+            sendEffectsComponent->grabKeyboardFocus();
             break;
         case Tab::Browser:
             fileBrowser->grabKeyboardFocus();

@@ -4,6 +4,7 @@
 #include <JuceHeader.h>
 #include <tracktion_engine/tracktion_engine.h>
 #include "InstrumentParams.h"
+#include "SendBuffers.h"
 
 namespace te = tracktion;
 
@@ -38,9 +39,11 @@ public:
     void setInstrumentIndex (int index);
     void setGlobalModState (GlobalModState* state) { globalModState = state; }
     void setRowsPerBeat (int rpb) { rowsPerBeat = rpb; }
+    void setSendBuffers (SendBuffers* buffers) { sendBuffers = buffers; }
 
 private:
     SimpleSampler* sampler = nullptr;
+    SendBuffers* sendBuffers = nullptr;
     int blockSize = 512;
 
     // Current instrument state
