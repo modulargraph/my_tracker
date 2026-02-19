@@ -76,6 +76,15 @@ void SampleBrowserComponent::refreshFileList()
         fileEntries.push_back (parent);
     }
 
+    // Guard against unreadable directories
+    if (! currentDirectory.isDirectory() || ! currentDirectory.hasReadAccess())
+    {
+        fileSelection = 0;
+        fileScrollOffset = 0;
+        repaint();
+        return;
+    }
+
     juce::Array<juce::File> children;
     currentDirectory.findChildFiles (children,
         juce::File::findFilesAndDirectories | juce::File::ignoreHiddenFiles, false);
@@ -92,16 +101,23 @@ void SampleBrowserComponent::refreshFileList()
 
     for (auto& child : children)
     {
-        if (child.isDirectory() || isAudioFile (child))
+        // Skip broken symlinks and inaccessible files
+        if (! child.exists())
+            continue;
+
+        bool isDir = child.isDirectory();
+
+        if (isDir || isAudioFile (child))
         {
             FileEntry entry;
             entry.name = child.getFileName();
             entry.file = child;
-            entry.isDirectory = child.isDirectory();
+            entry.isDirectory = isDir;
 
             if (! entry.isDirectory)
             {
-                entry.sizeStr = formatFileSize (child.getSize());
+                auto size = child.getSize();
+                entry.sizeStr = formatFileSize (size >= 0 ? size : 0);
                 entry.formatStr = child.getFileExtension().toUpperCase().trimCharactersAtStart (".");
             }
 
@@ -122,13 +138,14 @@ void SampleBrowserComponent::setCurrentDirectory (const juce::File& dir)
         refreshFileList();
 
         if (onDirectoryChanged)
-            onDirectoryChanged (dir);
+            onDirectoryChanged (currentDirectory);
     }
 }
 
 void SampleBrowserComponent::navigateInto (const juce::File& dir)
 {
-    setCurrentDirectory (dir);
+    if (dir.isDirectory() && dir.hasReadAccess())
+        setCurrentDirectory (dir);
 }
 
 void SampleBrowserComponent::loadSelectedFile()

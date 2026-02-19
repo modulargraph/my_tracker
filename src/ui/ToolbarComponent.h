@@ -51,6 +51,9 @@ public:
     std::function<void (int delta)> onInstrumentDrag;
     std::function<void()> onFollowToggle;
     std::function<void()> onMetronomeToggle;
+    std::function<void (int delta)> onRpbDrag;
+
+    void setRowsPerBeat (int rpb) { rowsPerBeatVal = rpb; repaint(); }
 
     static constexpr int kToolbarHeight = 36;
 
@@ -72,15 +75,16 @@ private:
     bool instrumentPanelOn = true;
     bool metronomeOn = false;
     int followModeVal = 0; // 0=off, 1=center, 2=page
+    int rowsPerBeatVal = 4;
 
     // Hit areas
     juce::Rectangle<int> addPatBounds, removePatBounds;
     juce::Rectangle<int> lengthBounds, bpmBounds, stepBounds, octaveBounds, modeBounds, patNameBounds;
     juce::Rectangle<int> arrangementToggleBounds, instrumentToggleBounds, patSelectorBounds;
-    juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds;
+    juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, rpbBounds;
 
     // Drag state
-    enum class DragTarget { None, Length, Bpm, Step, Octave, Instrument };
+    enum class DragTarget { None, Length, Bpm, Step, Octave, Instrument, Rpb };
     DragTarget dragTarget = DragTarget::None;
     int dragStartY = 0;
     int dragAccumulated = 0;

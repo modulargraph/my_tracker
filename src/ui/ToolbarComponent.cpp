@@ -117,6 +117,13 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.drawText (bpmStr, bpmBounds, juce::Justification::centredLeft);
     x += 84;
 
+    // RPB (draggable)
+    auto rpbStr = juce::String::formatted ("RPB:%d", rowsPerBeatVal);
+    rpbBounds = { x, 0, 50, kToolbarHeight };
+    g.setColour (dragTarget == DragTarget::Rpb ? juce::Colour (0xff88aacc) : textCol);
+    g.drawText (rpbStr, rpbBounds, juce::Justification::centredLeft);
+    x += 54;
+
     // Play state
     auto stateStr = playing ? "PLAYING" : "STOPPED";
     g.setColour (playing ? juce::Colour (0xff5cba5c) : juce::Colour (0xff888888));
@@ -223,6 +230,8 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
         dragTarget = DragTarget::Octave;
     else if (instrumentBounds.contains (pos))
         dragTarget = DragTarget::Instrument;
+    else if (rpbBounds.contains (pos))
+        dragTarget = DragTarget::Rpb;
 
     if (dragTarget != DragTarget::None)
         repaint();
@@ -257,6 +266,9 @@ void ToolbarComponent::mouseDrag (const juce::MouseEvent& event)
             break;
         case DragTarget::Instrument:
             if (onInstrumentDrag) onInstrumentDrag (steps);
+            break;
+        case DragTarget::Rpb:
+            if (onRpbDrag) onRpbDrag (steps);
             break;
         case DragTarget::None: break;
     }

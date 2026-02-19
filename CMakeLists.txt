@@ -38,6 +38,7 @@ target_sources(TrackerAdjust PRIVATE
     src/audio/InstrumentEffectsPlugin.cpp
     src/audio/MetronomePlugin.cpp
     src/audio/SendEffectsPlugin.cpp
+    src/audio/MixerPlugin.cpp
     src/ui/MainComponent.cpp
     src/ui/TrackerGrid.cpp
     src/ui/TrackerLookAndFeel.cpp

@@ -8,6 +8,8 @@
 #include "MetronomePlugin.h"
 #include "SendEffectsPlugin.h"
 #include "SendEffectsParams.h"
+#include "MixerPlugin.h"
+#include "MixerState.h"
 
 namespace te = tracktion;
 
@@ -106,6 +108,10 @@ public:
     DelayParams getDelayParams() const;
     ReverbParams getReverbParams() const;
 
+    // Mixer DSP: set a pointer to the MixerState for per-track processing
+    void setMixerState (const MixerState* state);
+    void refreshMixerPlugins();
+
 private:
     std::unique_ptr<te::Engine> engine;
     std::unique_ptr<te::Edit> edit;
@@ -118,7 +124,9 @@ private:
     static constexpr int kMetronomeTrack = kNumTracks + 1;
     static constexpr int kSendEffectsTrack = kNumTracks + 2;
     SendEffectsPlugin* sendEffectsPlugin = nullptr;
+    const MixerState* mixerStatePtr = nullptr;
     void setupSendEffectsTrack();
+    void setupMixerPlugins();
     static constexpr int kPreviewDurationMs = 3000;
     int activePreviewTrack = -1;
     std::shared_ptr<SampleBank> previewBank;

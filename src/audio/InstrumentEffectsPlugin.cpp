@@ -1,5 +1,6 @@
 #include "InstrumentEffectsPlugin.h"
 #include "SimpleSampler.h"
+#include "TrackerSamplerPlugin.h"
 
 const char* InstrumentEffectsPlugin::xmlTypeName = "InstrumentEffects";
 std::atomic<uint64_t> InstrumentEffectsPlugin::blockCounter { 0 };
@@ -59,6 +60,7 @@ void InstrumentEffectsPlugin::resetModulationState()
     currentInstrument = -1;
     lastFilterType = InstrumentParams::FilterType::Disabled;
     overrides = TrackOverrides();
+    fxState.reset();
 }
 
 //==============================================================================
@@ -578,6 +580,116 @@ void InstrumentEffectsPlugin::processVolumeAndPan (juce::AudioBuffer<float>& buf
 }
 
 //==============================================================================
+// FX command processing (per block)
+//==============================================================================
+
+void InstrumentEffectsPlugin::processFxCommands (int numSamples, float& pitchMod, float& fxVolumeMod)
+{
+    pitchMod = 0.0f;
+    fxVolumeMod = 1.0f;
+
+    double blockDuration = static_cast<double> (numSamples) / sampleRate;
+    double bpm = edit.tempoSequence.getTempos()[0]->getBpm();
+
+    // Tick rate: how many "ticks" per second (standard tracker: speed ticks per row)
+    // We approximate: one row = rowsPerBeat-th of a beat. At bpm, that's bpm/60/rowsPerBeat seconds per row.
+    // A typical tracker has 6 ticks per row, so tick rate = 6 * rowsPerBeat * bpm / 60
+    double ticksPerSecond = 6.0 * static_cast<double> (rowsPerBeat) * bpm / 60.0;
+    double ticksThisBlock = ticksPerSecond * blockDuration;
+
+    // --- Arpeggio (0xy) ---
+    if (fxState.arpParam > 0 && fxState.currentNote >= 0)
+    {
+        int x = (fxState.arpParam >> 4) & 0xF;
+        int y = fxState.arpParam & 0xF;
+
+        // Cycle through 3 phases based on block time
+        fxState.arpPhase = (fxState.arpPhase + 1) % 3;
+        switch (fxState.arpPhase)
+        {
+            case 0: pitchMod = 0.0f; break;
+            case 1: pitchMod = static_cast<float> (x); break;
+            case 2: pitchMod = static_cast<float> (y); break;
+        }
+    }
+
+    // --- Slide Up (1xx) ---
+    if (fxState.slideUpSpeed > 0)
+    {
+        float slideAmount = static_cast<float> (fxState.slideUpSpeed) / 16.0f;
+        fxState.pitchSlide += slideAmount * static_cast<float> (ticksThisBlock);
+        pitchMod += fxState.pitchSlide;
+    }
+
+    // --- Slide Down (2xx) ---
+    if (fxState.slideDownSpeed > 0)
+    {
+        float slideAmount = static_cast<float> (fxState.slideDownSpeed) / 16.0f;
+        fxState.pitchSlide -= slideAmount * static_cast<float> (ticksThisBlock);
+        pitchMod += fxState.pitchSlide;
+    }
+
+    // --- Tone Portamento (3xx) ---
+    if (fxState.portaSpeed > 0 && fxState.portaTarget >= 0 && fxState.currentNote >= 0)
+    {
+        float target = static_cast<float> (fxState.portaTarget - fxState.currentNote);
+        float step = (static_cast<float> (fxState.portaSpeed) / 16.0f) * static_cast<float> (ticksThisBlock);
+
+        if (fxState.portaPitch < target)
+            fxState.portaPitch = juce::jmin (fxState.portaPitch + step, target);
+        else if (fxState.portaPitch > target)
+            fxState.portaPitch = juce::jmax (fxState.portaPitch - step, target);
+
+        pitchMod += fxState.portaPitch;
+    }
+
+    // --- Vibrato (4xy) ---
+    if (fxState.vibratoSpeed > 0 && fxState.vibratoDepth > 0)
+    {
+        double vibratoHz = static_cast<double> (fxState.vibratoSpeed) * ticksPerSecond / 64.0;
+        fxState.vibratoPhase += vibratoHz * blockDuration;
+        if (fxState.vibratoPhase >= 1.0) fxState.vibratoPhase -= std::floor (fxState.vibratoPhase);
+
+        float depth = static_cast<float> (fxState.vibratoDepth) / 16.0f; // ~1 semitone max
+        float vibratoVal = std::sin (static_cast<float> (fxState.vibratoPhase) * juce::MathConstants<float>::twoPi);
+        pitchMod += vibratoVal * depth;
+    }
+
+    // --- Volume Slide (Axy, 5xy, 6xy) ---
+    if (fxState.volSlideUp > 0 || fxState.volSlideDown > 0)
+    {
+        float slideAmt = (static_cast<float> (fxState.volSlideUp) - static_cast<float> (fxState.volSlideDown)) / 64.0f;
+        fxState.volumeSlide += slideAmt * static_cast<float> (ticksThisBlock);
+        fxState.volumeSlide = juce::jlimit (-1.0f, 1.0f, fxState.volumeSlide);
+        fxVolumeMod = juce::jlimit (0.0f, 2.0f, 1.0f + fxState.volumeSlide);
+    }
+
+    // --- Vol Slide + Portamento (5xy): volume slide + continue portamento ---
+    if (fxState.portaSpeed > 0 && fxState.portaTarget >= 0)
+    {
+        // Portamento already processed above
+    }
+
+    // --- Tremolo (7xy) ---
+    if (fxState.tremoloSpeed > 0 && fxState.tremoloDepth > 0)
+    {
+        double tremoloHz = static_cast<double> (fxState.tremoloSpeed) * ticksPerSecond / 64.0;
+        fxState.tremoloPhase += tremoloHz * blockDuration;
+        if (fxState.tremoloPhase >= 1.0) fxState.tremoloPhase -= std::floor (fxState.tremoloPhase);
+
+        float depth = static_cast<float> (fxState.tremoloDepth) / 16.0f;
+        float tremoloVal = std::sin (static_cast<float> (fxState.tremoloPhase) * juce::MathConstants<float>::twoPi);
+        fxVolumeMod *= (1.0f - depth * 0.5f + tremoloVal * depth * 0.5f);
+    }
+
+    // --- Volume override from Cxx ---
+    if (overrides.volumeOverride >= 0)
+    {
+        fxVolumeMod *= static_cast<float> (overrides.volumeOverride) / 127.0f;
+    }
+}
+
+//==============================================================================
 // Main processing
 //==============================================================================
 
@@ -633,6 +745,58 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 {
                     overrides.panningOverride = ccVal;
                 }
+                else if (ccNum == 7) // Volume override (from Cxx effect)
+                {
+                    overrides.volumeOverride = ccVal;
+                }
+                else if (ccNum == 9) // Sample offset (from 9xx effect)
+                {
+                    fxState.sampleOffset = ccVal;
+                }
+                else if (ccNum == 20) // Arpeggio (0xy)
+                {
+                    fxState.arpParam = ccVal;
+                    fxState.arpPhase = 0;
+                }
+                else if (ccNum == 21) // Slide Up (1xx)
+                {
+                    fxState.slideUpSpeed = ccVal;
+                    fxState.slideDownSpeed = 0;
+                }
+                else if (ccNum == 22) // Slide Down (2xx)
+                {
+                    fxState.slideDownSpeed = ccVal;
+                    fxState.slideUpSpeed = 0;
+                }
+                else if (ccNum == 23) // Tone Portamento (3xx)
+                {
+                    if (ccVal > 0) fxState.portaSpeed = ccVal;
+                }
+                else if (ccNum == 24) // Vibrato (4xy)
+                {
+                    if ((ccVal >> 4) > 0) fxState.vibratoSpeed = ccVal >> 4;
+                    if ((ccVal & 0xF) > 0) fxState.vibratoDepth = ccVal & 0xF;
+                }
+                else if (ccNum == 25) // Vol Slide+Porta (5xy)
+                {
+                    fxState.volSlideUp = ccVal >> 4;
+                    fxState.volSlideDown = ccVal & 0xF;
+                }
+                else if (ccNum == 26) // Vol Slide+Vibrato (6xy)
+                {
+                    fxState.volSlideUp = ccVal >> 4;
+                    fxState.volSlideDown = ccVal & 0xF;
+                }
+                else if (ccNum == 27) // Tremolo (7xy)
+                {
+                    if ((ccVal >> 4) > 0) fxState.tremoloSpeed = ccVal >> 4;
+                    if ((ccVal & 0xF) > 0) fxState.tremoloDepth = ccVal & 0xF;
+                }
+                else if (ccNum == 30) // Volume Slide (Axy)
+                {
+                    fxState.volSlideUp = ccVal >> 4;
+                    fxState.volSlideDown = ccVal & 0xF;
+                }
                 else if (ccNum == 85) // Mod mode override (from Exy effect)
                 {
                     int dest = (ccVal >> 4) & 0xF;
@@ -648,9 +812,27 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                         overrides.modModeOverride[static_cast<size_t> (dest)] = mode;
                     }
                 }
+                else if (ccNum == 110) // Set Speed/Tempo (Fxx)
+                {
+                    fxState.lastSpeedTempo = ccVal;
+                    // Values >= 0x20 (32) set BPM directly
+                    if (ccVal >= 0x20 && onTempoChange)
+                        onTempoChange (ccVal);
+                }
             }
             else if (m.isNoteOn())
             {
+                // Track note for portamento target
+                if (fxState.portaSpeed > 0 && fxState.currentNote >= 0)
+                    fxState.portaTarget = m.getNoteNumber();
+                else
+                    fxState.portaTarget = -1;
+
+                fxState.currentNote = m.getNoteNumber();
+                // Reset pitch effects on new note (unless portamento active)
+                if (fxState.portaSpeed == 0)
+                    fxState.pitchSlide = 0.0f;
+
                 triggerEnvelopes();
                 for (auto& lfo : lfoStates)
                     lfo.phase = 0.0;
@@ -777,6 +959,35 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     getModulationValue (static_cast<int> (InstrumentParams::ModDest::Finetune),
                         *params, bpm, numSamples);
 
+    // Process FX commands (arpeggio, slides, vibrato, tremolo, volume slide)
+    float fxPitchMod = 0.0f;
+    float fxVolumeMod = 1.0f;
+    processFxCommands (numSamples, fxPitchMod, fxVolumeMod);
+
+    // Apply pitch mod to sampler if present (pitch bend via sampler plugin)
+    if (std::abs (fxPitchMod) > 0.001f && sampler != nullptr)
+    {
+        // Apply pitch bend: find TrackerSamplerPlugin on same track and set pitch offset
+        auto* track = dynamic_cast<te::AudioTrack*> (getOwnerTrack());
+        if (track != nullptr)
+        {
+            if (auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+                samplerPlugin->setPitchOffset (fxPitchMod);
+        }
+    }
+    else if (sampler != nullptr)
+    {
+        auto* track = dynamic_cast<te::AudioTrack*> (getOwnerTrack());
+        if (track != nullptr)
+        {
+            if (auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+                samplerPlugin->setPitchOffset (0.0f);
+        }
+    }
+
+    // Apply FX volume modifier
+    volumeGainMult *= fxVolumeMod;
+
     // DSP chain: Volume/Pan → Filter → Overdrive → BitDepth → Safety Limiter
     processVolumeAndPan (buffer, startSample, numSamples, *params, volumeGainMult, panMod);
     processFilter (buffer, startSample, numSamples, *params, cutoffMult);
@@ -797,23 +1008,7 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         }
     }
 
-    // Send to delay/reverb buffers (post effects chain, post safety limiter)
-    if (sendBuffers != nullptr)
-    {
-        // Reverb send: convert dB to linear gain
-        if (params->reverbSend > -99.0)
-        {
-            float reverbGain = juce::Decibels::decibelsToGain (static_cast<float> (params->reverbSend));
-            sendBuffers->addToReverb (buffer, startSample, numSamples, reverbGain);
-        }
-
-        // Delay send: convert dB to linear gain
-        if (params->delaySend > -99.0)
-        {
-            float delayGain = juce::Decibels::decibelsToGain (static_cast<float> (params->delaySend));
-            sendBuffers->addToDelay (buffer, startSample, numSamples, delayGain);
-        }
-    }
+    // Send routing is handled exclusively by MixerPlugin (per-track sends).
 }
 
 void InstrumentEffectsPlugin::setInstrumentIndex (int index)

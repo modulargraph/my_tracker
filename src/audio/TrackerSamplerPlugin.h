@@ -47,6 +47,7 @@ public:
     void setSampleBank (std::shared_ptr<const SampleBank> bank);
     void setSamplerSource (SimpleSampler* s) { samplerSource = s; }
     void setInstrumentIndex (int index) { instrumentIndex = index; }
+    void setPitchOffset (float semitones) { pitchOffset.store (semitones, std::memory_order_relaxed); }
 
     // Pre-load multiple banks for multi-instrument per track
     void preloadBanks (const std::map<int, std::shared_ptr<const SampleBank>>& banks)
@@ -118,6 +119,9 @@ private:
     std::atomic<int> previewNote { -1 };
     std::atomic<float> previewVelocity { 0.0f };
     std::atomic<bool> previewStop { false };
+
+    // FX pitch offset (set by InstrumentEffectsPlugin for slides/arpeggio/etc.)
+    std::atomic<float> pitchOffset { 0.0f };
 
     // Audio thread state
     double outputSampleRate = 44100.0;

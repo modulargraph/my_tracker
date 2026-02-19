@@ -6,16 +6,22 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
                                             const std::map<int, InstrumentParams>& instrumentParams,
                                             const Arrangement& arrangement,
                                             const TrackLayout& trackLayout,
+                                            const MixerState& mixerState,
+                                            const DelayParams& delayParams,
+                                            const ReverbParams& reverbParams,
+                                            int followMode,
                                             const juce::String& browserDir)
 {
     juce::ValueTree root ("TrackerAdjustProject");
-    root.setProperty ("version", 3, nullptr);
+    root.setProperty ("version", 4, nullptr);
 
     // Settings
     juce::ValueTree settings ("Settings");
     settings.setProperty ("bpm", bpm, nullptr);
     settings.setProperty ("rowsPerBeat", rowsPerBeat, nullptr);
     settings.setProperty ("currentPattern", patternData.getCurrentPatternIndex(), nullptr);
+    if (followMode != 0)
+        settings.setProperty ("followMode", followMode, nullptr);
     if (browserDir.isNotEmpty())
         settings.setProperty ("browserDir", browserDir, nullptr);
     root.addChild (settings, -1, nullptr);
@@ -214,6 +220,62 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         root.addChild (layoutTree, -1, nullptr);
     }
 
+    // Mixer state (only save non-default)
+    if (! mixerState.isDefault())
+    {
+        juce::ValueTree mixTree ("Mixer");
+        for (int i = 0; i < kNumTracks; ++i)
+        {
+            auto& t = mixerState.tracks[static_cast<size_t> (i)];
+            if (t.isDefault()) continue;
+
+            juce::ValueTree trackTree ("Track");
+            trackTree.setProperty ("index", i, nullptr);
+            trackTree.setProperty ("volume", t.volume, nullptr);
+            trackTree.setProperty ("pan", t.pan, nullptr);
+            if (t.muted)  trackTree.setProperty ("muted", true, nullptr);
+            if (t.soloed) trackTree.setProperty ("soloed", true, nullptr);
+            trackTree.setProperty ("eqLow", t.eqLowGain, nullptr);
+            trackTree.setProperty ("eqMid", t.eqMidGain, nullptr);
+            trackTree.setProperty ("eqHigh", t.eqHighGain, nullptr);
+            trackTree.setProperty ("eqMidFreq", t.eqMidFreq, nullptr);
+            trackTree.setProperty ("compThresh", t.compThreshold, nullptr);
+            trackTree.setProperty ("compRatio", t.compRatio, nullptr);
+            trackTree.setProperty ("compAttack", t.compAttack, nullptr);
+            trackTree.setProperty ("compRelease", t.compRelease, nullptr);
+            trackTree.setProperty ("reverbSend", t.reverbSend, nullptr);
+            trackTree.setProperty ("delaySend", t.delaySend, nullptr);
+            mixTree.addChild (trackTree, -1, nullptr);
+        }
+        root.addChild (mixTree, -1, nullptr);
+    }
+
+    // Send effects params
+    {
+        juce::ValueTree sendTree ("SendEffects");
+
+        juce::ValueTree delayTree ("Delay");
+        delayTree.setProperty ("time", delayParams.time, nullptr);
+        delayTree.setProperty ("syncDiv", delayParams.syncDivision, nullptr);
+        delayTree.setProperty ("bpmSync", delayParams.bpmSync, nullptr);
+        delayTree.setProperty ("feedback", delayParams.feedback, nullptr);
+        delayTree.setProperty ("filterType", delayParams.filterType, nullptr);
+        delayTree.setProperty ("filterCutoff", delayParams.filterCutoff, nullptr);
+        delayTree.setProperty ("wet", delayParams.wet, nullptr);
+        delayTree.setProperty ("stereoWidth", delayParams.stereoWidth, nullptr);
+        sendTree.addChild (delayTree, -1, nullptr);
+
+        juce::ValueTree reverbTree ("Reverb");
+        reverbTree.setProperty ("roomSize", reverbParams.roomSize, nullptr);
+        reverbTree.setProperty ("decay", reverbParams.decay, nullptr);
+        reverbTree.setProperty ("damping", reverbParams.damping, nullptr);
+        reverbTree.setProperty ("preDelay", reverbParams.preDelay, nullptr);
+        reverbTree.setProperty ("wet", reverbParams.wet, nullptr);
+        sendTree.addChild (reverbTree, -1, nullptr);
+
+        root.addChild (sendTree, -1, nullptr);
+    }
+
     // Patterns
     juce::ValueTree patterns ("Patterns");
     for (int i = 0; i < patternData.getNumPatterns(); ++i)
@@ -237,6 +299,10 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                                               std::map<int, InstrumentParams>& instrumentParams,
                                               Arrangement& arrangement,
                                               TrackLayout& trackLayout,
+                                              MixerState& mixerState,
+                                              DelayParams& delayParams,
+                                              ReverbParams& reverbParams,
+                                              int* followMode,
                                               juce::String* browserDir)
 {
     auto xml = juce::XmlDocument::parse (file);
@@ -255,6 +321,9 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
     {
         bpm = settings.getProperty ("bpm", 120.0);
         rowsPerBeat = settings.getProperty ("rowsPerBeat", 4);
+
+        if (followMode != nullptr)
+            *followMode = settings.getProperty ("followMode", 0);
 
         if (browserDir != nullptr)
             *browserDir = settings.getProperty ("browserDir", "").toString();
@@ -490,6 +559,67 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
         }
     }
 
+    // Mixer state (V4+)
+    mixerState.reset();
+    auto mixTree = root.getChildWithName ("Mixer");
+    if (mixTree.isValid())
+    {
+        for (int i = 0; i < mixTree.getNumChildren(); ++i)
+        {
+            auto trackTree = mixTree.getChild (i);
+            if (! trackTree.hasType ("Track")) continue;
+
+            int idx = trackTree.getProperty ("index", -1);
+            if (idx < 0 || idx >= kNumTracks) continue;
+
+            auto& t = mixerState.tracks[static_cast<size_t> (idx)];
+            t.volume       = trackTree.getProperty ("volume", 0.0);
+            t.pan          = trackTree.getProperty ("pan", 0);
+            t.muted        = trackTree.getProperty ("muted", false);
+            t.soloed       = trackTree.getProperty ("soloed", false);
+            t.eqLowGain   = trackTree.getProperty ("eqLow", 0.0);
+            t.eqMidGain   = trackTree.getProperty ("eqMid", 0.0);
+            t.eqHighGain  = trackTree.getProperty ("eqHigh", 0.0);
+            t.eqMidFreq   = trackTree.getProperty ("eqMidFreq", 1000.0);
+            t.compThreshold = trackTree.getProperty ("compThresh", 0.0);
+            t.compRatio    = trackTree.getProperty ("compRatio", 1.0);
+            t.compAttack   = trackTree.getProperty ("compAttack", 10.0);
+            t.compRelease  = trackTree.getProperty ("compRelease", 100.0);
+            t.reverbSend   = trackTree.getProperty ("reverbSend", -100.0);
+            t.delaySend    = trackTree.getProperty ("delaySend", -100.0);
+        }
+    }
+
+    // Send effects params (V4+)
+    delayParams = DelayParams {};
+    reverbParams = ReverbParams {};
+    auto sendTree = root.getChildWithName ("SendEffects");
+    if (sendTree.isValid())
+    {
+        auto delayTree = sendTree.getChildWithName ("Delay");
+        if (delayTree.isValid())
+        {
+            delayParams.time         = delayTree.getProperty ("time", 250.0);
+            delayParams.syncDivision = delayTree.getProperty ("syncDiv", 4);
+            delayParams.bpmSync      = delayTree.getProperty ("bpmSync", true);
+            delayParams.feedback     = delayTree.getProperty ("feedback", 40.0);
+            delayParams.filterType   = delayTree.getProperty ("filterType", 0);
+            delayParams.filterCutoff = delayTree.getProperty ("filterCutoff", 80.0);
+            delayParams.wet          = delayTree.getProperty ("wet", 50.0);
+            delayParams.stereoWidth  = delayTree.getProperty ("stereoWidth", 50.0);
+        }
+
+        auto reverbTree = sendTree.getChildWithName ("Reverb");
+        if (reverbTree.isValid())
+        {
+            reverbParams.roomSize = reverbTree.getProperty ("roomSize", 50.0);
+            reverbParams.decay    = reverbTree.getProperty ("decay", 50.0);
+            reverbParams.damping  = reverbTree.getProperty ("damping", 50.0);
+            reverbParams.preDelay = reverbTree.getProperty ("preDelay", 10.0);
+            reverbParams.wet      = reverbTree.getProperty ("wet", 30.0);
+        }
+    }
+
     // Patterns
     patternData.clearAllPatterns();
     auto patterns = root.getChildWithName ("Patterns");
@@ -648,7 +778,8 @@ static juce::File getGlobalPrefsFile()
 void ProjectSerializer::saveGlobalBrowserDir (const juce::String& dir)
 {
     auto prefsFile = getGlobalPrefsFile();
-    prefsFile.getParentDirectory().createDirectory();
+    if (! prefsFile.getParentDirectory().createDirectory())
+        return;
 
     juce::ValueTree root ("TrackerAdjustPrefs");
 
@@ -657,7 +788,11 @@ void ProjectSerializer::saveGlobalBrowserDir (const juce::String& dir)
     {
         auto xml = juce::XmlDocument::parse (prefsFile);
         if (xml != nullptr)
-            root = juce::ValueTree::fromXml (*xml);
+        {
+            auto loaded = juce::ValueTree::fromXml (*xml);
+            if (loaded.isValid())
+                root = loaded;
+        }
     }
 
     root.setProperty ("browserDir", dir, nullptr);
@@ -677,5 +812,7 @@ juce::String ProjectSerializer::loadGlobalBrowserDir()
         return {};
 
     auto root = juce::ValueTree::fromXml (*xml);
+    if (! root.isValid())
+        return {};
     return root.getProperty ("browserDir", "").toString();
 }

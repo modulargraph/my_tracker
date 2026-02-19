@@ -52,15 +52,15 @@ private:
     double dragStartValue = 0.0;
 
     // Layout constants
-    static constexpr int kStripWidth = 80;
+    static constexpr int kStripWidth = 104;
     static constexpr int kStripGap = 1;
-    static constexpr int kHeaderHeight = 24;
-    static constexpr int kEqSectionHeight = 80;
-    static constexpr int kCompSectionHeight = 80;
-    static constexpr int kSendsSectionHeight = 44;
-    static constexpr int kPanSectionHeight = 28;
-    static constexpr int kMuteSoloHeight = 24;
-    static constexpr int kSectionLabelHeight = 14;
+    static constexpr int kHeaderHeight = 31;
+    static constexpr int kEqSectionHeight = 104;
+    static constexpr int kCompSectionHeight = 104;
+    static constexpr int kSendsSectionHeight = 57;
+    static constexpr int kPanSectionHeight = 36;
+    static constexpr int kMuteSoloHeight = 31;
+    static constexpr int kSectionLabelHeight = 18;
 
     // Computed layout
     int getStripX (int visualTrack) const;

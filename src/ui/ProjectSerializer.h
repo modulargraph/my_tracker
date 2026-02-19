@@ -6,6 +6,8 @@
 #include "InstrumentParams.h"
 #include "Arrangement.h"
 #include "TrackLayout.h"
+#include "MixerState.h"
+#include "SendEffectsParams.h"
 
 class ProjectSerializer
 {
@@ -16,6 +18,10 @@ public:
                                     const std::map<int, InstrumentParams>& instrumentParams,
                                     const Arrangement& arrangement,
                                     const TrackLayout& trackLayout,
+                                    const MixerState& mixerState,
+                                    const DelayParams& delayParams,
+                                    const ReverbParams& reverbParams,
+                                    int followMode = 0,
                                     const juce::String& browserDir = {});
 
     static juce::String loadFromFile (const juce::File& file, PatternData& patternData,
@@ -24,6 +30,10 @@ public:
                                       std::map<int, InstrumentParams>& instrumentParams,
                                       Arrangement& arrangement,
                                       TrackLayout& trackLayout,
+                                      MixerState& mixerState,
+                                      DelayParams& delayParams,
+                                      ReverbParams& reverbParams,
+                                      int* followMode = nullptr,
                                       juce::String* browserDir = nullptr);
 
     // Global browser directory persistence (independent of project files)

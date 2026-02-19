@@ -50,14 +50,14 @@ void MixerComponent::paint (juce::Graphics& g)
     if (scrollOffset > 0)
     {
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
-        g.setFont (lookAndFeel.getMonoFont (10.0f));
-        g.drawText ("<", 0, getHeight() / 2 - 10, 10, 20, juce::Justification::centred);
+        g.setFont (lookAndFeel.getMonoFont (13.0f));
+        g.drawText ("<", 0, getHeight() / 2 - 10, 12, 20, juce::Justification::centred);
     }
     if (scrollOffset + visibleCount < kNumTracks)
     {
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
-        g.setFont (lookAndFeel.getMonoFont (10.0f));
-        g.drawText (">", getWidth() - 10, getHeight() / 2 - 10, 10, 20, juce::Justification::centred);
+        g.setFont (lookAndFeel.getMonoFont (13.0f));
+        g.drawText (">", getWidth() - 12, getHeight() / 2 - 10, 12, 20, juce::Justification::centred);
     }
 }
 
@@ -91,7 +91,7 @@ void MixerComponent::paintStrip (juce::Graphics& g, int visualTrack, juce::Recta
 
     // EQ section
     auto eqLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("EQ", eqLabelArea, juce::Justification::centred);
 
@@ -101,7 +101,7 @@ void MixerComponent::paintStrip (juce::Graphics& g, int visualTrack, juce::Recta
 
     // Compressor section
     auto compLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("COMP", compLabelArea, juce::Justification::centred);
 
@@ -111,7 +111,7 @@ void MixerComponent::paintStrip (juce::Graphics& g, int visualTrack, juce::Recta
 
     // Sends section
     auto sendsLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("SEND", sendsLabelArea, juce::Justification::centred);
 
@@ -164,7 +164,7 @@ void MixerComponent::paintHeader (juce::Graphics& g, int physTrack, int /*visual
         name = juce::String::formatted ("T%02d", physTrack + 1);
 
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
-    g.setFont (lookAndFeel.getMonoFont (11.0f));
+    g.setFont (lookAndFeel.getMonoFont (14.0f));
     g.drawText (name, bounds.reduced (4, 0), juce::Justification::centred);
 
     // Bottom line
@@ -197,22 +197,22 @@ void MixerComponent::paintEqSection (juce::Graphics& g, const TrackMixState& sta
     for (int i = 0; i < 3; ++i)
     {
         int x = inner.getX() + i * (barWidth + 4);
-        auto barArea = juce::Rectangle<int> (x, inner.getY(), barWidth, inner.getHeight() - 14);
+        auto barArea = juce::Rectangle<int> (x, inner.getY(), barWidth, inner.getHeight() - 18);
 
         bool paramSelected = (selectedParam == i);
         auto col = paramSelected ? selCol : volumeCol;
         paintVerticalBar (g, barArea, bands[i].value, -12.0, 12.0, col, true);
 
         // Label
-        g.setFont (lookAndFeel.getMonoFont (9.0f));
+        g.setFont (lookAndFeel.getMonoFont (12.0f));
         g.setColour (paramSelected ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.6f));
-        g.drawText (bands[i].label, x, barArea.getBottom() + 1, barWidth, 12, juce::Justification::centred);
+        g.drawText (bands[i].label, x, barArea.getBottom() + 1, barWidth, 16, juce::Justification::centred);
     }
 
     // Mid frequency readout (param index 3)
     if (selectedParam == 3)
     {
-        g.setFont (lookAndFeel.getMonoFont (8.0f));
+        g.setFont (lookAndFeel.getMonoFont (10.0f));
         g.setColour (selCol);
         juce::String freqStr = juce::String (static_cast<int> (state.eqMidFreq)) + "Hz";
         g.drawText (freqStr, inner.getX(), inner.getBottom() - 12, inner.getWidth(), 10,
@@ -281,11 +281,11 @@ void MixerComponent::paintSendsSection (juce::Graphics& g, const TrackMixState& 
         int y = inner.getY() + i * rowH;
         bool sel = (selectedParam == i);
 
-        g.setFont (lookAndFeel.getMonoFont (8.0f));
+        g.setFont (lookAndFeel.getMonoFont (10.0f));
         g.setColour (sel ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.5f));
-        g.drawText (sends[i].label, inner.getX(), y, 22, rowH, juce::Justification::centredLeft);
+        g.drawText (sends[i].label, inner.getX(), y, 28, rowH, juce::Justification::centredLeft);
 
-        auto barArea = juce::Rectangle<int> (inner.getX() + 24, y + 3, inner.getWidth() - 26, rowH - 6);
+        auto barArea = juce::Rectangle<int> (inner.getX() + 30, y + 3, inner.getWidth() - 32, rowH - 6);
         auto col = sel ? selCol : sendCol;
         paintHorizontalBar (g, barArea, sends[i].value, -100.0, 0.0, col);
     }
@@ -302,12 +302,12 @@ void MixerComponent::paintPanSection (juce::Graphics& g, const TrackMixState& st
     auto selCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
     auto panCol = lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
 
-    g.setFont (lookAndFeel.getMonoFont (8.0f));
+    g.setFont (lookAndFeel.getMonoFont (10.0f));
     g.setColour (isSelected ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.5f));
-    g.drawText ("PAN", inner.getX(), inner.getY(), 22, inner.getHeight(), juce::Justification::centredLeft);
+    g.drawText ("PAN", inner.getX(), inner.getY(), 28, inner.getHeight(), juce::Justification::centredLeft);
 
-    auto barArea = juce::Rectangle<int> (inner.getX() + 24, inner.getY() + 2,
-                                          inner.getWidth() - 26, inner.getHeight() - 4);
+    auto barArea = juce::Rectangle<int> (inner.getX() + 30, inner.getY() + 2,
+                                          inner.getWidth() - 32, inner.getHeight() - 4);
     paintHorizontalBar (g, barArea, static_cast<double> (state.pan), -50.0, 50.0,
                         isSelected ? selCol : panCol, true);
 }
@@ -324,7 +324,7 @@ void MixerComponent::paintVolumeFader (juce::Graphics& g, const TrackMixState& s
     auto volCol = lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
 
     // Volume value text at top
-    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
     g.setColour (isSelected ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.7f));
 
     juce::String volText;
@@ -343,7 +343,7 @@ void MixerComponent::paintVolumeFader (juce::Graphics& g, const TrackMixState& s
     g.fillRect (trackArea);
 
     // dB scale markings
-    g.setFont (lookAndFeel.getMonoFont (7.0f));
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.3f));
     double markings[] = { 12.0, 6.0, 0.0, -6.0, -12.0, -24.0, -48.0 };
     for (auto dB : markings)
@@ -388,7 +388,7 @@ void MixerComponent::paintMuteSolo (juce::Graphics& g, const TrackMixState& stat
     g.setColour (state.muted ? muteCol : muteCol.withAlpha (0.15f));
     g.fillRoundedRectangle (muteArea.toFloat(), 2.0f);
     g.setColour (state.muted ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.4f));
-    g.setFont (lookAndFeel.getMonoFont (10.0f));
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
     g.drawText ("M", muteArea, juce::Justification::centred);
 
     // Solo button
@@ -398,7 +398,7 @@ void MixerComponent::paintMuteSolo (juce::Graphics& g, const TrackMixState& stat
     g.setColour (state.soloed ? soloCol : soloCol.withAlpha (0.15f));
     g.fillRoundedRectangle (soloArea.toFloat(), 2.0f);
     g.setColour (state.soloed ? juce::Colours::black : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.4f));
-    g.setFont (lookAndFeel.getMonoFont (10.0f));
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
     g.drawText ("S", soloArea, juce::Justification::centred);
 
     // Top separator
@@ -539,7 +539,7 @@ void MixerComponent::paintKnob (juce::Graphics& g, juce::Rectangle<int> area,
     g.fillEllipse (dotX - 1.5f, dotY - 1.5f, 3.0f, 3.0f);
 
     // Label
-    g.setFont (lookAndFeel.getMonoFont (7.0f));
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
     g.setColour (colour.withAlpha (0.8f));
     g.drawText (label, inner.getX(), knobArea.getBottom() + 1, inner.getWidth(),
                 inner.getBottom() - knobArea.getBottom() - 1, juce::Justification::centredTop);

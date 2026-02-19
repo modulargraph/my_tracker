@@ -313,7 +313,7 @@ int SampleEditorComponent::getColumnCount() const
     if (displayMode == DisplayMode::InstrumentEdit)
     {
         if (editSubTab == EditSubTab::Parameters)
-            return 11; // Vol, Pan, Tune, Fine, Filter, Cutoff, Rez, OD, BitDepth, Reverb, Delay
+            return 9; // Vol, Pan, Tune, Fine, Filter, Cutoff, Rez, OD, BitDepth
         else
             return 8; // Modulation page
     }
@@ -345,8 +345,8 @@ juce::String SampleEditorComponent::getColumnName (int col) const
         if (editSubTab == EditSubTab::Parameters)
         {
             const char* names[] = { "Volume", "Panning", "Tune", "Finetune", "Filter",
-                                    "Cutoff", "Resonance", "Overdrive", "Bit Depth", "Reverb", "Delay" };
-            if (col >= 0 && col < 11) return names[col];
+                                    "Cutoff", "Resonance", "Overdrive", "Bit Depth" };
+            if (col >= 0 && col < 9) return names[col];
         }
         else // Modulation
         {
@@ -432,8 +432,6 @@ juce::String SampleEditorComponent::getColumnValue (int col) const
                 case 6: return formatPercent (currentParams.resonance);
                 case 7: return formatPercent (currentParams.overdrive);
                 case 8: return juce::String (currentParams.bitDepth);
-                case 9: return formatDb (currentParams.reverbSend);
-                case 10: return formatDb (currentParams.delaySend);
             }
         }
         else // Modulation
@@ -844,7 +842,7 @@ void SampleEditorComponent::drawBarMeter (juce::Graphics& g, juce::Rectangle<int
 
 void SampleEditorComponent::drawParametersPage (juce::Graphics& g, juce::Rectangle<int> area)
 {
-    int numCols = 11;
+    int numCols = 9;
     int colW = area.getWidth() / numCols;
     auto greenCol = lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
     auto blueCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
@@ -893,14 +891,6 @@ void SampleEditorComponent::drawParametersPage (juce::Graphics& g, juce::Rectang
     // Col 8: Bit Depth bar
     float bd01 = static_cast<float> (currentParams.bitDepth - 4) / 12.0f;
     drawBarMeter (g, colRect (8), bd01, parametersColumn == 8, amberCol);
-
-    // Col 9: Reverb Send bar
-    float rv01 = static_cast<float> ((currentParams.reverbSend + 100.0) / 100.0);
-    drawBarMeter (g, colRect (9), rv01, parametersColumn == 9, amberCol);
-
-    // Col 10: Delay Send bar
-    float dl01 = static_cast<float> ((currentParams.delaySend + 100.0) / 100.0);
-    drawBarMeter (g, colRect (10), dl01, parametersColumn == 10, amberCol);
 }
 
 //==============================================================================
@@ -1215,7 +1205,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                 {
                     auto oldType = currentParams.filterType;
                     int v = static_cast<int> (oldType);
-                    v = (v - direction + 4) % 4;
+                    v = (v + direction + 4) % 4;
                     currentParams.filterType = static_cast<InstrumentParams::FilterType> (v);
                     if (currentParams.filterType != oldType)
                     {
@@ -1254,20 +1244,6 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     currentParams.bitDepth = juce::jlimit (4, 16,
                         currentParams.bitDepth + direction);
                     break;
-                case 9: // Reverb Send
-                {
-                    double step = fine ? 0.1 : (large ? 6.0 : 1.0);
-                    currentParams.reverbSend = juce::jlimit (-100.0, 0.0,
-                        currentParams.reverbSend + direction * step);
-                    break;
-                }
-                case 10: // Delay Send
-                {
-                    double step = fine ? 0.1 : (large ? 6.0 : 1.0);
-                    currentParams.delaySend = juce::jlimit (-100.0, 0.0,
-                        currentParams.delaySend + direction * step);
-                    break;
-                }
             }
         }
         else // Modulation
@@ -1277,7 +1253,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
             switch (modColumn)
             {
                 case 0: // Destination
-                    modDestIndex = (modDestIndex - direction + InstrumentParams::kNumModDests)
+                    modDestIndex = (modDestIndex + direction + InstrumentParams::kNumModDests)
                                    % InstrumentParams::kNumModDests;
                     break;
 
@@ -1285,7 +1261,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                 {
                     auto oldType = mod.type;
                     int v = static_cast<int> (mod.type);
-                    v = (v - direction + 3) % 3;
+                    v = (v + direction + 3) % 3;
                     mod.type = static_cast<InstrumentParams::Modulation::Type> (v);
                     if (mod.type != oldType)
                         mod.amount = 0;
@@ -1295,7 +1271,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                 case 2: // Mode (Per-Note / Global)
                 {
                     int v = static_cast<int> (mod.modMode);
-                    v = (v - direction + 2) % 2;
+                    v = (v + direction + 2) % 2;
                     mod.modMode = static_cast<InstrumentParams::Modulation::ModMode> (v);
                     break;
                 }
@@ -1305,7 +1281,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     if (mod.type == InstrumentParams::Modulation::Type::LFO)
                     {
                         int v = static_cast<int> (mod.lfoShape);
-                        v = (v - direction + 5) % 5;
+                        v = (v + direction + 5) % 5;
                         mod.lfoShape = static_cast<InstrumentParams::Modulation::LFOShape> (v);
                     }
                     else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
@@ -1338,7 +1314,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                                 if (std::abs (kLfoSpeeds[i] - mod.lfoSpeed) < std::abs (kLfoSpeeds[curIdx] - mod.lfoSpeed))
                                     curIdx = i;
                         }
-                        curIdx = juce::jlimit (0, kNumLfoSpeeds - 1, curIdx - direction);
+                        curIdx = juce::jlimit (0, kNumLfoSpeeds - 1, curIdx + direction);
                         mod.lfoSpeed = kLfoSpeeds[curIdx];
                     }
                     else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
@@ -1395,7 +1371,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
         if (playbackColumn == numCols - 1)
         {
             int v = static_cast<int> (mode);
-            v = (v - direction + 7) % 7;
+            v = (v + direction + 7) % 7;
             currentParams.playMode = static_cast<InstrumentParams::PlayMode> (v);
             playbackColumn = getColumnCount() - 1;
             notifyParamsChanged();
@@ -1535,14 +1511,14 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     case 4: // Shape
                     {
                         int v = static_cast<int> (currentParams.granularShape);
-                        v = (v - direction + 3) % 3;
+                        v = (v + direction + 3) % 3;
                         currentParams.granularShape = static_cast<InstrumentParams::GranShape> (v);
                         break;
                     }
                     case 5: // Grain Loop
                     {
                         int v = static_cast<int> (currentParams.granularLoop);
-                        v = (v - direction + 3) % 3;
+                        v = (v + direction + 3) % 3;
                         currentParams.granularLoop = static_cast<InstrumentParams::GranLoop> (v);
                         break;
                     }
@@ -1617,14 +1593,6 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                 case 8: // Bit Depth 4-16
                     currentParams.bitDepth = juce::jlimit (4, 16,
                         currentParams.bitDepth + juce::roundToInt (normDelta * 12.0));
-                    break;
-                case 9: // Reverb Send -100 to 0
-                    currentParams.reverbSend = juce::jlimit (-100.0, 0.0,
-                        currentParams.reverbSend + normDelta * 100.0);
-                    break;
-                case 10: // Delay Send -100 to 0
-                    currentParams.delaySend = juce::jlimit (-100.0, 0.0,
-                        currentParams.delaySend + normDelta * 100.0);
                     break;
             }
         }
@@ -2438,6 +2406,32 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                 }
                 notifyParamsChanged();
                 return;
+            }
+
+            // Click-to-set for bar columns: set value based on click Y position
+            if (! isCurrentColumnDiscrete())
+            {
+                int contentH = contentBottom - contentTop;
+                double norm = 1.0 - static_cast<double> (event.y - contentTop)
+                                   / static_cast<double> (juce::jmax (1, contentH));
+                norm = juce::jlimit (0.0, 1.0, norm);
+
+                if (editSubTab == EditSubTab::Parameters)
+                {
+                    switch (parametersColumn)
+                    {
+                        case 0: currentParams.volume    = -100.0 + norm * 124.0; break;
+                        case 1: currentParams.panning   = static_cast<int> (-50.0 + norm * 100.0); break;
+                        case 2: currentParams.tune      = static_cast<int> (-24.0 + norm * 48.0); break;
+                        case 3: currentParams.finetune  = static_cast<int> (-100.0 + norm * 200.0); break;
+                        case 5: currentParams.cutoff    = static_cast<int> (norm * 100.0); break;
+                        case 6: currentParams.resonance = static_cast<int> (norm * 85.0); break;
+                        case 7: currentParams.overdrive = static_cast<int> (norm * 100.0); break;
+                        case 8: currentParams.bitDepth  = 4 + static_cast<int> (norm * 12.0); break;
+                        default: break;
+                    }
+                }
+                notifyParamsChanged();
             }
 
             // Start drag for bar columns

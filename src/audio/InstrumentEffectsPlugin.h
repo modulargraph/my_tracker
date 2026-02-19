@@ -41,6 +41,9 @@ public:
     void setRowsPerBeat (int rpb) { rowsPerBeat = rpb; }
     void setSendBuffers (SendBuffers* buffers) { sendBuffers = buffers; }
 
+    // Callback for Fxx (Set Speed/Tempo) — called on audio thread
+    std::function<void (int)> onTempoChange;
+
 private:
     SimpleSampler* sampler = nullptr;
     SendBuffers* sendBuffers = nullptr;
@@ -53,11 +56,68 @@ private:
     struct TrackOverrides
     {
         int panningOverride = -1;  // -1 = no override, 0-127 = CC10 value (64=center)
+        int volumeOverride = -1;   // -1 = no override, 0-127 from Cxx
         std::array<int, InstrumentParams::kNumModDests> modModeOverride;  // -1 = use default
 
         TrackOverrides() { modModeOverride.fill (-1); }
     };
     TrackOverrides overrides;
+
+    // FX command state (per-track, updated via CC messages)
+    struct FxState
+    {
+        // Arpeggio (0xy): cycle base, +x, +y semitones
+        int arpParam = 0;         // x=high nibble, y=low nibble
+        int arpPhase = 0;         // 0, 1, 2 cycling
+
+        // Pitch slide (1xx, 2xx)
+        float pitchSlide = 0.0f;  // accumulated pitch offset in semitones
+        int slideUpSpeed = 0;
+        int slideDownSpeed = 0;
+
+        // Tone portamento (3xx)
+        int portaSpeed = 0;
+        int portaTarget = -1;     // target MIDI note
+        float portaPitch = 0.0f;  // current pitch offset
+
+        // Vibrato (4xy)
+        int vibratoSpeed = 0;
+        int vibratoDepth = 0;
+        double vibratoPhase = 0.0;
+
+        // Tremolo (7xy)
+        int tremoloSpeed = 0;
+        int tremoloDepth = 0;
+        double tremoloPhase = 0.0;
+
+        // Volume slide (Axy, 5xy, 6xy)
+        float volumeSlide = 0.0f; // accumulated volume offset (normalized 0-1)
+        int volSlideUp = 0;
+        int volSlideDown = 0;
+
+        // Sample offset (9xx)
+        int sampleOffset = 0;
+
+        // Set Speed/Tempo (Fxx)
+        int lastSpeedTempo = 0;
+
+        // Current base MIDI note for pitch effects
+        int currentNote = -1;
+
+        void reset()
+        {
+            arpParam = 0; arpPhase = 0;
+            pitchSlide = 0.0f;
+            slideUpSpeed = 0; slideDownSpeed = 0;
+            portaSpeed = 0; portaTarget = -1; portaPitch = 0.0f;
+            vibratoSpeed = 0; vibratoDepth = 0; vibratoPhase = 0.0;
+            tremoloSpeed = 0; tremoloDepth = 0; tremoloPhase = 0.0;
+            volumeSlide = 0.0f; volSlideUp = 0; volSlideDown = 0;
+            sampleOffset = 0; lastSpeedTempo = 0;
+            currentNote = -1;
+        }
+    };
+    FxState fxState;
 
     // Global modulation support
     GlobalModState* globalModState = nullptr;
@@ -120,6 +180,8 @@ private:
     void triggerEnvelopes();
     void releaseEnvelopes();
     void resetModulationState();
+
+    void processFxCommands (int numSamples, float& pitchMod, float& fxVolumeMod);
 
     static float cutoffPercentToHz (int percent);
     static float resonancePercentToQ (int percent);

@@ -6,6 +6,7 @@ MainComponent::MainComponent()
 
     // Initialise the engine
     trackerEngine.initialise();
+    trackerEngine.setMixerState (&mixerState);
 
     // Create tab bar
     tabBar = std::make_unique<TabBarComponent> (trackerLookAndFeel);
@@ -123,6 +124,14 @@ MainComponent::MainComponent()
         trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() + delta));
         updateStatusBar();
         updateToolbar();
+    };
+
+    toolbar->onRpbDrag = [this] (int delta)
+    {
+        int rpb = juce::jlimit (1, 16, trackerEngine.getRowsPerBeat() + delta);
+        trackerEngine.setRowsPerBeat (rpb);
+        updateToolbar();
+        markDirty();
     };
 
     toolbar->onStepDrag = [this] (int delta)
@@ -1204,6 +1213,7 @@ void MainComponent::updateToolbar()
     toolbar->setOctave (trackerGrid->getOctave());
     toolbar->setEditStep (trackerGrid->getEditStep());
     toolbar->setBpm (trackerEngine.getBpm());
+    toolbar->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     toolbar->setPlayState (trackerEngine.isPlaying());
     toolbar->setPlaybackMode (songMode);
 
@@ -1575,8 +1585,11 @@ void MainComponent::openProject()
                               std::map<int, juce::File> samples;
                               std::map<int, InstrumentParams> instParams;
 
+                              DelayParams loadedDelay;
+                              ReverbParams loadedReverb;
+                              int loadedFollowMode = 0;
                               juce::String browserDir;
-                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams, arrangement, trackLayout, &browserDir);
+                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams, arrangement, trackLayout, mixerState, loadedDelay, loadedReverb, &loadedFollowMode, &browserDir);
                               if (error.isNotEmpty())
                               {
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
@@ -1596,6 +1609,28 @@ void MainComponent::openProject()
                               // Restore instrument params
                               for (auto& [index, params] : instParams)
                                   trackerEngine.getSampler().setParams (index, params);
+
+                              // Restore send effects params
+                              trackerEngine.setDelayParams (loadedDelay);
+                              trackerEngine.setReverbParams (loadedReverb);
+
+                              // Restore follow mode
+                              followMode = static_cast<FollowMode> (juce::jlimit (0, 2, loadedFollowMode));
+                              toolbar->setFollowMode (static_cast<int> (followMode));
+
+                              // Restore mute/solo from mixer state
+                              for (int i = 0; i < kNumTracks; ++i)
+                              {
+                                  auto* t = trackerEngine.getTrack (i);
+                                  if (t != nullptr)
+                                  {
+                                      t->setMute (mixerState.tracks[static_cast<size_t> (i)].muted);
+                                      t->setSolo (mixerState.tracks[static_cast<size_t> (i)].soloed);
+                                  }
+                              }
+
+                              // Refresh mixer plugins with loaded state
+                              trackerEngine.refreshMixerPlugins();
 
                               // Invalidate track instrument cache so next sync re-loads correctly
                               trackerEngine.invalidateTrackInstruments();
@@ -1636,6 +1671,10 @@ void MainComponent::saveProject()
                                                      trackerEngine.getSampler().getAllParams(),
                                                      arrangement,
                                                      trackLayout,
+                                                     mixerState,
+                                                     trackerEngine.getDelayParams(),
+                                                     trackerEngine.getReverbParams(),
+                                                     static_cast<int> (followMode),
                                                      fileBrowser->getCurrentDirectory().getFullPathName());
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Save Error", error);
@@ -1673,6 +1712,10 @@ void MainComponent::saveProjectAs()
                                                                           trackerEngine.getSampler().getAllParams(),
                                                                           arrangement,
                                                                           trackLayout,
+                                                                          mixerState,
+                                                                          trackerEngine.getDelayParams(),
+                                                                          trackerEngine.getReverbParams(),
+                                                                          static_cast<int> (followMode),
                                                                           fileBrowser->getCurrentDirectory().getFullPathName());
                               if (error.isNotEmpty())
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
@@ -2113,6 +2156,8 @@ void MainComponent::updateMuteSoloState()
             trackerGrid->trackSoloed[static_cast<size_t> (i)] = soloed;
             mixerComponent->setTrackMuteState (i, muted);
             mixerComponent->setTrackSoloState (i, soloed);
+            mixerState.tracks[static_cast<size_t> (i)].muted = muted;
+            mixerState.tracks[static_cast<size_t> (i)].soloed = soloed;
         }
     }
     trackerGrid->repaint();

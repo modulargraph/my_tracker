@@ -52,6 +52,10 @@ double TrackerSamplerPlugin::getPitchRatio (int midiNote, const SampleBank& bank
     ratio *= std::pow (2.0, params.tune / 12.0);
     ratio *= std::pow (2.0, params.finetune / 1200.0);
     ratio *= std::pow (2.0, (midiNote - 60) / 12.0);
+    // Apply FX pitch offset (slides, arpeggio, vibrato, portamento)
+    float fxPitch = pitchOffset.load (std::memory_order_relaxed);
+    if (std::abs (fxPitch) > 0.001f)
+        ratio *= std::pow (2.0, static_cast<double> (fxPitch) / 12.0);
     return ratio;
 }
 
