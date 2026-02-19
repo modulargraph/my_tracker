@@ -34,12 +34,37 @@ public:
     // Shared send buffers (owned by SimpleSampler, set during setup)
     void setSendBuffers (SendBuffers* buffers) { sendBuffers = buffers; }
 
-    // Global effect parameters (read from UI thread, consumed on audio thread)
-    DelayParams delayParams;
-    ReverbParams reverbParams;
+    // Thread-safe parameter setters (called from UI thread)
+    void setDelayParams (const DelayParams& params)
+    {
+        const juce::SpinLock::ScopedLockType lock (paramLock);
+        pendingDelayParams = params;
+    }
+    void setReverbParams (const ReverbParams& params)
+    {
+        const juce::SpinLock::ScopedLockType lock (paramLock);
+        pendingReverbParams = params;
+    }
+    DelayParams getDelayParams() const
+    {
+        const juce::SpinLock::ScopedLockType lock (paramLock);
+        return pendingDelayParams;
+    }
+    ReverbParams getReverbParams() const
+    {
+        const juce::SpinLock::ScopedLockType lock (paramLock);
+        return pendingReverbParams;
+    }
 
 private:
     SendBuffers* sendBuffers = nullptr;
+
+    // Thread-safe param exchange: UI writes pending, audio copies to active
+    mutable juce::SpinLock paramLock;
+    DelayParams pendingDelayParams;
+    ReverbParams pendingReverbParams;
+    DelayParams activeDelayParams;
+    ReverbParams activeReverbParams;
 
     // Delay line
     static constexpr int kMaxDelaySamples = 192000; // ~4 seconds at 48kHz
@@ -54,8 +79,7 @@ private:
     int preDelayWritePos = 0;
     int preDelayMaxSamples = 0;
 
-    // Scratch buffers
-    juce::AudioBuffer<float> delayScratch;
+    // Scratch buffer
     juce::AudioBuffer<float> reverbScratch;
 
     // Processing helpers

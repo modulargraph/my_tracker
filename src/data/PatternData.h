@@ -32,9 +32,9 @@ inline const std::vector<FxCommandInfo>& getFxCommandList()
         { 0x8, "8xx", "Set Panning",      "00=L, 80=C, FF=R" },
         { 0x9, "9xx", "Sample Offset",    "xx=offset" },
         { 0xA, "Axy", "Volume Slide",     "x=up, y=down" },
-        { 0xB, "Bxx", "Position Jump",    "xx=position" },
+        { 0xB, "Bxx", "Position Jump (NYI)", "xx=position" },
         { 0xC, "Cxx", "Set Volume",       "xx=volume (00-7F)" },
-        { 0xD, "Dxx", "Pattern Break",    "xx=row" },
+        { 0xD, "Dxx", "Pattern Break (NYI)", "xx=row" },
         { 0xE, "Exy", "Mod Mode",         "x=dest, y=mode" },
         { 0xF, "Fxx", "Set Speed/Tempo",  "01-1F=speed, 20+=BPM" },
     };
@@ -50,7 +50,7 @@ struct FxSlot
     int fx = 0;           // Effect command (0 = none)
     int fxParam = 0;      // Effect parameter
 
-    bool isEmpty() const { return fx == 0; }
+    bool isEmpty() const { return fx == 0 && fxParam == 0; }
     void clear() { fx = 0; fxParam = 0; }
 };
 

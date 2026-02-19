@@ -31,11 +31,12 @@ public:
     juce::String getSelectableDescription() override    { return getName(); }
     bool needsConstantBufferSize() override             { return false; }
 
-    void setMixState (const TrackMixState* s) { mixState = s; }
+    void setMixState (const TrackMixState* s) { mixStateSource = s; }
     void setSendBuffers (SendBuffers* b) { sendBuffers = b; }
 
 private:
-    const TrackMixState* mixState = nullptr;
+    const TrackMixState* mixStateSource = nullptr;  // UI thread writes this pointer
+    TrackMixState localMixState;                     // Audio thread copies into this
     SendBuffers* sendBuffers = nullptr;
 
     // EQ filters (3-band)

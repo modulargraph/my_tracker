@@ -1,5 +1,7 @@
 #include "TrackerGrid.h"
 #include "NoteUtils.h"
+#include "Clipboard.h"
+#include <map>
 
 TrackerGrid::TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf, TrackLayout& layout)
     : pattern (patternData), lookAndFeel (lnf), trackLayout (layout)
@@ -560,6 +562,49 @@ void TrackerGrid::showFxCommandPopup()
                 slot.fxParam = 0;
 
                 // Position cursor on param digits for further editing
+                hexDigitCount = 1;
+                hexAccumulator = 0;
+
+                if (onPatternDataChanged) onPatternDataChanged();
+                repaint();
+            }
+        }
+        grabKeyboardFocus();
+    });
+}
+
+void TrackerGrid::showFxCommandPopupAt (juce::Point<int> screenPos)
+{
+    juce::PopupMenu menu;
+    auto& commands = getFxCommandList();
+
+    for (int i = 0; i < static_cast<int> (commands.size()); ++i)
+    {
+        auto& cmd = commands[static_cast<size_t> (i)];
+        juce::String label = cmd.format + ": " + cmd.name;
+        if (cmd.description.isNotEmpty())
+            label += " (" + cmd.description + ")";
+        menu.addItem (i + 1, label);
+    }
+
+    auto options = juce::PopupMenu::Options()
+                       .withTargetScreenArea (juce::Rectangle<int> (screenPos.x, screenPos.y, 1, 1));
+
+    menu.showMenuAsync (options, [this] (int result)
+    {
+        if (result > 0)
+        {
+            auto& commands = getFxCommandList();
+            int index = result - 1;
+            if (index >= 0 && index < static_cast<int> (commands.size()))
+            {
+                Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+                int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
+                cell.ensureFxSlots (fxLanes);
+                auto& slot = cell.getFxSlot (cursorFxLane);
+                slot.fx = commands[static_cast<size_t> (index)].command;
+                slot.fxParam = 0;
+
                 hexDigitCount = 1;
                 hexAccumulator = 0;
 
@@ -1134,6 +1179,9 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
                 int selRows = maxRow - minRow + 1;
                 int selTracks = maxViTrack - minViTrack + 1;
 
+                // Build undo records for all affected cells (source clear + dest paste)
+                std::vector<MultiCellEditAction::CellRecord> records;
+
                 // Copy the selected block (visual columns -> physical)
                 std::vector<std::vector<Cell>> buffer (static_cast<size_t> (selRows),
                     std::vector<Cell> (static_cast<size_t> (selTracks)));
@@ -1145,12 +1193,20 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
                             pat.getCell (minRow + r, phys);
                     }
 
-                // Clear source area
+                // Collect all unique cells that will be affected (source + destination)
+                // Use a map to handle overlapping source/dest regions correctly
+                std::map<std::pair<int,int>, std::pair<Cell,Cell>> cellMap; // (row,track) -> (old,new)
+
+                // First, record source cells being cleared
                 for (int r = minRow; r <= maxRow; ++r)
                     for (int vi = minViTrack; vi <= maxViTrack; ++vi)
-                        pat.getCell (r, trackLayout.visualToPhysical (vi)).clear();
+                    {
+                        int phys = trackLayout.visualToPhysical (vi);
+                        auto key = std::make_pair (r, phys);
+                        cellMap[key] = { pat.getCell (r, phys), Cell{} };
+                    }
 
-                // Paste at destination (visual columns -> physical)
+                // Then, record destination cells being written (may overlap with source)
                 for (int r = 0; r < selRows; ++r)
                 {
                     int dr = destRow + r;
@@ -1160,7 +1216,51 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
                         int dvi = destViTrack + t;
                         if (dvi < 0 || dvi >= kNumTracks) continue;
                         int dphys = trackLayout.visualToPhysical (dvi);
-                        pat.getCell (dr, dphys) = buffer[static_cast<size_t> (r)][static_cast<size_t> (t)];
+                        auto key = std::make_pair (dr, dphys);
+                        auto it = cellMap.find (key);
+                        if (it != cellMap.end())
+                        {
+                            // This cell was already recorded as source; update its new value
+                            it->second.second = buffer[static_cast<size_t> (r)][static_cast<size_t> (t)];
+                        }
+                        else
+                        {
+                            cellMap[key] = { pat.getCell (dr, dphys),
+                                             buffer[static_cast<size_t> (r)][static_cast<size_t> (t)] };
+                        }
+                    }
+                }
+
+                // Convert map to records vector
+                for (auto& [key, vals] : cellMap)
+                {
+                    MultiCellEditAction::CellRecord rec;
+                    rec.row = key.first;
+                    rec.track = key.second;
+                    rec.oldCell = vals.first;
+                    rec.newCell = vals.second;
+                    records.push_back (rec);
+                }
+
+                if (undoManager != nullptr && ! records.empty())
+                    undoManager->perform (new MultiCellEditAction (pattern, pattern.getCurrentPatternIndex(), std::move (records)));
+                else
+                {
+                    // Fallback: apply directly
+                    for (int r = minRow; r <= maxRow; ++r)
+                        for (int vi = minViTrack; vi <= maxViTrack; ++vi)
+                            pat.getCell (r, trackLayout.visualToPhysical (vi)).clear();
+                    for (int r = 0; r < selRows; ++r)
+                    {
+                        int dr = destRow + r;
+                        if (dr < 0 || dr >= pat.numRows) continue;
+                        for (int t = 0; t < selTracks; ++t)
+                        {
+                            int dvi = destViTrack + t;
+                            if (dvi < 0 || dvi >= kNumTracks) continue;
+                            int dphys = trackLayout.visualToPhysical (dvi);
+                            pat.getCell (dr, dphys) = buffer[static_cast<size_t> (r)][static_cast<size_t> (t)];
+                        }
                     }
                 }
 
@@ -1345,6 +1445,7 @@ void TrackerGrid::moveCursor (int rowDelta, int trackDelta)
 
 void TrackerGrid::setPlaybackRow (int row)
 {
+    if (playbackRow == row) return;  // avoid redundant repaint
     playbackRow = row;
     repaint();
 }
@@ -1510,35 +1611,68 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Delete cell(s)
+    // Delete cell(s) — undoable via MultiCellEditAction
     if (keyCode == juce::KeyPress::deleteKey || keyCode == juce::KeyPress::backspaceKey)
     {
+        auto& pat = pattern.getCurrentPattern();
+        std::vector<MultiCellEditAction::CellRecord> records;
+
         if (hasSelection)
         {
             // Clear all cells in selection (visual space)
             int minRow, maxRow, minViTrack, maxViTrack;
             getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
             for (int r = minRow; r <= maxRow; ++r)
+            {
                 for (int vi = minViTrack; vi <= maxViTrack; ++vi)
-                    pattern.getCell (r, trackLayout.visualToPhysical (vi)).clear();
+                {
+                    int phys = trackLayout.visualToPhysical (vi);
+                    MultiCellEditAction::CellRecord rec;
+                    rec.row = r;
+                    rec.track = phys;
+                    rec.oldCell = pat.getCell (r, phys);
+                    rec.newCell = Cell{}; // cleared
+                    records.push_back (rec);
+                }
+            }
             clearSelection();
         }
         else
         {
-            Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+            int phys = cursorTrack;
+            Cell oldCell = pat.getCell (cursorRow, phys);
+            Cell newCell = oldCell;
+
             switch (cursorSubColumn)
             {
-                case SubColumn::Note:       cell.clear(); break;
-                case SubColumn::Instrument: cell.instrument = -1; break;
-                case SubColumn::Volume:     cell.volume = -1; break;
+                case SubColumn::Note:       newCell.clear(); break;
+                case SubColumn::Instrument: newCell.instrument = -1; break;
+                case SubColumn::Volume:     newCell.volume = -1; break;
                 case SubColumn::FX:
                 {
-                    auto& slot = cell.getFxSlot (cursorFxLane);
-                    slot.clear();
+                    newCell.ensureFxSlots (cursorFxLane + 1);
+                    newCell.getFxSlot (cursorFxLane).clear();
                     break;
                 }
             }
+
+            MultiCellEditAction::CellRecord rec;
+            rec.row = cursorRow;
+            rec.track = phys;
+            rec.oldCell = oldCell;
+            rec.newCell = newCell;
+            records.push_back (rec);
         }
+
+        if (undoManager != nullptr && ! records.empty())
+            undoManager->perform (new MultiCellEditAction (pattern, pattern.getCurrentPatternIndex(), std::move (records)));
+        else
+        {
+            // Fallback: apply directly
+            for (auto& rec : records)
+                pat.setCell (rec.row, rec.track, rec.newCell);
+        }
+
         hexDigitCount = 0;
         hexAccumulator = 0;
         if (onPatternDataChanged) onPatternDataChanged();

@@ -1,3 +1,4 @@
+#include <set>
 #include "ProjectSerializer.h"
 
 juce::String ProjectSerializer::saveToFile (const juce::File& file, const PatternData& patternData,
@@ -373,8 +374,11 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                 params.tune       = paramTree.getProperty ("tune", 0);
                 params.finetune   = paramTree.getProperty ("finetune", 0);
 
-                params.filterType = static_cast<InstrumentParams::FilterType> (
-                    static_cast<int> (paramTree.getProperty ("filterType", 0)));
+                {
+                    int ft = static_cast<int> (paramTree.getProperty ("filterType", 0));
+                    if (ft >= 0 && ft <= static_cast<int> (InstrumentParams::FilterType::BandPass))
+                        params.filterType = static_cast<InstrumentParams::FilterType> (ft);
+                }
                 params.cutoff     = paramTree.getProperty ("cutoff", 100);
                 params.resonance  = paramTree.getProperty ("resonance", 0);
 
@@ -388,8 +392,11 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                 params.loopStart  = paramTree.getProperty ("loopStart", 0.0);
                 params.loopEnd    = paramTree.getProperty ("loopEnd", 1.0);
 
-                params.playMode   = static_cast<InstrumentParams::PlayMode> (
-                    static_cast<int> (paramTree.getProperty ("playMode", 0)));
+                {
+                    int pm = static_cast<int> (paramTree.getProperty ("playMode", 0));
+                    if (pm >= 0 && pm <= static_cast<int> (InstrumentParams::PlayMode::Granular))
+                        params.playMode = static_cast<InstrumentParams::PlayMode> (pm);
+                }
                 params.reversed   = paramTree.getProperty ("reversed", false);
 
                 // wtWindow / wtPosition properties are ignored (wavetable mode removed)
@@ -492,9 +499,21 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             if (tokens.size() == kNumTracks)
             {
                 std::array<int, kNumTracks> order {};
+                bool valid = true;
+                std::set<int> seen;
                 for (int i = 0; i < kNumTracks; ++i)
-                    order[static_cast<size_t> (i)] = tokens[i].getIntValue();
-                trackLayout.setVisualOrder (order);
+                {
+                    int val = tokens[i].getIntValue();
+                    if (val < 0 || val >= kNumTracks || seen.count (val))
+                    {
+                        valid = false;
+                        break;
+                    }
+                    seen.insert (val);
+                    order[static_cast<size_t> (i)] = val;
+                }
+                if (valid)
+                    trackLayout.setVisualOrder (order);
             }
         }
 

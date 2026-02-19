@@ -156,6 +156,16 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.setFont (lookAndFeel.getMonoFont (9.0f));
     g.drawText ("MET", metronomeBounds, juce::Justification::centred);
     g.setFont (lookAndFeel.getMonoFont (13.0f));
+    x += 32;
+
+    // FX reference button
+    fxRefBounds = { x, 6, 24, 24 };
+    g.setColour (juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (fxRefBounds.toFloat(), 3.0f);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId));
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.drawText ("FX", fxRefBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
 
     // Instrument panel toggle (right-aligned)
     instrumentToggleBounds = { getWidth() - 32, 6, 24, 24 };
@@ -212,6 +222,11 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
     if (metronomeBounds.contains (pos) && onMetronomeToggle)
     {
         onMetronomeToggle();
+        return;
+    }
+    if (fxRefBounds.contains (pos) && onShowFxReference)
+    {
+        onShowFxReference();
         return;
     }
 

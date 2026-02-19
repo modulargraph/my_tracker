@@ -207,5 +207,7 @@ void InstrumentPanel::showContextMenu (int instrument, juce::Point<int> screenPo
                         {
                             if (result == 1 && onLoadSampleRequested)
                                 onLoadSampleRequested (instrument);
+                            else if (result == 2 && onClearSampleRequested)
+                                onClearSampleRequested (instrument);
                         });
 }

@@ -39,8 +39,7 @@ void SendEffectsPlugin::initialise (const te::PluginInitialisationInfo& info)
     preDelayBuffer.clear();
     preDelayWritePos = 0;
 
-    // Scratch buffers
-    delayScratch.setSize (2, info.blockSizeSamples);
+    // Scratch buffer
     reverbScratch.setSize (2, info.blockSizeSamples);
 }
 
@@ -59,7 +58,7 @@ void SendEffectsPlugin::deinitialise()
 
 int SendEffectsPlugin::getDelayTimeSamples() const
 {
-    if (delayParams.bpmSync)
+    if (activeDelayParams.bpmSync)
     {
         // BPM-synced delay: division is the note denominator (4 = quarter, 8 = eighth, etc.)
         double bpm = edit.tempoSequence.getTempos()[0]->getBpm();
@@ -69,7 +68,7 @@ int SendEffectsPlugin::getDelayTimeSamples() const
         double beatSeconds = 60.0 / bpm;
 
         // Sync division: 1=whole, 2=half, 4=quarter, 8=eighth, 16=sixteenth, 32=thirty-second
-        double divisionSeconds = beatSeconds * (4.0 / static_cast<double> (juce::jmax (1, delayParams.syncDivision)));
+        double divisionSeconds = beatSeconds * (4.0 / static_cast<double> (juce::jmax (1, activeDelayParams.syncDivision)));
 
         int samples = static_cast<int> (divisionSeconds * sampleRate);
         return juce::jlimit (1, kMaxDelaySamples - 1, samples);
@@ -77,7 +76,7 @@ int SendEffectsPlugin::getDelayTimeSamples() const
     else
     {
         // Free time in ms
-        int samples = static_cast<int> (delayParams.time * sampleRate / 1000.0);
+        int samples = static_cast<int> (activeDelayParams.time * sampleRate / 1000.0);
         return juce::jlimit (1, kMaxDelaySamples - 1, samples);
     }
 }
@@ -90,21 +89,21 @@ void SendEffectsPlugin::processDelay (juce::AudioBuffer<float>& output, int star
 {
     if (sendBuffers == nullptr) return;
 
-    float wet = static_cast<float> (delayParams.wet) / 100.0f;
-    float feedback = static_cast<float> (delayParams.feedback) / 100.0f;
+    float wet = static_cast<float> (activeDelayParams.wet) / 100.0f;
+    float feedback = static_cast<float> (activeDelayParams.feedback) / 100.0f;
     int delaySamples = getDelayTimeSamples();
 
     // Stereo width: 0% = mono, 100% = full stereo (ping-pong)
-    float width = static_cast<float> (delayParams.stereoWidth) / 100.0f;
+    float width = static_cast<float> (activeDelayParams.stereoWidth) / 100.0f;
 
     // Setup filter if applicable
-    if (delayFilterInitialized && delayParams.filterType > 0)
+    if (delayFilterInitialized && activeDelayParams.filterType > 0)
     {
-        float cutoffHz = 20.0f * std::pow (1000.0f, static_cast<float> (delayParams.filterCutoff) / 100.0f);
+        float cutoffHz = 20.0f * std::pow (1000.0f, static_cast<float> (activeDelayParams.filterCutoff) / 100.0f);
         cutoffHz = juce::jmin (cutoffHz, static_cast<float> (sampleRate) * 0.4f);
         delayFilter.setCutoffFrequency (cutoffHz);
 
-        if (delayParams.filterType == 1)
+        if (activeDelayParams.filterType == 1)
             delayFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
         else
             delayFilter.setType (juce::dsp::StateVariableTPTFilterType::highpass);
@@ -123,7 +122,7 @@ void SendEffectsPlugin::processDelay (juce::AudioBuffer<float>& output, int star
         float delayedR = (channels > 1) ? delayLine.getSample (1, readPos) : delayedL;
 
         // Apply filter to feedback signal
-        if (delayFilterInitialized && delayParams.filterType > 0)
+        if (delayFilterInitialized && activeDelayParams.filterType > 0)
         {
             // Process mono (average of L+R for filter) then re-spread
             float mono = (delayedL + delayedR) * 0.5f;
@@ -173,26 +172,26 @@ void SendEffectsPlugin::processReverb (juce::AudioBuffer<float>& output, int sta
 {
     if (sendBuffers == nullptr) return;
 
-    float wet = static_cast<float> (reverbParams.wet) / 100.0f;
+    float wet = static_cast<float> (activeReverbParams.wet) / 100.0f;
     if (wet <= 0.0f) return;
 
     // Configure juce::Reverb parameters
     juce::Reverb::Parameters rvParams;
-    rvParams.roomSize   = static_cast<float> (reverbParams.roomSize) / 100.0f;
-    rvParams.damping    = static_cast<float> (reverbParams.damping) / 100.0f;
+    rvParams.roomSize   = static_cast<float> (activeReverbParams.roomSize) / 100.0f;
+    rvParams.damping    = static_cast<float> (activeReverbParams.damping) / 100.0f;
     rvParams.wetLevel   = wet;
     rvParams.dryLevel   = 0.0f; // We only want the wet signal
     rvParams.width      = 1.0f;
     rvParams.freezeMode = 0.0f;
 
     // Map decay to room size blend (decay affects both roomSize and wet)
-    float decayFactor = static_cast<float> (reverbParams.decay) / 100.0f;
+    float decayFactor = static_cast<float> (activeReverbParams.decay) / 100.0f;
     rvParams.roomSize = juce::jlimit (0.0f, 1.0f, rvParams.roomSize * (0.5f + decayFactor * 0.5f));
 
     reverb.setParameters (rvParams);
 
     // Pre-delay: read from a circular buffer offset by preDelay ms
-    int preDelaySamples = static_cast<int> (reverbParams.preDelay * sampleRate / 1000.0);
+    int preDelaySamples = static_cast<int> (activeReverbParams.preDelay * sampleRate / 1000.0);
     preDelaySamples = juce::jlimit (0, preDelayMaxSamples - 1, preDelaySamples);
 
     int channels = juce::jmin (2, output.getNumChannels());
@@ -255,6 +254,13 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     auto& buffer = *fc.destBuffer;
     int startSample = fc.bufferStartSample;
     int numSamples = fc.bufferNumSamples;
+
+    // Copy params from pending (UI thread) to active (audio thread)
+    {
+        const juce::SpinLock::ScopedLockType lock (paramLock);
+        activeDelayParams = pendingDelayParams;
+        activeReverbParams = pendingReverbParams;
+    }
 
     // Prepare send buffers to match current block size if needed
     if (sendBuffers->delayBuffer.getNumSamples() < numSamples

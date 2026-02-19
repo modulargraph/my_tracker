@@ -22,6 +22,10 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress& key) override;
+    void mouseDown (const juce::MouseEvent& event) override;
+    void mouseDrag (const juce::MouseEvent& event) override;
+    void mouseUp (const juce::MouseEvent& event) override;
+    void mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
 
 private:
     TrackerLookAndFeel& lookAndFeel;
@@ -51,6 +55,8 @@ private:
 
     // Value adjustment
     void adjustCurrentValue (int direction, bool fine, bool large);
+    bool isBarColumn() const;
+    void setCurrentValueFromNorm (float norm);
 
     // Drawing helpers
     void drawHeader (juce::Graphics& g, juce::Rectangle<int> area);
@@ -70,6 +76,11 @@ private:
     juce::String getColumnValue() const;
 
     void notifyChanged();
+
+    // Mouse drag state
+    bool mouseDragging = false;
+    int mouseDragStartY = 0;
+    int mouseDragAccumulated = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SendEffectsComponent)
 };

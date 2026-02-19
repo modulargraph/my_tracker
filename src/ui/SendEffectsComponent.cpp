@@ -571,3 +571,237 @@ void SendEffectsComponent::notifyChanged()
     if (onParamsChanged)
         onParamsChanged (delay, reverb);
 }
+
+//==============================================================================
+// Mouse interaction
+//==============================================================================
+
+bool SendEffectsComponent::isBarColumn() const
+{
+    if (section == 0)
+        return delayColumn != 1 && delayColumn != 2 && delayColumn != 4;
+    return true; // All reverb columns are bars
+}
+
+void SendEffectsComponent::setCurrentValueFromNorm (float norm)
+{
+    norm = juce::jlimit (0.0f, 1.0f, norm);
+
+    if (section == 0)
+    {
+        switch (delayColumn)
+        {
+            case 0:
+                if (! delay.bpmSync)
+                    delay.time = static_cast<double> (norm) * 2000.0;
+                else
+                {
+                    if (norm > 0.9f) delay.syncDivision = 1;
+                    else if (norm > 0.75f) delay.syncDivision = 2;
+                    else if (norm > 0.6f) delay.syncDivision = 4;
+                    else if (norm > 0.4f) delay.syncDivision = 8;
+                    else if (norm > 0.2f) delay.syncDivision = 16;
+                    else delay.syncDivision = 32;
+                }
+                break;
+            case 3: delay.feedback = static_cast<double> (norm) * 100.0; break;
+            case 5: delay.filterCutoff = static_cast<double> (norm) * 100.0; break;
+            case 6: delay.wet = static_cast<double> (norm) * 100.0; break;
+            case 7: delay.stereoWidth = static_cast<double> (norm) * 100.0; break;
+            default: break;
+        }
+    }
+    else
+    {
+        double val = static_cast<double> (norm) * 100.0;
+        switch (reverbColumn)
+        {
+            case 0: reverb.roomSize = val; break;
+            case 1: reverb.decay = val; break;
+            case 2: reverb.damping = val; break;
+            case 3: reverb.preDelay = val; break;
+            case 4: reverb.wet = val; break;
+            default: break;
+        }
+    }
+
+    notifyChanged();
+    repaint();
+}
+
+void SendEffectsComponent::mouseDown (const juce::MouseEvent& event)
+{
+    auto pos = event.getPosition();
+
+    int contentTop = kHeaderHeight;
+    int contentBottom = getHeight() - kBottomBarHeight;
+
+    if (pos.y < contentTop || pos.y >= contentBottom)
+        return;
+
+    int halfWidth = (getWidth() - kSectionGap) / 2;
+    int sectionTitleH = 20;
+    int colTop = contentTop + sectionTitleH;
+    int colHeight = contentBottom - colTop;
+
+    auto delayContent = juce::Rectangle<int> (0, colTop, halfWidth, colHeight);
+    auto reverbContent = juce::Rectangle<int> (halfWidth + kSectionGap, colTop,
+                                                getWidth() - halfWidth - kSectionGap, colHeight);
+
+    int clickedSection = -1;
+    int clickedColumn = -1;
+    juce::Rectangle<int> colArea;
+
+    if (delayContent.contains (pos))
+    {
+        clickedSection = 0;
+        int colW = delayContent.getWidth() / kDelayColumns;
+        clickedColumn = juce::jlimit (0, kDelayColumns - 1, (pos.x - delayContent.getX()) / colW);
+        int w = (clickedColumn < kDelayColumns - 1) ? colW : (delayContent.getWidth() - clickedColumn * colW);
+        colArea = { delayContent.getX() + clickedColumn * colW, delayContent.getY(), w, delayContent.getHeight() };
+    }
+    else if (reverbContent.contains (pos))
+    {
+        clickedSection = 1;
+        int colW = reverbContent.getWidth() / kReverbColumns;
+        clickedColumn = juce::jlimit (0, kReverbColumns - 1, (pos.x - reverbContent.getX()) / colW);
+        int w = (clickedColumn < kReverbColumns - 1) ? colW : (reverbContent.getWidth() - clickedColumn * colW);
+        colArea = { reverbContent.getX() + clickedColumn * colW, reverbContent.getY(), w, reverbContent.getHeight() };
+    }
+
+    if (clickedSection < 0)
+        return;
+
+    section = clickedSection;
+    currentColumn() = clickedColumn;
+
+    if (isBarColumn())
+    {
+        auto inner = colArea.reduced (6, 4);
+        float norm = 1.0f - static_cast<float> (pos.y - inner.getY()) / static_cast<float> (inner.getHeight());
+        setCurrentValueFromNorm (norm);
+    }
+    else
+    {
+        // List column click — determine which item was clicked
+        auto inner = colArea.reduced (1);
+        int numItems = 0;
+        int selectedIdx = 0;
+
+        if (section == 0 && delayColumn == 1) // Sync Division
+        {
+            numItems = 6;
+            static const int divs[] = { 1, 2, 4, 8, 16, 32 };
+            for (int i = 0; i < 6; ++i)
+                if (delay.syncDivision >= divs[i]) selectedIdx = i;
+        }
+        else if (section == 0 && delayColumn == 2) // BPM Sync
+        {
+            numItems = 2;
+            selectedIdx = delay.bpmSync ? 1 : 0;
+        }
+        else if (section == 0 && delayColumn == 4) // Filter type
+        {
+            numItems = 3;
+            selectedIdx = delay.filterType;
+        }
+
+        if (numItems > 0)
+        {
+            int maxVisible = inner.getHeight() / kListItemHeight;
+            int scrollOffset = 0;
+            if (numItems > maxVisible && selectedIdx >= 0)
+                scrollOffset = juce::jlimit (0, numItems - maxVisible, selectedIdx - maxVisible / 2);
+
+            int clickedItem = juce::jlimit (0, numItems - 1,
+                                             scrollOffset + (pos.y - inner.getY()) / kListItemHeight);
+
+            if (section == 0 && delayColumn == 1)
+            {
+                static const int divs[] = { 1, 2, 4, 8, 16, 32 };
+                delay.syncDivision = divs[clickedItem];
+            }
+            else if (section == 0 && delayColumn == 2)
+            {
+                delay.bpmSync = (clickedItem == 1);
+            }
+            else if (section == 0 && delayColumn == 4)
+            {
+                delay.filterType = clickedItem;
+            }
+
+            notifyChanged();
+        }
+    }
+
+    mouseDragging = true;
+    mouseDragStartY = pos.y;
+    mouseDragAccumulated = 0;
+
+    repaint();
+}
+
+void SendEffectsComponent::mouseDrag (const juce::MouseEvent& event)
+{
+    if (! mouseDragging)
+        return;
+
+    int deltaY = mouseDragStartY - event.y; // up = positive
+    int threshold = 4;
+    int steps = (deltaY - mouseDragAccumulated) / threshold;
+    if (steps == 0) return;
+
+    mouseDragAccumulated += steps * threshold;
+
+    bool shift = event.mods.isShiftDown();
+    for (int i = 0; i < std::abs (steps); ++i)
+        adjustCurrentValue (steps > 0 ? 1 : -1, shift, false);
+}
+
+void SendEffectsComponent::mouseUp (const juce::MouseEvent&)
+{
+    if (mouseDragging)
+    {
+        mouseDragging = false;
+        repaint();
+    }
+}
+
+void SendEffectsComponent::mouseWheelMove (const juce::MouseEvent& event,
+                                            const juce::MouseWheelDetails& wheel)
+{
+    auto pos = event.getPosition();
+
+    int contentTop = kHeaderHeight;
+    int contentBottom = getHeight() - kBottomBarHeight;
+
+    if (pos.y < contentTop || pos.y >= contentBottom)
+        return;
+
+    int halfWidth = (getWidth() - kSectionGap) / 2;
+    int sectionTitleH = 20;
+    int colTop = contentTop + sectionTitleH;
+    int colHeight = contentBottom - colTop;
+
+    auto delayContent = juce::Rectangle<int> (0, colTop, halfWidth, colHeight);
+    auto reverbContent = juce::Rectangle<int> (halfWidth + kSectionGap, colTop,
+                                                getWidth() - halfWidth - kSectionGap, colHeight);
+
+    if (delayContent.contains (pos))
+    {
+        section = 0;
+        int colW = delayContent.getWidth() / kDelayColumns;
+        delayColumn = juce::jlimit (0, kDelayColumns - 1, (pos.x - delayContent.getX()) / colW);
+    }
+    else if (reverbContent.contains (pos))
+    {
+        section = 1;
+        int colW = reverbContent.getWidth() / kReverbColumns;
+        reverbColumn = juce::jlimit (0, kReverbColumns - 1, (pos.x - reverbContent.getX()) / colW);
+    }
+    else
+        return;
+
+    int direction = (wheel.deltaY > 0) ? 1 : -1;
+    adjustCurrentValue (direction, false, false);
+}

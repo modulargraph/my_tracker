@@ -201,6 +201,12 @@ MainComponent::MainComponent()
         toolbar->setMetronomeEnabled (enabled);
     };
 
+    toolbar->onShowFxReference = [this]
+    {
+        auto mousePos = juce::Desktop::getInstance().getMousePosition();
+        trackerGrid->showFxCommandPopupAt (mousePos);
+    };
+
     // Create arrangement panel (hidden by default)
     arrangementComponent = std::make_unique<ArrangementComponent> (arrangement, patternData, trackerLookAndFeel);
     addChildComponent (*arrangementComponent);
@@ -383,6 +389,7 @@ MainComponent::MainComponent()
 
     // Create the grid
     trackerGrid = std::make_unique<TrackerGrid> (patternData, trackerLookAndFeel, trackLayout);
+    trackerGrid->setUndoManager (&undoManager);
     addAndMakeVisible (*trackerGrid);
 
     // Note preview callback
@@ -642,14 +649,20 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     bool cmd = key.getModifiers().isCommandDown();
     bool shift = key.getModifiers().isShiftDown();
     auto textChar = key.getTextCharacter();
+    bool alt = key.getModifiers().isAltDown();
 
-    // F1-F5: switch tabs (always available)
-    if (keyCode == juce::KeyPress::F1Key) { switchToTab (Tab::Tracker); return true; }
-    if (keyCode == juce::KeyPress::F2Key) { switchToTab (Tab::InstrumentEdit); return true; }
-    if (keyCode == juce::KeyPress::F3Key) { switchToTab (Tab::InstrumentType); return true; }
-    if (keyCode == juce::KeyPress::F4Key) { switchToTab (Tab::Mixer); return true; }
-    if (keyCode == juce::KeyPress::F5Key) { switchToTab (Tab::Effects); return true; }
-    if (keyCode == juce::KeyPress::F6Key) { switchToTab (Tab::Browser); return true; }
+    // F1-F6: switch tabs — but on the Tracker tab with no modifiers, let F-keys
+    // pass through to TrackerGrid (which uses F1-F8 for octave setting)
+    bool onTrackerTab = (tabBar != nullptr && tabBar->getActiveTab() == Tab::Tracker);
+    if (!onTrackerTab || shift || cmd || alt)
+    {
+        if (keyCode == juce::KeyPress::F1Key) { switchToTab (Tab::Tracker); return true; }
+        if (keyCode == juce::KeyPress::F2Key) { switchToTab (Tab::InstrumentEdit); return true; }
+        if (keyCode == juce::KeyPress::F3Key) { switchToTab (Tab::InstrumentType); return true; }
+        if (keyCode == juce::KeyPress::F4Key) { switchToTab (Tab::Mixer); return true; }
+        if (keyCode == juce::KeyPress::F5Key) { switchToTab (Tab::Effects); return true; }
+        if (keyCode == juce::KeyPress::F6Key) { switchToTab (Tab::Browser); return true; }
+    }
 
     // Escape in non-Tracker tabs: return to Tracker
     if (keyCode == juce::KeyPress::escapeKey && activeTab != Tab::Tracker)
@@ -748,8 +761,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     // Cmd+Up/Down: change instrument
     if (cmd && keyCode == juce::KeyPress::upKey)
     {
-        int inst = trackerGrid->getCurrentInstrument() + 1;
-        trackerGrid->setCurrentInstrument (juce::jlimit (0, 255, inst));
+        int inst = juce::jlimit (0, 255, trackerGrid->getCurrentInstrument() - 1);
+        trackerGrid->setCurrentInstrument (inst);
         updateStatusBar();
         updateToolbar();
         instrumentPanel->setSelectedInstrument (inst);
@@ -757,8 +770,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     }
     if (cmd && keyCode == juce::KeyPress::downKey)
     {
-        int inst = trackerGrid->getCurrentInstrument() - 1;
-        trackerGrid->setCurrentInstrument (juce::jlimit (0, 255, inst));
+        int inst = juce::jlimit (0, 255, trackerGrid->getCurrentInstrument() + 1);
+        trackerGrid->setCurrentInstrument (inst);
         updateStatusBar();
         updateToolbar();
         instrumentPanel->setSelectedInstrument (inst);
@@ -1745,7 +1758,7 @@ void MainComponent::showHelpOverlay()
         {
             // Column 1: Navigation + Notes
             columns[0] = {
-                { "NAVIGATION", {
+                { "TRACKER NAVIGATION", {
                     "Arrow keys        Navigate grid",
                     "Tab / Shift+Tab   Cycle sub-columns",
                     "Fn+Up / Fn+Down   Page Up / Down",
@@ -1754,8 +1767,10 @@ void MainComponent::showHelpOverlay()
                 { "NOTE ENTRY", {
                     "Z-M, Q-U keys    Enter notes",
                     "Cmd+1 to Cmd+8   Set octave 0-7",
-                    "Backtick (`)      Note-off (===)",
+                    "= (note col)     Note-off (OFF)",
+                    "- (note col)     Note-kill (KILL)",
                     "0-9, A-F          Hex entry",
+                    "/ or ? (FX col)   FX command list",
                     "Backspace         Clear cell" }},
                 { "PLAYBACK", {
                     "Space             Play / Stop",
@@ -1768,7 +1783,7 @@ void MainComponent::showHelpOverlay()
                 { "PATTERN & TRACKS", {
                     "Cmd+Left/Right    Switch pattern",
                     "Cmd+Shift+Right   Add new pattern",
-                    "Cmd+Up/Down       Change instrument",
+                    "Cmd+Down/Up       Instrument +/-",
                     "Cmd+M             Mute track",
                     "Cmd+Shift+M       Solo track" }},
                 { "EDITING", {
@@ -1784,23 +1799,23 @@ void MainComponent::showHelpOverlay()
                     "Cmd+Shift+O       Load sample" }}
             };
 
-            // Column 3: Tabs + Browser + View
+            // Column 3: Tabs + Mixer + Browser + View
             columns[2] = {
                 { "TABS", {
-                    "F1                Tracker tab",
-                    "F2                Inst Edit tab",
-                    "F3                Inst Type tab",
-                    "F4                Mixer tab",
-                    "F5                Effects tab",
-                    "F6                Browser tab",
+                    "F1                Tracker",
+                    "F2                Inst Edit",
+                    "F3                Inst Type",
+                    "F4                Mixer",
+                    "F5                Effects",
+                    "F6                Browser",
                     "Escape            Return to Tracker",
-                    "` (in edit tabs)  Params / Mod",
-                    "Note keys         Preview sample" }},
-                { "BROWSER", {
-                    "Left / Right      Switch pane",
-                    "Up / Down         Navigate list",
-                    "Enter             Open / Load",
-                    "Backspace         Parent directory" }},
+                    "` (in edit tabs)  Params / Mod" }},
+                { "MIXER", {
+                    "Left / Right      Navigate params",
+                    "Up / Down         Adjust value",
+                    "Shift+Up/Down     Large adjust",
+                    "Tab / Shift+Tab   Switch track",
+                    "M / S             Mute / Solo" }},
                 { "VIEW", {
                     "Cmd+Shift+A       Arrangement",
                     "Cmd+Shift+I       Instruments",
@@ -1970,7 +1985,7 @@ void MainComponent::doPaste()
         }
     }
 
-    undoManager.perform (new MultiCellEditAction (pat, std::move (records)));
+    undoManager.perform (new MultiCellEditAction (patternData, patternData.getCurrentPatternIndex(), std::move (records)));
     trackerGrid->repaint();
 }
 
@@ -1979,6 +1994,7 @@ void MainComponent::doCut()
     doCopy();
 
     auto& pat = patternData.getCurrentPattern();
+    int patIdx = patternData.getCurrentPatternIndex();
 
     if (trackerGrid->hasSelection)
     {
@@ -2000,7 +2016,7 @@ void MainComponent::doCut()
                 records.push_back (rec);
             }
         }
-        undoManager.perform (new MultiCellEditAction (pat, std::move (records)));
+        undoManager.perform (new MultiCellEditAction (patternData, patIdx, std::move (records)));
         trackerGrid->clearSelection();
     }
     else
@@ -2008,7 +2024,7 @@ void MainComponent::doCut()
         int r = trackerGrid->getCursorRow();
         int t = trackerGrid->getCursorTrack();
         Cell empty;
-        undoManager.perform (new CellEditAction (pat, r, t, empty));
+        undoManager.perform (new CellEditAction (patternData, patIdx, r, t, empty));
     }
 
     trackerGrid->repaint();

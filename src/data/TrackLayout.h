@@ -49,7 +49,7 @@ public:
             visualOrder[static_cast<size_t> (i)] = visualOrder[static_cast<size_t> (i + 1)];
 
         // Insert at new position (shift right)
-        int insertAt = (toVisual > fromVisual) ? toVisual : toVisual;
+        int insertAt = toVisual;
         for (int i = kNumTracks - 1; i > insertAt; --i)
             visualOrder[static_cast<size_t> (i)] = visualOrder[static_cast<size_t> (i - 1)];
 

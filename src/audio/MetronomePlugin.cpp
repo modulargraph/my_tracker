@@ -97,7 +97,9 @@ void MetronomePlugin::applyToBuffer (const te::PluginRenderContext& rc)
         int lastWholeBeat = static_cast<int> (std::floor (lastBeatPosition));
         int currentWholeBeat = static_cast<int> (std::floor (currentBeat));
 
-        if (currentWholeBeat > lastWholeBeat && currentBeat >= 0.0)
+        // Detect beat boundary: either forward progression or loop wrap-around
+        bool loopWrapped = currentBeat < lastBeatPosition - 0.5;
+        if ((currentWholeBeat > lastWholeBeat || loopWrapped) && currentBeat >= 0.0)
         {
             // New beat detected - determine if it's a downbeat
             bool isDownbeat = (currentWholeBeat % beatsPerBar == 0) && accentEnabled.load();

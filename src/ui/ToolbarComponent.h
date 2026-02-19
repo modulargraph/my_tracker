@@ -51,6 +51,7 @@ public:
     std::function<void (int delta)> onInstrumentDrag;
     std::function<void()> onFollowToggle;
     std::function<void()> onMetronomeToggle;
+    std::function<void()> onShowFxReference;
     std::function<void (int delta)> onRpbDrag;
 
     void setRowsPerBeat (int rpb) { rowsPerBeatVal = rpb; repaint(); }
@@ -81,7 +82,7 @@ private:
     juce::Rectangle<int> addPatBounds, removePatBounds;
     juce::Rectangle<int> lengthBounds, bpmBounds, stepBounds, octaveBounds, modeBounds, patNameBounds;
     juce::Rectangle<int> arrangementToggleBounds, instrumentToggleBounds, patSelectorBounds;
-    juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, rpbBounds;
+    juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, fxRefBounds, rpbBounds;
 
     // Drag state
     enum class DragTarget { None, Length, Bpm, Step, Octave, Instrument, Rpb };

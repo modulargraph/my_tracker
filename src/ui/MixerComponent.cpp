@@ -813,30 +813,8 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
     auto keyCode = key.getKeyCode();
     bool shift = key.getModifiers().isShiftDown();
 
-    // Left/Right: select track
+    // Left/Right: navigate params/sections within strip
     if (keyCode == juce::KeyPress::leftKey && ! shift)
-    {
-        if (selectedTrack > 0)
-        {
-            selectedTrack--;
-            ensureTrackVisible();
-            repaint();
-        }
-        return true;
-    }
-    if (keyCode == juce::KeyPress::rightKey && ! shift)
-    {
-        if (selectedTrack < kNumTracks - 1)
-        {
-            selectedTrack++;
-            ensureTrackVisible();
-            repaint();
-        }
-        return true;
-    }
-
-    // Up/Down: select parameter within section
-    if (keyCode == juce::KeyPress::upKey && ! shift)
     {
         if (currentParam > 0)
             currentParam--;
@@ -845,7 +823,7 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
         repaint();
         return true;
     }
-    if (keyCode == juce::KeyPress::downKey && ! shift)
+    if (keyCode == juce::KeyPress::rightKey && ! shift)
     {
         if (currentParam < getParamCountForSection (currentSection) - 1)
             currentParam++;
@@ -855,27 +833,34 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Shift+Up/Down: adjust value
-    if (keyCode == juce::KeyPress::upKey && shift)
+    // Up/Down: adjust value
+    if (keyCode == juce::KeyPress::upKey)
     {
-        adjustCurrentParam (1.0);
+        adjustCurrentParam (shift ? 5.0 : 1.0);
         repaint();
         return true;
     }
-    if (keyCode == juce::KeyPress::downKey && shift)
+    if (keyCode == juce::KeyPress::downKey)
     {
-        adjustCurrentParam (-1.0);
+        adjustCurrentParam (shift ? -5.0 : -1.0);
         repaint();
         return true;
     }
 
-    // Tab: jump between sections
+    // Tab/Shift+Tab: select track
     if (keyCode == juce::KeyPress::tabKey)
     {
         if (shift)
-            prevSection();
+        {
+            if (selectedTrack > 0)
+                selectedTrack--;
+        }
         else
-            nextSection();
+        {
+            if (selectedTrack < kNumTracks - 1)
+                selectedTrack++;
+        }
+        ensureTrackVisible();
         repaint();
         return true;
     }

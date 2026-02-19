@@ -2431,6 +2431,27 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                         default: break;
                     }
                 }
+                else if (editSubTab == EditSubTab::Modulation)
+                {
+                    auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
+                    if (mod.type == InstrumentParams::Modulation::Type::LFO)
+                    {
+                        if (modColumn == 5) // Amount
+                            mod.amount = static_cast<int> (norm * 100.0);
+                    }
+                    else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
+                    {
+                        switch (modColumn)
+                        {
+                            case 3: mod.attackS  = norm * 10.0; break;
+                            case 4: mod.decayS   = norm * 10.0; break;
+                            case 5: mod.sustain  = static_cast<int> (norm * 100.0); break;
+                            case 6: mod.releaseS = norm * 10.0; break;
+                            case 7: mod.amount   = static_cast<int> (norm * 100.0); break;
+                            default: break;
+                        }
+                    }
+                }
                 notifyParamsChanged();
             }
 

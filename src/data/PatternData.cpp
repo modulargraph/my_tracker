@@ -124,6 +124,7 @@ void PatternData::duplicatePattern (int index)
 void PatternData::clearAllPatterns()
 {
     patterns.clear();
+    patterns.emplace_back (64);  // Always keep at least one pattern
     currentPattern = 0;
 }
 

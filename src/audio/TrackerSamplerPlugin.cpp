@@ -517,6 +517,18 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     // Clear output region (synth, additive rendering)
     buffer.clear (startSample, numSamples);
 
+    // --- Handle stop request before new note (avoids stopping a just-triggered note) ---
+    if (previewStop.exchange (false))
+    {
+        if (voice.state == Voice::State::Playing)
+        {
+            fadeOutVoice = voice;
+            fadeOutVoice.state = Voice::State::FadingOut;
+            fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
+            voice.state = Voice::State::Idle;
+        }
+    }
+
     // --- Handle preview notes from message thread ---
     int pNote = previewNote.exchange (-1);
     if (pNote >= 0)
@@ -535,17 +547,6 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         previewParams.playMode = InstrumentParams::PlayMode::OneShot;
         triggerNote (voice, pNote, pVel, *bank, previewParams);
         voiceTriggeredByPreview = true;
-    }
-
-    if (previewStop.exchange (false))
-    {
-        if (voice.state == Voice::State::Playing)
-        {
-            fadeOutVoice = voice;
-            fadeOutVoice.state = Voice::State::FadingOut;
-            fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
-            voice.state = Voice::State::Idle;
-        }
     }
 
     // --- Process MIDI messages ---
@@ -569,14 +570,19 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             {
                 // Switch to a preloaded bank for multi-instrument support
                 int progNum = m.getProgramChangeNumber();
+                const juce::SpinLock::ScopedLockType lock (bankLock);
                 auto it = preloadedBanks.find (progNum);
                 if (it != preloadedBanks.end() && it->second != nullptr)
                 {
-                    const juce::SpinLock::ScopedLockType lock (bankLock);
                     sharedBank = it->second;
                     bank = sharedBank;
                     instrumentIndex = progNum;
                 }
+            }
+            else if (m.isController())
+            {
+                if (m.getControllerNumber() == 9) // Sample Offset (9xx)
+                    pendingSampleOffset = m.getControllerValue();
             }
             else if (m.isNoteOn())
             {
@@ -594,6 +600,18 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 triggerNote (voice, m.getNoteNumber(),
                              m.getVelocity() / 127.0f, *bank, params);
                 voiceTriggeredByPreview = false;
+
+                // Apply 9xx sample offset: jump playback position into the sample region
+                if (pendingSampleOffset > 0)
+                {
+                    double totalSmp = static_cast<double> (bank->totalSamples);
+                    double regionStart = params.startPos * totalSmp;
+                    double regionEnd = params.endPos * totalSmp;
+                    double offsetFrac = static_cast<double> (pendingSampleOffset) / 256.0;
+                    double offsetPos = regionStart + offsetFrac * (regionEnd - regionStart);
+                    voice.playbackPos = offsetPos;
+                    pendingSampleOffset = -1;
+                }
             }
             else if (m.isNoteOff())
             {

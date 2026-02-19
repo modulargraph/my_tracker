@@ -90,8 +90,7 @@ float InstrumentEffectsPlugin::computeLFO (LFOState& state, const InstrumentPara
         return 0.0f;
 
     // LFO Hz = bpm / 60.0 * rowsPerBeat / speedInSteps
-    // Assume 4 rows per beat (standard tracker)
-    double stepsPerBeat = 4.0;
+    double stepsPerBeat = static_cast<double> (juce::jmax (1, rowsPerBeat));
     double speedInSteps = static_cast<double> (juce::jmax (1, mod.lfoSpeed));
     double lfoHz = (bpm / 60.0) * stepsPerBeat / speedInSteps;
 
@@ -603,8 +602,14 @@ void InstrumentEffectsPlugin::processFxCommands (int numSamples, float& pitchMod
         int x = (fxState.arpParam >> 4) & 0xF;
         int y = fxState.arpParam & 0xF;
 
-        // Cycle through 3 phases based on block time
-        fxState.arpPhase = (fxState.arpPhase + 1) % 3;
+        // Cycle through 3 phases at tick rate (not per audio block)
+        fxState.arpTickAccum += ticksThisBlock;
+        while (fxState.arpTickAccum >= 1.0)
+        {
+            fxState.arpPhase = (fxState.arpPhase + 1) % 3;
+            fxState.arpTickAccum -= 1.0;
+        }
+
         switch (fxState.arpPhase)
         {
             case 0: pitchMod = 0.0f; break;
@@ -629,8 +634,9 @@ void InstrumentEffectsPlugin::processFxCommands (int numSamples, float& pitchMod
         pitchMod += fxState.pitchSlide;
     }
 
-    // --- Tone Portamento (3xx) ---
-    if (fxState.portaSpeed > 0 && fxState.portaTarget >= 0 && fxState.currentNote >= 0)
+    // --- Tone Portamento (3xx) — only when active flag is set ---
+    if (fxState.portaActive && fxState.portaSpeed > 0
+        && fxState.portaTarget >= 0 && fxState.currentNote >= 0)
     {
         float target = static_cast<float> (fxState.portaTarget - fxState.currentNote);
         float step = (static_cast<float> (fxState.portaSpeed) / 16.0f) * static_cast<float> (ticksThisBlock);
@@ -640,11 +646,18 @@ void InstrumentEffectsPlugin::processFxCommands (int numSamples, float& pitchMod
         else if (fxState.portaPitch > target)
             fxState.portaPitch = juce::jmax (fxState.portaPitch - step, target);
 
+        // When target is reached, update currentNote so new targets work correctly
+        if (std::abs (fxState.portaPitch - target) < 0.01f && std::abs (target) > 0.001f)
+        {
+            fxState.currentNote = fxState.portaTarget;
+            fxState.portaPitch = 0.0f;
+        }
+
         pitchMod += fxState.portaPitch;
     }
 
-    // --- Vibrato (4xy) ---
-    if (fxState.vibratoSpeed > 0 && fxState.vibratoDepth > 0)
+    // --- Vibrato (4xy) — only when active flag is set ---
+    if (fxState.vibratoActive && fxState.vibratoSpeed > 0 && fxState.vibratoDepth > 0)
     {
         double vibratoHz = static_cast<double> (fxState.vibratoSpeed) * ticksPerSecond / 64.0;
         fxState.vibratoPhase += vibratoHz * blockDuration;
@@ -664,14 +677,8 @@ void InstrumentEffectsPlugin::processFxCommands (int numSamples, float& pitchMod
         fxVolumeMod = juce::jlimit (0.0f, 2.0f, 1.0f + fxState.volumeSlide);
     }
 
-    // --- Vol Slide + Portamento (5xy): volume slide + continue portamento ---
-    if (fxState.portaSpeed > 0 && fxState.portaTarget >= 0)
-    {
-        // Portamento already processed above
-    }
-
-    // --- Tremolo (7xy) ---
-    if (fxState.tremoloSpeed > 0 && fxState.tremoloDepth > 0)
+    // --- Tremolo (7xy) — only when active flag is set ---
+    if (fxState.tremoloActive && fxState.tremoloSpeed > 0 && fxState.tremoloDepth > 0)
     {
         double tremoloHz = static_cast<double> (fxState.tremoloSpeed) * ticksPerSecond / 64.0;
         fxState.tremoloPhase += tremoloHz * blockDuration;
@@ -741,7 +748,23 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 int ccNum = m.getControllerNumber();
                 int ccVal = m.getControllerValue();
 
-                if (ccNum == 10) // Panning override (from 8xx effect)
+                if (ccNum == 119) // Row boundary: clear per-row continuous effects
+                {
+                    fxState.slideUpSpeed = 0;
+                    fxState.slideDownSpeed = 0;
+                    fxState.arpParam = 0;
+                    fxState.arpTickAccum = 0.0;
+                    fxState.volSlideUp = 0;
+                    fxState.volSlideDown = 0;
+                    fxState.portaActive = false;
+                    fxState.vibratoActive = false;
+                    fxState.tremoloActive = false;
+                }
+                else if (ccNum == 28) // Portamento target note (don't retrigger)
+                {
+                    fxState.portaTarget = ccVal;
+                }
+                else if (ccNum == 10) // Panning override (from 8xx effect)
                 {
                     overrides.panningOverride = ccVal;
                 }
@@ -757,6 +780,7 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 {
                     fxState.arpParam = ccVal;
                     fxState.arpPhase = 0;
+                    fxState.arpTickAccum = 0.0;
                 }
                 else if (ccNum == 21) // Slide Up (1xx)
                 {
@@ -770,10 +794,12 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 }
                 else if (ccNum == 23) // Tone Portamento (3xx)
                 {
+                    fxState.portaActive = true;
                     if (ccVal > 0) fxState.portaSpeed = ccVal;
                 }
                 else if (ccNum == 24) // Vibrato (4xy)
                 {
+                    fxState.vibratoActive = true;
                     if ((ccVal >> 4) > 0) fxState.vibratoSpeed = ccVal >> 4;
                     if ((ccVal & 0xF) > 0) fxState.vibratoDepth = ccVal & 0xF;
                 }
@@ -781,14 +807,17 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 {
                     fxState.volSlideUp = ccVal >> 4;
                     fxState.volSlideDown = ccVal & 0xF;
+                    fxState.portaActive = true; // Keep portamento going
                 }
                 else if (ccNum == 26) // Vol Slide+Vibrato (6xy)
                 {
                     fxState.volSlideUp = ccVal >> 4;
                     fxState.volSlideDown = ccVal & 0xF;
+                    fxState.vibratoActive = true; // Keep vibrato going
                 }
                 else if (ccNum == 27) // Tremolo (7xy)
                 {
+                    fxState.tremoloActive = true;
                     if ((ccVal >> 4) > 0) fxState.tremoloSpeed = ccVal >> 4;
                     if ((ccVal & 0xF) > 0) fxState.tremoloDepth = ccVal & 0xF;
                 }
@@ -797,10 +826,10 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     fxState.volSlideUp = ccVal >> 4;
                     fxState.volSlideDown = ccVal & 0xF;
                 }
-                else if (ccNum == 85) // Mod mode override (from Exy effect)
+                else if (ccNum == 85) // Mod mode override (from Exy effect, encoded as dest*2+mode)
                 {
-                    int dest = (ccVal >> 4) & 0xF;
-                    int mode = ccVal & 0xF;
+                    int dest = ccVal / 2;
+                    int mode = ccVal % 2;
 
                     if (dest == 0xF) // F = all destinations
                     {
@@ -822,16 +851,12 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             }
             else if (m.isNoteOn())
             {
-                // Track note for portamento target
-                if (fxState.portaSpeed > 0 && fxState.currentNote >= 0)
-                    fxState.portaTarget = m.getNoteNumber();
-                else
-                    fxState.portaTarget = -1;
-
+                // Note-on: this is an actual retrigger (porta targets come via CC#28)
                 fxState.currentNote = m.getNoteNumber();
-                // Reset pitch effects on new note (unless portamento active)
-                if (fxState.portaSpeed == 0)
-                    fxState.pitchSlide = 0.0f;
+                fxState.portaTarget = -1;
+                fxState.portaPitch = 0.0f;
+                fxState.pitchSlide = 0.0f;
+                fxState.volumeSlide = 0.0f;
 
                 triggerEnvelopes();
                 for (auto& lfo : lfoStates)
@@ -854,6 +879,9 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             }
             else if (m.isNoteOff() || m.isAllNotesOff())
             {
+                // Clear portamento state on note-off
+                fxState.portaTarget = -1;
+
                 // Graceful release (OFF) — ADSR release stage plays
                 releaseEnvelopes();
 

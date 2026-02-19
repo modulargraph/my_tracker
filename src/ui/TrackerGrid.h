@@ -112,7 +112,15 @@ public:
     // Current cursor FX lane index (which FX lane the cursor is in)
     int getCursorFxLane() const { return cursorFxLane; }
 
+    // FX command dropdown
+    void showFxCommandPopup();
+    void showFxCommandPopupAt (juce::Point<int> screenPos);
+
+    // Undo manager for undoable edits (delete, drag-move)
+    void setUndoManager (juce::UndoManager* um) { undoManager = um; }
+
 private:
+    juce::UndoManager* undoManager = nullptr;
     PatternData& pattern;
     TrackerLookAndFeel& lookAndFeel;
     TrackLayout& trackLayout;
@@ -185,9 +193,6 @@ private:
     int getTrackXOffset (int visualIndex) const;  // pixel X for a visual track index
     int getTrackWidth (int visualIndex) const;     // pixel width for a visual track
     int visualTrackAtPixel (int pixelX) const;     // visual track index at pixel X (relative to row number area)
-
-    // FX command dropdown
-    void showFxCommandPopup();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackerGrid)
 };

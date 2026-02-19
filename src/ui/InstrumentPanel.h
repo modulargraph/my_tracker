@@ -25,6 +25,7 @@ public:
     std::function<void (int instrument)> onInstrumentSelected;
     std::function<void (int instrument)> onLoadSampleRequested;
     std::function<void (int instrument)> onEditSampleRequested;
+    std::function<void (int instrument)> onClearSampleRequested;
 
     static constexpr int kPanelWidth = 180;
 

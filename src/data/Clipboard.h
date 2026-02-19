@@ -56,27 +56,29 @@ inline ClipboardData& getClipboard()
 class CellEditAction : public juce::UndoableAction
 {
 public:
-    CellEditAction (Pattern& pat, int row, int track, const Cell& newCell)
-        : pattern (pat), r (row), t (track), newValue (newCell)
+    CellEditAction (PatternData& data, int patternIndex, int row, int track, const Cell& newCell)
+        : patternData (data), patIdx (patternIndex), r (row), t (track), newValue (newCell)
     {
-        oldValue = pattern.getCell (r, t);
+        oldValue = patternData.getPattern (patIdx).getCell (r, t);
     }
 
     bool perform() override
     {
-        pattern.setCell (r, t, newValue);
+        if (patIdx < patternData.getNumPatterns())
+            patternData.getPattern (patIdx).setCell (r, t, newValue);
         return true;
     }
 
     bool undo() override
     {
-        pattern.setCell (r, t, oldValue);
+        if (patIdx < patternData.getNumPatterns())
+            patternData.getPattern (patIdx).setCell (r, t, oldValue);
         return true;
     }
 
 private:
-    Pattern& pattern;
-    int r, t;
+    PatternData& patternData;
+    int patIdx, r, t;
     Cell oldValue, newValue;
 };
 
@@ -85,24 +87,27 @@ class MultiCellEditAction : public juce::UndoableAction
 public:
     struct CellRecord { int row; int track; Cell oldCell; Cell newCell; };
 
-    MultiCellEditAction (Pattern& pat, std::vector<CellRecord> records)
-        : pattern (pat), cells (std::move (records)) {}
+    MultiCellEditAction (PatternData& data, int patternIndex, std::vector<CellRecord> records)
+        : patternData (data), patIdx (patternIndex), cells (std::move (records)) {}
 
     bool perform() override
     {
-        for (auto& c : cells)
-            pattern.setCell (c.row, c.track, c.newCell);
+        if (patIdx < patternData.getNumPatterns())
+            for (auto& c : cells)
+                patternData.getPattern (patIdx).setCell (c.row, c.track, c.newCell);
         return true;
     }
 
     bool undo() override
     {
-        for (auto& c : cells)
-            pattern.setCell (c.row, c.track, c.oldCell);
+        if (patIdx < patternData.getNumPatterns())
+            for (auto& c : cells)
+                patternData.getPattern (patIdx).setCell (c.row, c.track, c.oldCell);
         return true;
     }
 
 private:
-    Pattern& pattern;
+    PatternData& patternData;
+    int patIdx;
     std::vector<CellRecord> cells;
 };

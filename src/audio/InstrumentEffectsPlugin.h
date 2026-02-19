@@ -104,14 +104,20 @@ private:
         // Current base MIDI note for pitch effects
         int currentNote = -1;
 
+        // Active flags for memory effects (cleared per row, re-set by CC)
+        bool portaActive = false;
+        bool vibratoActive = false;
+        bool tremoloActive = false;
+        double arpTickAccum = 0.0;
+
         void reset()
         {
-            arpParam = 0; arpPhase = 0;
+            arpParam = 0; arpPhase = 0; arpTickAccum = 0.0;
             pitchSlide = 0.0f;
             slideUpSpeed = 0; slideDownSpeed = 0;
-            portaSpeed = 0; portaTarget = -1; portaPitch = 0.0f;
-            vibratoSpeed = 0; vibratoDepth = 0; vibratoPhase = 0.0;
-            tremoloSpeed = 0; tremoloDepth = 0; tremoloPhase = 0.0;
+            portaSpeed = 0; portaTarget = -1; portaPitch = 0.0f; portaActive = false;
+            vibratoSpeed = 0; vibratoDepth = 0; vibratoPhase = 0.0; vibratoActive = false;
+            tremoloSpeed = 0; tremoloDepth = 0; tremoloPhase = 0.0; tremoloActive = false;
             volumeSlide = 0.0f; volSlideUp = 0; volSlideDown = 0;
             sampleOffset = 0; lastSpeedTempo = 0;
             currentNote = -1;
