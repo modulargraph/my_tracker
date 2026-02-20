@@ -11,6 +11,12 @@ MixerPlugin::~MixerPlugin()
 {
 }
 
+void MixerPlugin::setMixState (const TrackMixState& s)
+{
+    const juce::SpinLock::ScopedLockType lock (mixStateLock);
+    sharedMixState = s;
+}
+
 void MixerPlugin::initialise (const te::PluginInitialisationInfo& info)
 {
     sampleRate = info.sampleRate;
@@ -204,7 +210,7 @@ void MixerPlugin::processVolumeAndPan (juce::AudioBuffer<float>& buffer, int sta
 
 void MixerPlugin::processSends (const juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
 {
-    if (mixStateSource == nullptr || sendBuffers == nullptr) return;
+    if (sendBuffers == nullptr) return;
 
     if (localMixState.reverbSend > -99.0)
     {
@@ -225,10 +231,13 @@ void MixerPlugin::processSends (const juce::AudioBuffer<float>& buffer, int star
 
 void MixerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 {
-    if (fc.destBuffer == nullptr || mixStateSource == nullptr) return;
+    if (fc.destBuffer == nullptr) return;
 
-    // Copy mix state from UI thread source to local audio-thread copy
-    localMixState = *mixStateSource;
+    // Copy UI-updated state to the audio-thread working copy.
+    {
+        const juce::SpinLock::ScopedLockType lock (mixStateLock);
+        localMixState = sharedMixState;
+    }
 
     auto& buffer = *fc.destBuffer;
     int startSample = fc.bufferStartSample;

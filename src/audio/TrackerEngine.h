@@ -61,6 +61,7 @@ public:
 
     // Sample loading (instrument-only, no track coupling)
     juce::String loadSampleForInstrument (int instrumentIndex, const juce::File& sampleFile);
+    void clearSampleForInstrument (int instrumentIndex);
 
     // Ensure a track's plugin is configured for a specific instrument
     void ensureTrackHasInstrument (int trackIndex, int instrumentIndex);
@@ -85,6 +86,8 @@ public:
 
     // Stop any active preview (file or note)
     void stopPreview();
+    void setPreviewVolume (float gainLinear);
+    float getPreviewVolume() const { return previewVolume; }
 
     // Metronome
     void setMetronomeEnabled (bool enabled);
@@ -117,7 +120,7 @@ private:
     std::unique_ptr<te::Edit> edit;
     SimpleSampler sampler;
     int rowsPerBeat = 4;
-    std::array<int, kNumTracks> currentTrackInstrument {};
+    std::array<int, kNumTracks + 3> currentTrackInstrument {};
 
     // Preview, metronome, and send effects track indices
     static constexpr int kPreviewTrack = kNumTracks;
@@ -130,6 +133,9 @@ private:
     static constexpr int kPreviewDurationMs = 3000;
     int activePreviewTrack = -1;
     std::shared_ptr<SampleBank> previewBank;
+    float previewVolume = 1.0f;
+
+    void prepareTracksForInstrumentUsage (const std::array<std::vector<int>, kNumTracks>& instrumentsByTrack);
 
     void timerCallback() override;
     void changeListenerCallback (juce::ChangeBroadcaster* source) override;

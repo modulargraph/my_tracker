@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <map>
 #include <JuceHeader.h>
 #include <tracktion_engine/tracktion_engine.h>
 #include "InstrumentParams.h"
@@ -38,6 +39,7 @@ public:
     void setSamplerSource (SimpleSampler* s) { sampler = s; }
     void setInstrumentIndex (int index);
     void setGlobalModState (GlobalModState* state) { globalModState = state; }
+    void setGlobalModStates (const std::map<int, GlobalModState*>& states);
     void setRowsPerBeat (int rpb) { rowsPerBeat = rpb; }
     void setSendBuffers (SendBuffers* buffers) { sendBuffers = buffers; }
 
@@ -127,6 +129,8 @@ private:
 
     // Global modulation support
     GlobalModState* globalModState = nullptr;
+    juce::SpinLock globalStateLock;
+    std::map<int, GlobalModState*> globalStatesByInstrument;
     double currentTransportBeat = 0.0;
     int rowsPerBeat = 4;
     static std::atomic<uint64_t> blockCounter;

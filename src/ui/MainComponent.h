@@ -116,6 +116,8 @@ private:
     juce::Label statusLabel;
     juce::Label octaveLabel;
     juce::Label bpmLabel;
+    juce::Label previewVolumeLabel;
+    juce::Slider previewVolumeSlider;
 
     void timerCallback() override;
     void updateStatusBar();
@@ -147,7 +149,9 @@ private:
     void updateInstrumentPanel();
     std::array<bool, kNumTracks> getReleaseModes() const;
     void loadSampleForInstrument (int instrument);
+    void clearSampleForInstrument (int instrument);
     void updateSampleEditorForCurrentInstrument();
+    void updateTrackSampleMarkers();
     void switchToTab (Tab tab);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)

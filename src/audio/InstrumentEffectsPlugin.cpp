@@ -712,28 +712,36 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     blockCounter.fetch_add (1, std::memory_order_relaxed);
     currentTransportBeat = edit.tempoSequence.toBeats (fc.editTime.getStart()).inBeats();
 
+    auto handleNoteRelease = [this]()
+    {
+        // Clear portamento target on release-style events.
+        fxState.portaTarget = -1;
+        releaseEnvelopes();
+
+        if (globalModState != nullptr)
+        {
+            int count = globalModState->activeNoteCount.fetch_sub (1, std::memory_order_relaxed) - 1;
+            if (count <= 0)
+            {
+                globalModState->activeNoteCount.store (0, std::memory_order_relaxed);
+                for (auto& es : globalModState->envStates)
+                {
+                    int stage = es.stage.load (std::memory_order_relaxed);
+                    if (stage != 0) // not Idle
+                        es.stage.store (4, std::memory_order_relaxed); // Release
+                }
+            }
+        }
+    };
+
     // Process MIDI to track current instrument and handle CCs/global notes
     if (fc.bufferForMidiMessages != nullptr)
     {
+        bool handledAllNotesOffFlag = false;
         if (fc.bufferForMidiMessages->isAllNotesOff)
         {
-            releaseEnvelopes();
-
-            // Global envelope: decrement note count, release if last note
-            if (globalModState != nullptr)
-            {
-                int count = globalModState->activeNoteCount.fetch_sub (1, std::memory_order_relaxed) - 1;
-                if (count <= 0)
-                {
-                    globalModState->activeNoteCount.store (0, std::memory_order_relaxed);
-                    for (auto& es : globalModState->envStates)
-                    {
-                        int stage = es.stage.load (std::memory_order_relaxed);
-                        if (stage != 0) // not Idle
-                            es.stage.store (4, std::memory_order_relaxed); // Release
-                    }
-                }
-            }
+            handleNoteRelease();
+            handledAllNotesOffFlag = true;
         }
 
         for (auto& m : *fc.bufferForMidiMessages)
@@ -742,6 +750,20 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             {
                 // Multi-instrument support: update current instrument on program change
                 currentInstrument = m.getProgramChangeNumber();
+
+                // Use preloaded per-instrument global modulation state for this track.
+                GlobalModState* switchedState = nullptr;
+                {
+                    const juce::SpinLock::ScopedTryLockType lock (globalStateLock);
+                    if (lock.isLocked())
+                    {
+                        auto it = globalStatesByInstrument.find (currentInstrument);
+                        if (it != globalStatesByInstrument.end())
+                            switchedState = it->second;
+                    }
+                }
+                if (switchedState != nullptr)
+                    globalModState = switchedState;
             }
             else if (m.isController())
             {
@@ -879,26 +901,14 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             }
             else if (m.isNoteOff() || m.isAllNotesOff())
             {
-                // Clear portamento state on note-off
-                fxState.portaTarget = -1;
-
-                // Graceful release (OFF) — ADSR release stage plays
-                releaseEnvelopes();
-
-                // Global envelope: decrement note count, release if last note
-                if (globalModState != nullptr)
+                if (m.isAllNotesOff())
                 {
-                    int count = globalModState->activeNoteCount.fetch_sub (1, std::memory_order_relaxed) - 1;
-                    if (count <= 0)
-                    {
-                        globalModState->activeNoteCount.store (0, std::memory_order_relaxed);
-                        for (auto& es : globalModState->envStates)
-                        {
-                            int stage = es.stage.load (std::memory_order_relaxed);
-                            if (stage != 0) // not Idle
-                                es.stage.store (4, std::memory_order_relaxed); // Release
-                        }
-                    }
+                    if (! handledAllNotesOffFlag)
+                        handleNoteRelease();
+                }
+                else
+                {
+                    handleNoteRelease();
                 }
             }
             else if (m.isAllSoundOff())
@@ -926,21 +936,19 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     }
 
     // Look up current instrument params from sampler
-    const InstrumentParams* params = nullptr;
+    InstrumentParams params;
+    bool hasParams = false;
 
     if (sampler != nullptr && currentInstrument >= 0)
     {
-        auto& allParams = sampler->getAllParams();
-        auto it = allParams.find (currentInstrument);
-        if (it != allParams.end())
-            params = &(it->second);
+        hasParams = sampler->getParamsIfPresent (currentInstrument, params);
     }
 
-    if (params == nullptr)
+    if (! hasParams)
         return;
 
     // Advance global envelopes (once per block across all plugins sharing the state)
-    advanceGlobalEnvelopes (*params);
+    advanceGlobalEnvelopes (params);
 
     // Get tempo for LFO sync
     double bpm = edit.tempoSequence.getTempos()[0]->getBpm();
@@ -952,10 +960,10 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     // --- Volume: subtractive gain multiplier (0.0 = silence, 1.0 = configured volume) ---
     float volumeGainMult = 1.0f;
     {
-        auto& volMod = params->modulations[static_cast<size_t> (InstrumentParams::ModDest::Volume)];
+        auto& volMod = params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Volume)];
         float volAmount = static_cast<float> (volMod.amount) / 100.0f;
         float volScaled = getModulationValue (static_cast<int> (InstrumentParams::ModDest::Volume),
-                                               *params, bpm, numSamples);
+                                               params, bpm, numSamples);
 
         if (volMod.type == InstrumentParams::Modulation::Type::Envelope)
             volumeGainMult = juce::jlimit (0.0f, 1.0f, 1.0f - volAmount + volScaled);
@@ -965,15 +973,15 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
     // --- Pan: additive (swing both directions) ---
     float panMod = getModulationValue (static_cast<int> (InstrumentParams::ModDest::Panning),
-                                        *params, bpm, numSamples);
+                                        params, bpm, numSamples);
 
     // --- Cutoff: subtractive multiplier (0.0 = fully closed, 1.0 = set cutoff) ---
     float cutoffMult = 1.0f;
     {
-        auto& cutMod = params->modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)];
+        auto& cutMod = params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)];
         float cutAmount = static_cast<float> (cutMod.amount) / 100.0f;
         float cutScaled = getModulationValue (static_cast<int> (InstrumentParams::ModDest::Cutoff),
-                                               *params, bpm, numSamples);
+                                               params, bpm, numSamples);
 
         if (cutMod.type == InstrumentParams::Modulation::Type::Envelope)
             cutoffMult = juce::jlimit (0.0f, 1.0f, 1.0f - cutAmount + cutScaled);
@@ -983,9 +991,9 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
     // Advance other modulators even if not directly used here
     getModulationValue (static_cast<int> (InstrumentParams::ModDest::GranularPos),
-                        *params, bpm, numSamples);
+                        params, bpm, numSamples);
     getModulationValue (static_cast<int> (InstrumentParams::ModDest::Finetune),
-                        *params, bpm, numSamples);
+                        params, bpm, numSamples);
 
     // Process FX commands (arpeggio, slides, vibrato, tremolo, volume slide)
     float fxPitchMod = 0.0f;
@@ -1017,10 +1025,10 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     volumeGainMult *= fxVolumeMod;
 
     // DSP chain: Volume/Pan → Filter → Overdrive → BitDepth → Safety Limiter
-    processVolumeAndPan (buffer, startSample, numSamples, *params, volumeGainMult, panMod);
-    processFilter (buffer, startSample, numSamples, *params, cutoffMult);
-    processOverdrive (buffer, startSample, numSamples, params->overdrive);
-    processBitDepth (buffer, startSample, numSamples, params->bitDepth);
+    processVolumeAndPan (buffer, startSample, numSamples, params, volumeGainMult, panMod);
+    processFilter (buffer, startSample, numSamples, params, cutoffMult);
+    processOverdrive (buffer, startSample, numSamples, params.overdrive);
+    processBitDepth (buffer, startSample, numSamples, params.bitDepth);
 
     // Safety limiter: hard clip to protect ears against any unexpected spikes
     static constexpr float kSafetyLimit = 1.5f; // ~3.5dB headroom max
@@ -1042,4 +1050,19 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 void InstrumentEffectsPlugin::setInstrumentIndex (int index)
 {
     currentInstrument = index;
+
+    const juce::SpinLock::ScopedLockType lock (globalStateLock);
+    auto it = globalStatesByInstrument.find (index);
+    if (it != globalStatesByInstrument.end())
+        globalModState = it->second;
+}
+
+void InstrumentEffectsPlugin::setGlobalModStates (const std::map<int, GlobalModState*>& states)
+{
+    const juce::SpinLock::ScopedLockType lock (globalStateLock);
+    globalStatesByInstrument = states;
+
+    auto it = globalStatesByInstrument.find (currentInstrument);
+    if (it != globalStatesByInstrument.end())
+        globalModState = it->second;
 }

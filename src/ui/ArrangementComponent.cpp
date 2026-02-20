@@ -128,6 +128,8 @@ bool ArrangementComponent::keyPressed (const juce::KeyPress& key)
         arrangement.removeEntry (selectedEntry);
         if (selectedEntry >= arrangement.getNumEntries())
             selectedEntry = arrangement.getNumEntries() - 1;
+        if (onArrangementChanged)
+            onArrangementChanged();
         repaint();
         return true;
     }
@@ -175,20 +177,28 @@ void ArrangementComponent::showEntryContextMenu (int index, juce::Point<int> scr
                                 arrangement.removeEntry (index);
                                 if (selectedEntry >= arrangement.getNumEntries())
                                     selectedEntry = arrangement.getNumEntries() - 1;
+                                if (onArrangementChanged)
+                                    onArrangementChanged();
                             }
                             else if (result == 2)
                             {
                                 arrangement.moveEntryUp (index);
                                 selectedEntry = index - 1;
+                                if (onArrangementChanged)
+                                    onArrangementChanged();
                             }
                             else if (result == 3)
                             {
                                 arrangement.moveEntryDown (index);
                                 selectedEntry = index + 1;
+                                if (onArrangementChanged)
+                                    onArrangementChanged();
                             }
                             else if (result > 100 && result <= 108)
                             {
                                 arrangement.getEntry (index).repeats = result - 100;
+                                if (onArrangementChanged)
+                                    onArrangementChanged();
                             }
                             repaint();
                         });

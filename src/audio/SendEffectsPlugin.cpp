@@ -40,6 +40,8 @@ void SendEffectsPlugin::initialise (const te::PluginInitialisationInfo& info)
     preDelayWritePos = 0;
 
     // Scratch buffer
+    delayScratch.setSize (2, info.blockSizeSamples);
+    reverbInputScratch.setSize (2, info.blockSizeSamples);
     reverbScratch.setSize (2, info.blockSizeSamples);
 }
 
@@ -50,6 +52,9 @@ void SendEffectsPlugin::deinitialise()
     delayFilterInitialized = false;
     reverb.reset();
     preDelayBuffer.clear();
+    delayScratch.clear();
+    reverbInputScratch.clear();
+    reverbScratch.clear();
 }
 
 //==============================================================================
@@ -85,9 +90,12 @@ int SendEffectsPlugin::getDelayTimeSamples() const
 // Process delay
 //==============================================================================
 
-void SendEffectsPlugin::processDelay (juce::AudioBuffer<float>& output, int startSample, int numSamples)
+void SendEffectsPlugin::processDelay (const juce::AudioBuffer<float>& input,
+                                      juce::AudioBuffer<float>& output,
+                                      int startSample,
+                                      int numSamples)
 {
-    if (sendBuffers == nullptr) return;
+    if (numSamples <= 0) return;
 
     float wet = static_cast<float> (activeDelayParams.wet) / 100.0f;
     float feedback = static_cast<float> (activeDelayParams.feedback) / 100.0f;
@@ -131,10 +139,10 @@ void SendEffectsPlugin::processDelay (juce::AudioBuffer<float>& output, int star
             delayedR = filtered + (delayedR - mono) * width;
         }
 
-        // Get input from send buffer
-        float inputL = sendBuffers->delayBuffer.getSample (0, juce::jmin (i, sendBuffers->delayBuffer.getNumSamples() - 1));
-        float inputR = (channels > 1 && sendBuffers->delayBuffer.getNumChannels() > 1)
-                            ? sendBuffers->delayBuffer.getSample (1, juce::jmin (i, sendBuffers->delayBuffer.getNumSamples() - 1))
+        // Get input from captured send slice
+        float inputL = input.getSample (0, juce::jmin (i, input.getNumSamples() - 1));
+        float inputR = (channels > 1 && input.getNumChannels() > 1)
+                            ? input.getSample (1, juce::jmin (i, input.getNumSamples() - 1))
                             : inputL;
 
         // Write input + feedback into delay line (with stereo cross-feed for width)
@@ -168,9 +176,12 @@ void SendEffectsPlugin::processDelay (juce::AudioBuffer<float>& output, int star
 // Process reverb
 //==============================================================================
 
-void SendEffectsPlugin::processReverb (juce::AudioBuffer<float>& output, int startSample, int numSamples)
+void SendEffectsPlugin::processReverb (const juce::AudioBuffer<float>& input,
+                                       juce::AudioBuffer<float>& output,
+                                       int startSample,
+                                       int numSamples)
 {
-    if (sendBuffers == nullptr) return;
+    if (numSamples <= 0) return;
 
     float wet = static_cast<float> (activeReverbParams.wet) / 100.0f;
     if (wet <= 0.0f) return;
@@ -203,9 +214,9 @@ void SendEffectsPlugin::processReverb (juce::AudioBuffer<float>& output, int sta
     for (int i = 0; i < numSamples; ++i)
     {
         // Write current input into pre-delay buffer
-        float inL = sendBuffers->reverbBuffer.getSample (0, juce::jmin (i, sendBuffers->reverbBuffer.getNumSamples() - 1));
-        float inR = (channels > 1 && sendBuffers->reverbBuffer.getNumChannels() > 1)
-                        ? sendBuffers->reverbBuffer.getSample (1, juce::jmin (i, sendBuffers->reverbBuffer.getNumSamples() - 1))
+        float inL = input.getSample (0, juce::jmin (i, input.getNumSamples() - 1));
+        float inR = (channels > 1 && input.getNumChannels() > 1)
+                        ? input.getSample (1, juce::jmin (i, input.getNumSamples() - 1))
                         : inL;
 
         preDelayBuffer.setSample (0, preDelayWritePos, inL);
@@ -262,19 +273,12 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         activeReverbParams = pendingReverbParams;
     }
 
-    // Prepare send buffers to match current block size if needed
-    if (sendBuffers->delayBuffer.getNumSamples() < numSamples
-        || sendBuffers->reverbBuffer.getNumSamples() < numSamples)
-    {
-        sendBuffers->prepare (numSamples, 2);
-    }
+    // Capture and clear this block slice atomically from shared send buffers.
+    sendBuffers->consumeSlice (delayScratch, reverbInputScratch, startSample, numSamples, 2);
 
-    // Process delay and reverb from send buffers into the output
-    processDelay (buffer, startSample, numSamples);
-    processReverb (buffer, startSample, numSamples);
-
-    // Clear send buffers after reading (ready for next block)
-    sendBuffers->clear();
+    // Process delay and reverb from the captured slice into output.
+    processDelay (delayScratch, buffer, startSample, numSamples);
+    processReverb (reverbInputScratch, buffer, startSample, numSamples);
 
     // Safety limiter
     static constexpr float kSafetyLimit = 1.5f;

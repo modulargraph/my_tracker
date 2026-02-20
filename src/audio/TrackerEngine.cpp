@@ -1,4 +1,4 @@
-#include <set>
+#include <algorithm>
 #include "TrackerEngine.h"
 #include "InstrumentEffectsPlugin.h"
 #include "TrackerSamplerPlugin.h"
@@ -121,7 +121,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
             auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
 
             // Send row boundary CC to clear per-row continuous effects
-            double boundaryTime = rowTime.inSeconds() - 0.0002;
+            double boundaryTime = juce::jmax (0.0, rowTime.inSeconds() - 0.0002);
             midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 119, 0), boundaryTime);
 
             // Scan FX slots to check if portamento is active on this row
@@ -139,7 +139,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 const auto& slot = cell.getFxSlot (fxSlotIdx);
                 if (slot.fx > 0 || (slot.fx == 0 && slot.fxParam > 0))
                 {
-                    double ccTime = rowTime.inSeconds() - 0.00005;
+                    double ccTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00005);
 
                     switch (slot.fx)
                     {
@@ -232,7 +232,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 // Apply volume change during portamento if specified
                 if (cell.volume >= 0)
                     midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, cell.volume),
-                                      rowTime.inSeconds() - 0.00003);
+                                      juce::jmax (0.0, rowTime.inSeconds() - 0.00003));
                 continue;
             }
 
@@ -241,7 +241,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
             {
                 currentInst = cell.instrument;
                 midiSeq.addEvent (juce::MidiMessage::programChange (1, currentInst),
-                                  rowTime.inSeconds() - 0.0001);
+                                  juce::jmax (0.0, rowTime.inSeconds() - 0.0001));
             }
 
             // Calculate note end time: sustain until next non-porta note/OFF/KILL or pattern end
@@ -301,9 +301,27 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
     if (edit == nullptr || sequence.empty())
         return;
 
-    // Prepare instruments for all patterns in the arrangement
+    // Prepare instruments once across the full arrangement so program changes can
+    // switch to any instrument used by any pattern in the sequence.
+    std::array<std::vector<int>, kNumTracks> instrumentsByTrack {};
     for (auto& [pattern, repeats] : sequence)
-        prepareTracksForPattern (*pattern);
+    {
+        juce::ignoreUnused (repeats);
+        for (int t = 0; t < kNumTracks; ++t)
+        {
+            auto& trackInstruments = instrumentsByTrack[static_cast<size_t> (t)];
+            for (int row = 0; row < pattern->numRows; ++row)
+            {
+                int inst = pattern->getCell (row, t).instrument;
+                if (inst >= 0
+                    && std::find (trackInstruments.begin(), trackInstruments.end(), inst) == trackInstruments.end())
+                {
+                    trackInstruments.push_back (inst);
+                }
+            }
+        }
+    }
+    prepareTracksForInstrumentUsage (instrumentsByTrack);
 
     auto tracks = te::getAudioTracks (*edit);
 
@@ -351,7 +369,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
 
                     // Send row boundary CC to clear per-row continuous effects
-                    double boundaryTime = rowTime.inSeconds() - 0.0002;
+                    double boundaryTime = juce::jmax (0.0, rowTime.inSeconds() - 0.0002);
                     midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 119, 0), boundaryTime);
 
                     // Scan FX slots for portamento
@@ -369,7 +387,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         const auto& slot = cell.getFxSlot (fxSlotIdx);
                         if (slot.fx > 0 || (slot.fx == 0 && slot.fxParam > 0))
                         {
-                            double ccTime = rowTime.inSeconds() - 0.00005;
+                            double ccTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00005);
 
                             switch (slot.fx)
                             {
@@ -422,7 +440,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                                           rowTime.inSeconds());
                         if (cell.volume >= 0)
                             midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, cell.volume),
-                                              rowTime.inSeconds() - 0.00003);
+                                              juce::jmax (0.0, rowTime.inSeconds() - 0.00003));
                         continue;
                     }
 
@@ -431,7 +449,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     {
                         currentInst = cell.instrument;
                         midiSeq.addEvent (juce::MidiMessage::programChange (1, currentInst),
-                                          rowTime.inSeconds() - 0.0001);
+                                          juce::jmax (0.0, rowTime.inSeconds() - 0.0001));
                     }
 
                     // Calculate note end time: sustain until next non-porta note/OFF/KILL or end of repeat
@@ -624,9 +642,25 @@ juce::String TrackerEngine::loadSampleForInstrument (int instrumentIndex, const 
     return result;
 }
 
+void TrackerEngine::clearSampleForInstrument (int instrumentIndex)
+{
+    if (instrumentIndex < 0)
+        return;
+
+    sampler.clearInstrumentSample (instrumentIndex);
+
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        if (currentTrackInstrument[static_cast<size_t> (t)] == instrumentIndex)
+            currentTrackInstrument[static_cast<size_t> (t)] = -1;
+    }
+}
+
 void TrackerEngine::ensureTrackHasInstrument (int trackIndex, int instrumentIndex)
 {
-    if (trackIndex < 0 || trackIndex >= kNumTracks || instrumentIndex < 0)
+    if (trackIndex < 0
+        || trackIndex >= static_cast<int> (currentTrackInstrument.size())
+        || instrumentIndex < 0)
         return;
 
     auto* track = getTrack (trackIndex);
@@ -642,6 +676,27 @@ void TrackerEngine::ensureTrackHasInstrument (int trackIndex, int instrumentInde
 
 void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
 {
+    std::array<std::vector<int>, kNumTracks> instrumentsByTrack {};
+
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        auto& trackInstruments = instrumentsByTrack[static_cast<size_t> (t)];
+        for (int row = 0; row < pattern.numRows; ++row)
+        {
+            int inst = pattern.getCell (row, t).instrument;
+            if (inst >= 0
+                && std::find (trackInstruments.begin(), trackInstruments.end(), inst) == trackInstruments.end())
+            {
+                trackInstruments.push_back (inst);
+            }
+        }
+    }
+
+    prepareTracksForInstrumentUsage (instrumentsByTrack);
+}
+
+void TrackerEngine::prepareTracksForInstrumentUsage (const std::array<std::vector<int>, kNumTracks>& instrumentsByTrack)
+{
     if (edit == nullptr)
         return;
 
@@ -649,23 +704,11 @@ void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
 
     for (int t = 0; t < kNumTracks && t < tracks.size(); ++t)
     {
-        // Collect ALL unique instruments used on this track
-        std::set<int> usedInstruments;
-        int firstInst = -1;
-        for (int row = 0; row < pattern.numRows; ++row)
-        {
-            int inst = pattern.getCell (row, t).instrument;
-            if (inst >= 0)
-            {
-                usedInstruments.insert (inst);
-                if (firstInst < 0)
-                    firstInst = inst;
-            }
-        }
-
-        // If no instrument specified in pattern, skip this track
-        if (firstInst < 0)
+        const auto& usedInstruments = instrumentsByTrack[static_cast<size_t> (t)];
+        if (usedInstruments.empty())
             continue;
+
+        const int firstInst = usedInstruments.front();
 
         // Load the first (default) instrument onto this track
         if (firstInst != currentTrackInstrument[static_cast<size_t> (t)])
@@ -674,8 +717,9 @@ void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
             currentTrackInstrument[static_cast<size_t> (t)] = firstInst;
         }
 
-        // Pre-load all banks for multi-instrument support
-        if (usedInstruments.size() > 1)
+        // Pre-load all banks for multi-instrument support (and clear stale banks
+        // by always replacing the map, even when only one instrument is used).
+        if (auto* samplerPlugin = tracks[t]->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
         {
             std::map<int, std::shared_ptr<const SampleBank>> banks;
             for (int inst : usedInstruments)
@@ -684,16 +728,19 @@ void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
                 if (bank != nullptr)
                     banks[inst] = bank;
             }
-
-            if (auto* samplerPlugin = tracks[t]->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
-                samplerPlugin->preloadBanks (banks);
+            samplerPlugin->preloadBanks (banks);
         }
 
         // Configure effects plugin with rowsPerBeat, global mod state, and send buffers
         if (auto* fxPlugin = sampler.getOrCreateEffectsPlugin (*tracks[t], firstInst))
         {
+            std::map<int, GlobalModState*> globalStates;
+            for (int inst : usedInstruments)
+                globalStates[inst] = sampler.getOrCreateGlobalModState (inst);
+
             fxPlugin->setRowsPerBeat (rowsPerBeat);
             fxPlugin->setGlobalModState (sampler.getOrCreateGlobalModState (firstInst));
+            fxPlugin->setGlobalModStates (globalStates);
             fxPlugin->setSendBuffers (&sampler.getSendBuffers());
             fxPlugin->onTempoChange = [this] (int bpmValue)
             {
@@ -721,12 +768,16 @@ void TrackerEngine::invalidateTrackInstruments()
 
 void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNote)
 {
+    juce::ignoreUnused (trackIndex);
+
+    // Preview routing is always through the dedicated preview track.
     auto* track = getTrack (kPreviewTrack);
     if (track == nullptr)
         return;
 
+    stopPreview();
     ensureTrackHasInstrument (kPreviewTrack, instrumentIndex);
-    sampler.playNote (*track, midiNote);
+    sampler.playNote (*track, midiNote, previewVolume);
 
     // Auto-stop after preview duration
     activePreviewTrack = kPreviewTrack;
@@ -780,7 +831,7 @@ void TrackerEngine::previewAudioFile (const juce::File& file)
         return;
 
     samplerPlugin->setSampleBank (bank);
-    samplerPlugin->playNote (60, 1.0f);
+    samplerPlugin->playNote (60, previewVolume);
 
     activePreviewTrack = kPreviewTrack;
     startTimer (kPreviewDurationMs);
@@ -817,7 +868,7 @@ void TrackerEngine::previewInstrument (int instrumentIndex)
         return;
 
     samplerPlugin->setSampleBank (bank);
-    samplerPlugin->playNote (60, 1.0f);
+    samplerPlugin->playNote (60, previewVolume);
 
     activePreviewTrack = kPreviewTrack;
     startTimer (kPreviewDurationMs);
@@ -837,6 +888,11 @@ void TrackerEngine::stopPreview()
     }
 
     previewBank = nullptr;
+}
+
+void TrackerEngine::setPreviewVolume (float gainLinear)
+{
+    previewVolume = juce::jlimit (0.0f, 1.0f, gainLinear);
 }
 
 void TrackerEngine::timerCallback()
@@ -995,7 +1051,7 @@ void TrackerEngine::setupMixerPlugins()
 
         if (existing != nullptr)
         {
-            existing->setMixState (&mixerStatePtr->tracks[static_cast<size_t> (t)]);
+            existing->setMixState (mixerStatePtr->tracks[static_cast<size_t> (t)]);
             existing->setSendBuffers (&sampler.getSendBuffers());
         }
     }

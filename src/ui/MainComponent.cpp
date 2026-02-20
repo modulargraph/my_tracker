@@ -21,6 +21,7 @@ MainComponent::MainComponent()
     {
         patternData.addPattern (patternData.getCurrentPattern().numRows);
         switchToPattern (patternData.getNumPatterns() - 1);
+        markDirty();
     };
     toolbar->onRemovePattern = [this]
     {
@@ -207,6 +208,22 @@ MainComponent::MainComponent()
         trackerGrid->showFxCommandPopupAt (mousePos);
     };
 
+    previewVolumeLabel.setText ("Preview", juce::dontSendNotification);
+    previewVolumeLabel.setJustificationType (juce::Justification::centredRight);
+    previewVolumeLabel.setColour (juce::Label::textColourId,
+                                  trackerLookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.7f));
+    addAndMakeVisible (previewVolumeLabel);
+
+    previewVolumeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    previewVolumeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    previewVolumeSlider.setRange (0.0, 1.0, 0.01);
+    previewVolumeSlider.setValue (trackerEngine.getPreviewVolume(), juce::dontSendNotification);
+    previewVolumeSlider.onValueChange = [this]
+    {
+        trackerEngine.setPreviewVolume (static_cast<float> (previewVolumeSlider.getValue()));
+    };
+    addAndMakeVisible (previewVolumeSlider);
+
     // Create arrangement panel (hidden by default)
     arrangementComponent = std::make_unique<ArrangementComponent> (arrangement, patternData, trackerLookAndFeel);
     addChildComponent (*arrangementComponent);
@@ -224,6 +241,10 @@ MainComponent::MainComponent()
         arrangementComponent->setSelectedEntry (pos);
         markDirty();
     };
+    arrangementComponent->onArrangementChanged = [this]
+    {
+        markDirty();
+    };
 
     // Create instrument panel (right side, visible by default)
     instrumentPanel = std::make_unique<InstrumentPanel> (trackerLookAndFeel);
@@ -231,6 +252,10 @@ MainComponent::MainComponent()
     instrumentPanel->onLoadSampleRequested = [this] (int inst)
     {
         loadSampleForInstrument (inst);
+    };
+    instrumentPanel->onClearSampleRequested = [this] (int inst)
+    {
+        clearSampleForInstrument (inst);
     };
     instrumentPanel->onEditSampleRequested = [this] (int inst)
     {
@@ -289,7 +314,7 @@ MainComponent::MainComponent()
     };
     sampleEditor->onPreviewRequested = [this] (int inst, int note)
     {
-        // Preview on track 0 (or any available track) with the requested instrument
+        // Preview through dedicated preview track.
         trackerEngine.previewNote (trackerGrid->getCursorTrack(), inst, note);
     };
 
@@ -319,6 +344,7 @@ MainComponent::MainComponent()
     };
     mixerComponent->onMixStateChanged = [this]
     {
+        trackerEngine.refreshMixerPlugins();
         markDirty();
     };
 
@@ -553,6 +579,13 @@ void MainComponent::resized()
 
     // Toolbar below tab bar
     toolbar->setBounds (r.removeFromTop (ToolbarComponent::kToolbarHeight));
+    auto toolbarBounds = toolbar->getBounds();
+    constexpr int kPreviewSliderWidth = 96;
+    constexpr int kPreviewLabelWidth = 56;
+    int previewY = toolbarBounds.getY() + 8;
+    int sliderRight = toolbarBounds.getRight() - 44; // keep clear of INS toggle
+    previewVolumeSlider.setBounds (sliderRight - kPreviewSliderWidth, previewY, kPreviewSliderWidth, 20);
+    previewVolumeLabel.setBounds (previewVolumeSlider.getX() - kPreviewLabelWidth - 4, previewY, kPreviewLabelWidth, 20);
 
     // Status bar at bottom
     auto statusBar = r.removeFromBottom (24);
@@ -1262,6 +1295,8 @@ void MainComponent::loadSampleForCurrentTrack()
                                       trackerGrid->repaint();
                                       updateToolbar();
                                       updateInstrumentPanel();
+                                      fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
+                                      markDirty();
                                   }
                               }
                           });
@@ -1286,6 +1321,7 @@ void MainComponent::switchToPattern (int index)
         trackerEngine.syncPatternToEdit (pat, getReleaseModes());
 
     trackerGrid->repaint();
+    updateTrackSampleMarkers();
     updateStatusBar();
     updateToolbar();
 }
@@ -1549,9 +1585,9 @@ void MainComponent::newProject()
 
     trackerEngine.stop();
     patternData.clearAllPatterns();
-    patternData.addPattern (64);
     arrangement.clear();
     trackLayout.resetToDefault();
+    trackerEngine.getSampler().clearLoadedSamples();
     arrangementComponent->setSelectedEntry (-1);
     trackerGrid->setCursorPosition (0, 0);
     trackerGrid->clearSelection();
@@ -1559,7 +1595,6 @@ void MainComponent::newProject()
     {
         trackerGrid->trackMuted[static_cast<size_t> (i)] = false;
         trackerGrid->trackSoloed[static_cast<size_t> (i)] = false;
-        trackerGrid->trackHasSample[static_cast<size_t> (i)] = false;
     }
     trackerEngine.setBpm (120.0);
     trackerEngine.invalidateTrackInstruments();
@@ -1802,12 +1837,12 @@ void MainComponent::showHelpOverlay()
             // Column 3: Tabs + Mixer + Browser + View
             columns[2] = {
                 { "TABS", {
-                    "F1                Tracker",
-                    "F2                Inst Edit",
-                    "F3                Inst Type",
-                    "F4                Mixer",
-                    "F5                Effects",
-                    "F6                Browser",
+                    "Shift+F1          Tracker",
+                    "Shift+F2          Inst Edit",
+                    "Shift+F3          Inst Type",
+                    "Shift+F4          Mixer",
+                    "Shift+F5          Effects",
+                    "Shift+F6          Browser",
                     "Escape            Return to Tracker",
                     "` (in edit tabs)  Params / Mod" }},
                 { "MIXER", {
@@ -2032,8 +2067,27 @@ void MainComponent::doCut()
 
 void MainComponent::updateInstrumentPanel()
 {
-    instrumentPanel->updateSampleInfo (trackerEngine.getSampler().getLoadedSamples());
+    auto loadedSamples = trackerEngine.getSampler().getLoadedSamples();
+    instrumentPanel->updateSampleInfo (loadedSamples);
     instrumentPanel->setSelectedInstrument (trackerGrid->getCurrentInstrument());
+
+    updateTrackSampleMarkers();
+}
+
+void MainComponent::updateTrackSampleMarkers()
+{
+    auto loadedSamples = trackerEngine.getSampler().getLoadedSamples();
+    for (int i = 0; i < kNumTracks; ++i)
+    {
+        bool hasSample = false;
+        int trackInst = trackerEngine.getTrackInstrument (i);
+        if (trackInst >= 0)
+            hasSample = loadedSamples.find (trackInst) != loadedSamples.end();
+        else
+            hasSample = loadedSamples.find (i) != loadedSamples.end();
+        trackerGrid->trackHasSample[static_cast<size_t> (i)] = hasSample;
+    }
+    trackerGrid->repaint();
 }
 
 void MainComponent::loadSampleForInstrument (int instrument)
@@ -2062,10 +2116,33 @@ void MainComponent::loadSampleForInstrument (int instrument)
                                       trackerGrid->repaint();
                                       updateToolbar();
                                       updateInstrumentPanel();
+                                      fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
                                       markDirty();
                                   }
                               }
                           });
+}
+
+void MainComponent::clearSampleForInstrument (int instrument)
+{
+    trackerEngine.clearSampleForInstrument (instrument);
+    trackerEngine.invalidateTrackInstruments();
+
+    if (trackerEngine.isPlaying())
+    {
+        if (songMode)
+            syncArrangementToEdit();
+        else
+            trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
+    }
+
+    if (trackerGrid->getCurrentInstrument() == instrument)
+        updateSampleEditorForCurrentInstrument();
+
+    updateToolbar();
+    updateInstrumentPanel();
+    fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
+    markDirty();
 }
 
 void MainComponent::updateSampleEditorForCurrentInstrument()

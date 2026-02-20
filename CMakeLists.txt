@@ -4,6 +4,7 @@ project(TrackerAdjust VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+enable_testing()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE INTERNAL "")
@@ -81,3 +82,40 @@ target_link_libraries(TrackerAdjust PRIVATE
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     target_compile_options(TrackerAdjust PRIVATE "-fno-aligned-allocation")
 endif()
+
+add_executable(TrackerAdjustTests
+    tests/TrackerAdjustTests.cpp
+    src/data/PatternData.cpp
+    src/ui/ProjectSerializer.cpp
+    src/ui/ArrangementComponent.cpp
+    src/ui/TrackerLookAndFeel.cpp)
+
+target_include_directories(TrackerAdjustTests PRIVATE
+    src src/data src/audio src/ui
+    ${CMAKE_BINARY_DIR}/TrackerAdjust_artefacts/JuceLibraryCode)
+
+target_compile_features(TrackerAdjustTests PRIVATE cxx_std_20)
+
+target_compile_definitions(TrackerAdjustTests PRIVATE
+    JUCE_PLUGINHOST_AU=0
+    JUCE_PLUGINHOST_VST3=0
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_STRICT_REFCOUNTEDPOINTER=1)
+
+target_link_libraries(TrackerAdjustTests PRIVATE
+    tracktion::tracktion_core
+    tracktion::tracktion_engine
+    tracktion::tracktion_graph
+    juce::juce_audio_devices
+    juce::juce_audio_processors
+    juce::juce_audio_utils
+    juce::juce_dsp
+    juce::juce_recommended_warning_flags)
+
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    target_compile_options(TrackerAdjustTests PRIVATE "-fno-aligned-allocation")
+endif()
+
+add_test(NAME TrackerAdjustTests COMMAND TrackerAdjustTests)

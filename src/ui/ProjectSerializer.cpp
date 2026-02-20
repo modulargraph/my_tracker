@@ -644,7 +644,11 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
     auto patterns = root.getChildWithName ("Patterns");
     if (patterns.isValid() && patterns.getNumChildren() > 0)
     {
-        for (int i = 0; i < patterns.getNumChildren(); ++i)
+        // clearAllPatterns() keeps one default pattern at index 0, so fill it first.
+        auto firstPatTree = patterns.getChild (0);
+        valueTreeToPattern (firstPatTree, patternData.getPattern (0));
+
+        for (int i = 1; i < patterns.getNumChildren(); ++i)
         {
             auto patTree = patterns.getChild (i);
             int numRows = patTree.getProperty ("numRows", 64);
@@ -652,10 +656,6 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             auto& pat = patternData.getPattern (patternData.getNumPatterns() - 1);
             valueTreeToPattern (patTree, pat);
         }
-    }
-    else
-    {
-        patternData.addPattern (64);
     }
 
     int currentPat = settings.isValid() ? static_cast<int> (settings.getProperty ("currentPattern", 0)) : 0;

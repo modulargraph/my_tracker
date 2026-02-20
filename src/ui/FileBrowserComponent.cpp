@@ -125,7 +125,7 @@ void SampleBrowserComponent::refreshFileList()
         }
     }
 
-    fileSelection = 0;
+    fileSelection = fileEntries.empty() ? -1 : 0;
     fileScrollOffset = 0;
     repaint();
 }
@@ -249,9 +249,10 @@ void SampleBrowserComponent::paintFilePane (juce::Graphics& g, juce::Rectangle<i
     int visibleRows = getFileVisibleRows();
     g.setFont (lookAndFeel.getMonoFont (11.0f));
 
+    int baseOffset = juce::jmax (0, fileScrollOffset);
     for (int i = 0; i < visibleRows; ++i)
     {
-        int idx = fileScrollOffset + i;
+        int idx = baseOffset + i;
         if (idx >= static_cast<int> (fileEntries.size())) break;
 
         auto& entry = fileEntries[static_cast<size_t> (idx)];
@@ -493,7 +494,10 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
     {
         if (activePane == Pane::Files)
         {
-            fileSelection = juce::jmax (0, fileSelection - 1);
+            if (fileEntries.empty())
+                fileSelection = -1;
+            else
+                fileSelection = juce::jmax (0, fileSelection - 1);
             ensureFileSelectionVisible();
             triggerPreviewForSelection();
         }
@@ -510,7 +514,10 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
     {
         if (activePane == Pane::Files)
         {
-            fileSelection = juce::jmin (static_cast<int> (fileEntries.size()) - 1, fileSelection + 1);
+            if (fileEntries.empty())
+                fileSelection = -1;
+            else
+                fileSelection = juce::jmin (static_cast<int> (fileEntries.size()) - 1, fileSelection + 1);
             ensureFileSelectionVisible();
             triggerPreviewForSelection();
         }
@@ -529,7 +536,10 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
     {
         if (activePane == Pane::Files)
         {
-            fileSelection = juce::jmax (0, fileSelection - getFileVisibleRows());
+            if (fileEntries.empty())
+                fileSelection = -1;
+            else
+                fileSelection = juce::jmax (0, fileSelection - getFileVisibleRows());
             ensureFileSelectionVisible();
             triggerPreviewForSelection();
         }
@@ -546,8 +556,15 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
     {
         if (activePane == Pane::Files)
         {
-            fileSelection = juce::jmin (static_cast<int> (fileEntries.size()) - 1,
-                                        fileSelection + getFileVisibleRows());
+            if (fileEntries.empty())
+            {
+                fileSelection = -1;
+            }
+            else
+            {
+                fileSelection = juce::jmin (static_cast<int> (fileEntries.size()) - 1,
+                                            fileSelection + getFileVisibleRows());
+            }
             ensureFileSelectionVisible();
             triggerPreviewForSelection();
         }
@@ -674,11 +691,22 @@ void SampleBrowserComponent::mouseWheelMove (const juce::MouseEvent& event,
 
 void SampleBrowserComponent::ensureFileSelectionVisible()
 {
+    if (fileEntries.empty())
+    {
+        fileSelection = -1;
+        fileScrollOffset = 0;
+        return;
+    }
+
     int visibleRows = getFileVisibleRows();
+    fileSelection = juce::jlimit (0, static_cast<int> (fileEntries.size()) - 1, fileSelection);
     if (fileSelection < fileScrollOffset)
         fileScrollOffset = fileSelection;
     else if (fileSelection >= fileScrollOffset + visibleRows)
         fileScrollOffset = fileSelection - visibleRows + 1;
+
+    int maxScroll = juce::jmax (0, static_cast<int> (fileEntries.size()) - visibleRows);
+    fileScrollOffset = juce::jlimit (0, maxScroll, fileScrollOffset);
 }
 
 void SampleBrowserComponent::ensureInstrumentSelectionVisible()

@@ -23,6 +23,7 @@ public:
 
     std::function<void (int patternIndex)> onSwitchToPattern;
     std::function<void()> onAddEntryRequested;
+    std::function<void()> onArrangementChanged;
 
     static constexpr int kPanelWidth = 200;
 

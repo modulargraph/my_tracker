@@ -42,20 +42,22 @@ public:
 
     // Get the sample file loaded for a given instrument index
     juce::File getSampleFile (int instrumentIndex) const;
+    void clearInstrumentSample (int instrumentIndex);
 
     // Preview a note on a specific track
-    void playNote (te::AudioTrack& track, int midiNote);
+    void playNote (te::AudioTrack& track, int midiNote, float velocity = 1.0f);
     void stopNote (te::AudioTrack& track);
 
     // Get all loaded samples for serialization
-    const std::map<int, juce::File>& getLoadedSamples() const { return loadedSamples; }
-    void clearLoadedSamples() { loadedSamples.clear(); instrumentParams.clear(); sampleBanks.clear(); globalModStates.clear(); }
+    std::map<int, juce::File> getLoadedSamples() const;
+    void clearLoadedSamples();
 
     // Instrument params
     InstrumentParams getParams (int instrumentIndex) const;
+    bool getParamsIfPresent (int instrumentIndex, InstrumentParams& outParams) const;
     void setParams (int instrumentIndex, const InstrumentParams& params);
-    const std::map<int, InstrumentParams>& getAllParams() const { return instrumentParams; }
-    void clearAllParams() { instrumentParams.clear(); }
+    std::map<int, InstrumentParams> getAllParams() const;
+    void clearAllParams();
 
     // Apply params to sampler plugin (no file I/O, just updates plugin state)
     juce::String applyParams (te::AudioTrack& track, int instrumentIndex);
@@ -74,6 +76,7 @@ public:
     SendBuffers& getSendBuffers() { return sendBuffers; }
 
 private:
+    mutable juce::SpinLock stateLock;
     SendBuffers sendBuffers;
     std::map<int, juce::File> loadedSamples;
     std::map<int, InstrumentParams> instrumentParams;

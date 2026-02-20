@@ -80,11 +80,19 @@ private:
     int preDelayMaxSamples = 0;
 
     // Scratch buffer
+    juce::AudioBuffer<float> delayScratch;
+    juce::AudioBuffer<float> reverbInputScratch;
     juce::AudioBuffer<float> reverbScratch;
 
     // Processing helpers
-    void processDelay (juce::AudioBuffer<float>& output, int startSample, int numSamples);
-    void processReverb (juce::AudioBuffer<float>& output, int startSample, int numSamples);
+    void processDelay (const juce::AudioBuffer<float>& input,
+                       juce::AudioBuffer<float>& output,
+                       int startSample,
+                       int numSamples);
+    void processReverb (const juce::AudioBuffer<float>& input,
+                        juce::AudioBuffer<float>& output,
+                        int startSample,
+                        int numSamples);
     int getDelayTimeSamples() const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SendEffectsPlugin)

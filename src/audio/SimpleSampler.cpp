@@ -3,6 +3,8 @@
 
 GlobalModState* SimpleSampler::getOrCreateGlobalModState (int instrumentIndex)
 {
+    const juce::SpinLock::ScopedLockType lock (stateLock);
+
     auto it = globalModStates.find (instrumentIndex);
     if (it != globalModStates.end())
         return it->second.get();
@@ -85,11 +87,14 @@ juce::String SimpleSampler::loadInstrumentSample (const juce::File& sampleFile, 
     bank->buffer.setSize (bank->numChannels, static_cast<int> (reader->lengthInSamples));
     reader->read (&bank->buffer, 0, static_cast<int> (reader->lengthInSamples), 0, true, true);
 
-    sampleBanks[instrumentIndex] = bank;
-    loadedSamples[instrumentIndex] = sampleFile;
+    {
+        const juce::SpinLock::ScopedLockType lock (stateLock);
+        sampleBanks[instrumentIndex] = bank;
+        loadedSamples[instrumentIndex] = sampleFile;
 
-    if (instrumentParams.find (instrumentIndex) == instrumentParams.end())
-        instrumentParams[instrumentIndex] = InstrumentParams{};
+        if (instrumentParams.find (instrumentIndex) == instrumentParams.end())
+            instrumentParams[instrumentIndex] = InstrumentParams {};
+    }
 
     return {};
 }
@@ -105,14 +110,38 @@ juce::String SimpleSampler::loadSample (te::AudioTrack& track, const juce::File&
 
 juce::File SimpleSampler::getSampleFile (int instrumentIndex) const
 {
+    const juce::SpinLock::ScopedLockType lock (stateLock);
     auto it = loadedSamples.find (instrumentIndex);
     if (it != loadedSamples.end())
         return it->second;
     return {};
 }
 
+void SimpleSampler::clearInstrumentSample (int instrumentIndex)
+{
+    const juce::SpinLock::ScopedLockType lock (stateLock);
+    loadedSamples.erase (instrumentIndex);
+    sampleBanks.erase (instrumentIndex);
+}
+
+std::map<int, juce::File> SimpleSampler::getLoadedSamples() const
+{
+    const juce::SpinLock::ScopedLockType lock (stateLock);
+    return loadedSamples;
+}
+
+void SimpleSampler::clearLoadedSamples()
+{
+    const juce::SpinLock::ScopedLockType lock (stateLock);
+    loadedSamples.clear();
+    instrumentParams.clear();
+    sampleBanks.clear();
+    // Keep globalModStates alive: effects plugins can still hold pointers.
+}
+
 std::shared_ptr<const SampleBank> SimpleSampler::getSampleBank (int instrumentIndex) const
 {
+    const juce::SpinLock::ScopedLockType lock (stateLock);
     auto it = sampleBanks.find (instrumentIndex);
     if (it != sampleBanks.end())
         return it->second;
@@ -121,15 +150,40 @@ std::shared_ptr<const SampleBank> SimpleSampler::getSampleBank (int instrumentIn
 
 InstrumentParams SimpleSampler::getParams (int instrumentIndex) const
 {
+    const juce::SpinLock::ScopedLockType lock (stateLock);
     auto it = instrumentParams.find (instrumentIndex);
     if (it != instrumentParams.end())
         return it->second;
     return {};
 }
 
+bool SimpleSampler::getParamsIfPresent (int instrumentIndex, InstrumentParams& outParams) const
+{
+    const juce::SpinLock::ScopedLockType lock (stateLock);
+    auto it = instrumentParams.find (instrumentIndex);
+    if (it == instrumentParams.end())
+        return false;
+
+    outParams = it->second;
+    return true;
+}
+
 void SimpleSampler::setParams (int instrumentIndex, const InstrumentParams& params)
 {
+    const juce::SpinLock::ScopedLockType lock (stateLock);
     instrumentParams[instrumentIndex] = params;
+}
+
+std::map<int, InstrumentParams> SimpleSampler::getAllParams() const
+{
+    const juce::SpinLock::ScopedLockType lock (stateLock);
+    return instrumentParams;
+}
+
+void SimpleSampler::clearAllParams()
+{
+    const juce::SpinLock::ScopedLockType lock (stateLock);
+    instrumentParams.clear();
 }
 
 //==============================================================================
@@ -138,15 +192,20 @@ void SimpleSampler::setParams (int instrumentIndex, const InstrumentParams& para
 
 juce::String SimpleSampler::applyParams (te::AudioTrack& track, int instrumentIndex)
 {
-    auto bankIt = sampleBanks.find (instrumentIndex);
-    if (bankIt == sampleBanks.end())
-        return "No sample loaded for this instrument";
+    std::shared_ptr<const SampleBank> bank;
+    {
+        const juce::SpinLock::ScopedLockType lock (stateLock);
+        auto bankIt = sampleBanks.find (instrumentIndex);
+        if (bankIt == sampleBanks.end())
+            return "No sample loaded for this instrument";
+        bank = bankIt->second;
+    }
 
     auto* sampler = getOrCreateTrackerSampler (track);
     if (sampler == nullptr)
         return "No sampler plugin";
 
-    sampler->setSampleBank (bankIt->second);
+    sampler->setSampleBank (bank);
     sampler->setSamplerSource (this);
     sampler->setInstrumentIndex (instrumentIndex);
 
@@ -159,10 +218,10 @@ juce::String SimpleSampler::applyParams (te::AudioTrack& track, int instrumentIn
 // Preview
 //==============================================================================
 
-void SimpleSampler::playNote (te::AudioTrack& track, int midiNote)
+void SimpleSampler::playNote (te::AudioTrack& track, int midiNote, float velocity)
 {
     if (auto* sampler = track.pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
-        sampler->playNote (midiNote, 1.0f);
+        sampler->playNote (midiNote, juce::jlimit (0.0f, 1.0f, velocity));
 }
 
 void SimpleSampler::stopNote (te::AudioTrack& track)

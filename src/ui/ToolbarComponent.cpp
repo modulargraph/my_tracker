@@ -199,14 +199,14 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
         onToggleInstrumentPanel();
         return;
     }
-    if (addPatBounds.contains (pos) && onNextPattern)
+    if (addPatBounds.contains (pos) && onAddPattern)
     {
-        onNextPattern();
+        onAddPattern();
         return;
     }
-    if (removePatBounds.contains (pos) && onPrevPattern)
+    if (removePatBounds.contains (pos) && onRemovePattern)
     {
-        onPrevPattern();
+        onRemovePattern();
         return;
     }
     if (modeBounds.contains (pos) && onModeToggle)
