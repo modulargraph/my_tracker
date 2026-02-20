@@ -248,4 +248,17 @@ void MixerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     processCompressor (buffer, startSample, numSamples);
     processSends (buffer, startSample, numSamples);
     processVolumeAndPan (buffer, startSample, numSamples);
+
+    // Compute post-fader peak level for metering
+    float peak = 0.0f;
+    int numChannels = buffer.getNumChannels();
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        auto mag = buffer.getMagnitude (ch, startSample, numSamples);
+        if (mag > peak) peak = mag;
+    }
+    // Decay: keep existing peak if it's higher (UI will decay it)
+    float prev = peakLevel.load (std::memory_order_relaxed);
+    if (peak > prev)
+        peakLevel.store (peak, std::memory_order_relaxed);
 }

@@ -5,7 +5,8 @@
 #include "MixerState.h"
 #include "TrackLayout.h"
 
-class MixerComponent : public juce::Component
+class MixerComponent : public juce::Component,
+                       private juce::Timer
 {
 public:
     MixerComponent (TrackerLookAndFeel& lnf, MixerState& state, TrackLayout& layout);
@@ -28,7 +29,13 @@ public:
 
     int getSelectedTrack() const { return selectedTrack; }
 
+    // Peak level metering
+    void setPeakLevelCallback (std::function<float (int)> cb) { peakLevelCallback = std::move (cb); }
+    void startMetering() { startTimerHz (30); }
+    void stopMetering() { stopTimer(); }
+
 private:
+    void timerCallback() override;
     TrackerLookAndFeel& lookAndFeel;
     MixerState& mixerState;
     TrackLayout& trackLayout;
@@ -39,6 +46,10 @@ private:
     enum class Section { EQ, Comp, Sends, Pan, Volume };
     Section currentSection = Section::Volume;
     int currentParam = 0;       // param index within section
+
+    // Peak level metering
+    std::array<float, kNumTracks> trackPeakLevels {};
+    std::function<float (int)> peakLevelCallback;
 
     // Horizontal scroll
     int scrollOffset = 0;
@@ -79,7 +90,7 @@ private:
     void paintPanSection (juce::Graphics& g, const TrackMixState& state, juce::Rectangle<int> bounds,
                           bool isSelected);
     void paintVolumeFader (juce::Graphics& g, const TrackMixState& state, juce::Rectangle<int> bounds,
-                           bool isSelected);
+                           bool isSelected, float peakLinear = 0.0f);
     void paintMuteSolo (juce::Graphics& g, const TrackMixState& state, juce::Rectangle<int> bounds,
                         int physTrack);
 

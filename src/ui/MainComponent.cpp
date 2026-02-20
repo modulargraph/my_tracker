@@ -366,6 +366,13 @@ MainComponent::MainComponent()
         markDirty();
     };
 
+    // Wire peak level metering from engine to mixer UI
+    mixerComponent->setPeakLevelCallback ([this] (int track) -> float
+    {
+        return trackerEngine.getTrackPeakLevel (track);
+    });
+    mixerComponent->startMetering();
+
     // Create file browser (hidden by default)
     fileBrowser = std::make_unique<SampleBrowserComponent> (trackerLookAndFeel);
     addChildComponent (*fileBrowser);

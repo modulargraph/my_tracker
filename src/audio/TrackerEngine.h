@@ -115,6 +115,10 @@ public:
     void setMixerState (const MixerState* state);
     void refreshMixerPlugins();
 
+    // Peak level metering (read from audio thread, consumed by UI)
+    float getTrackPeakLevel (int trackIndex) const;
+    void decayTrackPeaks();
+
 private:
     std::unique_ptr<te::Engine> engine;
     std::unique_ptr<te::Edit> edit;

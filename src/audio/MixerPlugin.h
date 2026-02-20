@@ -34,6 +34,10 @@ public:
     void setMixState (const TrackMixState& s);
     void setSendBuffers (SendBuffers* b) { sendBuffers = b; }
 
+    // Peak level metering (audio thread writes, UI thread reads)
+    float getPeakLevel() const { return peakLevel.load (std::memory_order_relaxed); }
+    void resetPeak() { peakLevel.store (0.0f, std::memory_order_relaxed); }
+
 private:
     juce::SpinLock mixStateLock;
     TrackMixState sharedMixState;
@@ -51,6 +55,9 @@ private:
     // Smoothed gain
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedGainL { 1.0f };
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedGainR { 1.0f };
+
+    // Peak level (written on audio thread, read on UI thread)
+    std::atomic<float> peakLevel { 0.0f };
 
     void processEQ (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
     void processCompressor (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);

@@ -4,6 +4,39 @@ MixerComponent::MixerComponent (TrackerLookAndFeel& lnf, MixerState& state, Trac
     : lookAndFeel (lnf), mixerState (state), trackLayout (layout)
 {
     setWantsKeyboardFocus (true);
+    trackPeakLevels.fill (0.0f);
+}
+
+//==============================================================================
+// Metering timer
+//==============================================================================
+
+void MixerComponent::timerCallback()
+{
+    bool needsRepaint = false;
+    constexpr float decayRate = 0.85f;  // peak decay per timer tick (~30Hz)
+
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        float newPeak = 0.0f;
+        if (peakLevelCallback)
+            newPeak = peakLevelCallback (t);
+
+        // Use the max of the new peak and the decayed old peak
+        float decayed = trackPeakLevels[static_cast<size_t> (t)] * decayRate;
+        float level = juce::jmax (newPeak, decayed);
+
+        if (level < 0.001f) level = 0.0f;
+
+        if (std::abs (level - trackPeakLevels[static_cast<size_t> (t)]) > 0.0001f)
+        {
+            trackPeakLevels[static_cast<size_t> (t)] = level;
+            needsRepaint = true;
+        }
+    }
+
+    if (needsRepaint)
+        repaint();
 }
 
 //==============================================================================
@@ -140,7 +173,8 @@ void MixerComponent::paintStrip (juce::Graphics& g, int visualTrack, juce::Recta
     paintMuteSolo (g, state, muteSoloArea, physTrack);
 
     // Volume fader fills the rest
-    paintVolumeFader (g, state, r, isSelected && currentSection == Section::Volume);
+    float peakLevel = trackPeakLevels[static_cast<size_t> (physTrack)];
+    paintVolumeFader (g, state, r, isSelected && currentSection == Section::Volume, peakLevel);
 }
 
 void MixerComponent::paintHeader (juce::Graphics& g, int physTrack, int /*visualTrack*/, juce::Rectangle<int> bounds)
@@ -203,10 +237,11 @@ void MixerComponent::paintEqSection (juce::Graphics& g, const TrackMixState& sta
         auto col = paramSelected ? selCol : volumeCol;
         paintVerticalBar (g, barArea, bands[i].value, -12.0, 12.0, col, true);
 
-        // Label
-        g.setFont (lookAndFeel.getMonoFont (12.0f));
+        // Label + value
+        g.setFont (lookAndFeel.getMonoFont (10.0f));
         g.setColour (paramSelected ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.6f));
-        g.drawText (bands[i].label, x, barArea.getBottom() + 1, barWidth, 16, juce::Justification::centred);
+        juce::String valStr = (bands[i].value >= 0.0 ? "+" : "") + juce::String (bands[i].value, 1);
+        g.drawText (bands[i].label + juce::String (" ") + valStr, x, barArea.getBottom() + 1, barWidth, 16, juce::Justification::centred);
     }
 
     // Mid frequency readout (param index 3)
@@ -253,7 +288,17 @@ void MixerComponent::paintCompSection (juce::Graphics& g, const TrackMixState& s
         bool sel = (selectedParam == i);
         auto colour = sel ? selCol : textCol.withAlpha (0.5f);
 
-        paintKnob (g, area, params[i].value, params[i].minV, params[i].maxV, colour, params[i].label);
+        // Build value text for the knob label
+        juce::String valueStr;
+        switch (i)
+        {
+            case 0: valueStr = juce::String (static_cast<int> (params[i].value)) + "dB"; break;  // Threshold
+            case 1: valueStr = juce::String (params[i].value, 1) + ":1"; break;                   // Ratio
+            case 2: valueStr = juce::String (params[i].value, 1) + "ms"; break;                   // Attack
+            case 3: valueStr = juce::String (static_cast<int> (params[i].value)) + "ms"; break;    // Release
+        }
+
+        paintKnob (g, area, params[i].value, params[i].minV, params[i].maxV, colour, valueStr);
     }
 }
 
@@ -281,11 +326,18 @@ void MixerComponent::paintSendsSection (juce::Graphics& g, const TrackMixState& 
         int y = inner.getY() + i * rowH;
         bool sel = (selectedParam == i);
 
-        g.setFont (lookAndFeel.getMonoFont (10.0f));
-        g.setColour (sel ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.5f));
-        g.drawText (sends[i].label, inner.getX(), y, 28, rowH, juce::Justification::centredLeft);
+        // Label with value
+        juce::String labelText = sends[i].label;
+        if (sends[i].value <= -99.0)
+            labelText += " off";
+        else
+            labelText += juce::String (" ") + juce::String (static_cast<int> (sends[i].value));
 
-        auto barArea = juce::Rectangle<int> (inner.getX() + 30, y + 3, inner.getWidth() - 32, rowH - 6);
+        g.setFont (lookAndFeel.getMonoFont (9.0f));
+        g.setColour (sel ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.5f));
+        g.drawText (labelText, inner.getX(), y, 40, rowH, juce::Justification::centredLeft);
+
+        auto barArea = juce::Rectangle<int> (inner.getX() + 40, y + 3, inner.getWidth() - 42, rowH - 6);
         auto col = sel ? selCol : sendCol;
         paintHorizontalBar (g, barArea, sends[i].value, -100.0, 0.0, col);
     }
@@ -302,12 +354,20 @@ void MixerComponent::paintPanSection (juce::Graphics& g, const TrackMixState& st
     auto selCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
     auto panCol = lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
 
-    g.setFont (lookAndFeel.getMonoFont (10.0f));
-    g.setColour (isSelected ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.5f));
-    g.drawText ("PAN", inner.getX(), inner.getY(), 28, inner.getHeight(), juce::Justification::centredLeft);
+    juce::String panLabel;
+    if (state.pan == 0)
+        panLabel = "PAN C";
+    else if (state.pan < 0)
+        panLabel = "PAN L" + juce::String (-state.pan);
+    else
+        panLabel = "PAN R" + juce::String (state.pan);
 
-    auto barArea = juce::Rectangle<int> (inner.getX() + 30, inner.getY() + 2,
-                                          inner.getWidth() - 32, inner.getHeight() - 4);
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.setColour (isSelected ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.5f));
+    g.drawText (panLabel, inner.getX(), inner.getY(), 44, inner.getHeight(), juce::Justification::centredLeft);
+
+    auto barArea = juce::Rectangle<int> (inner.getX() + 44, inner.getY() + 2,
+                                          inner.getWidth() - 46, inner.getHeight() - 4);
     paintHorizontalBar (g, barArea, static_cast<double> (state.pan), -50.0, 50.0,
                         isSelected ? selCol : panCol, true);
 }
@@ -317,7 +377,8 @@ void MixerComponent::paintPanSection (juce::Graphics& g, const TrackMixState& st
 //==============================================================================
 
 void MixerComponent::paintVolumeFader (juce::Graphics& g, const TrackMixState& state,
-                                        juce::Rectangle<int> bounds, bool isSelected)
+                                        juce::Rectangle<int> bounds, bool isSelected,
+                                        float peakLinear)
 {
     auto inner = bounds.reduced (6, 4);
     auto selCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
@@ -342,6 +403,38 @@ void MixerComponent::paintVolumeFader (juce::Graphics& g, const TrackMixState& s
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId).brighter (0.1f));
     g.fillRect (trackArea);
 
+    // ── Peak level meter (behind fader) ──
+    if (peakLinear > 0.0f)
+    {
+        // Convert linear peak to dB, then to normalized position on the fader
+        float peakDb = juce::Decibels::gainToDecibels (peakLinear, -100.0f);
+        double peakNorm = (static_cast<double> (peakDb) - (-100.0)) / (12.0 - (-100.0));
+        peakNorm = juce::jlimit (0.0, 1.0, peakNorm);
+        int meterHeight = static_cast<int> (peakNorm * static_cast<double> (faderArea.getHeight()));
+
+        // Draw meter with gradient: green → yellow → red
+        auto meterArea = juce::Rectangle<int> (
+            faderArea.getX() + 1, faderArea.getBottom() - meterHeight,
+            faderArea.getWidth() - 2, meterHeight);
+
+        juce::Colour meterCol;
+        if (peakDb > 0.0f)
+            meterCol = juce::Colour (0xffcc3333);       // red (clipping)
+        else if (peakDb > -6.0f)
+            meterCol = juce::Colour (0xffccaa33);       // yellow (hot)
+        else
+            meterCol = juce::Colour (0xff33aa55);       // green (normal)
+
+        g.setColour (meterCol.withAlpha (0.25f));
+        g.fillRect (meterArea);
+
+        // Thin bright line at peak position
+        g.setColour (meterCol.withAlpha (0.6f));
+        g.drawHorizontalLine (faderArea.getBottom() - meterHeight,
+                              static_cast<float> (faderArea.getX() + 1),
+                              static_cast<float> (faderArea.getRight() - 1));
+    }
+
     // dB scale markings
     g.setFont (lookAndFeel.getMonoFont (9.0f));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.3f));
@@ -356,7 +449,7 @@ void MixerComponent::paintVolumeFader (juce::Graphics& g, const TrackMixState& s
                               static_cast<float> (faderArea.getRight()));
     }
 
-    // Filled portion
+    // Filled portion (volume fader)
     double norm = (state.volume - (-100.0)) / (12.0 - (-100.0));
     norm = juce::jlimit (0.0, 1.0, norm);
     int fillHeight = static_cast<int> (norm * static_cast<double> (faderArea.getHeight()));

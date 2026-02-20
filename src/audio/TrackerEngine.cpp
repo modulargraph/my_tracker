@@ -1166,6 +1166,38 @@ void TrackerEngine::refreshMixerPlugins()
     setupMixerPlugins();
 }
 
+float TrackerEngine::getTrackPeakLevel (int trackIndex) const
+{
+    if (edit == nullptr || trackIndex < 0 || trackIndex >= kNumTracks)
+        return 0.0f;
+
+    auto tracks = te::getAudioTracks (*edit);
+    if (trackIndex >= tracks.size())
+        return 0.0f;
+
+    auto* mixer = tracks[trackIndex]->pluginList.findFirstPluginOfType<MixerPlugin>();
+    if (mixer == nullptr)
+        return 0.0f;
+
+    float peak = mixer->getPeakLevel();
+    mixer->resetPeak();
+    return peak;
+}
+
+void TrackerEngine::decayTrackPeaks()
+{
+    if (edit == nullptr)
+        return;
+
+    auto tracks = te::getAudioTracks (*edit);
+    for (int t = 0; t < kNumTracks && t < tracks.size(); ++t)
+    {
+        auto* mixer = tracks[t]->pluginList.findFirstPluginOfType<MixerPlugin>();
+        if (mixer != nullptr)
+            mixer->resetPeak();
+    }
+}
+
 void TrackerEngine::changeListenerCallback (juce::ChangeBroadcaster*)
 {
     if (onTransportChanged)
