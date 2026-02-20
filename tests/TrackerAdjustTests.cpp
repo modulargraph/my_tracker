@@ -9,6 +9,7 @@
 #include "Arrangement.h"
 #include "ArrangementComponent.h"
 #include "InstrumentRouting.h"
+#include "FxParamTransport.h"
 #include "MixerState.h"
 #include "PatternData.h"
 #include "ProjectSerializer.h"
@@ -1398,6 +1399,74 @@ bool testInstrumentRoutingBankProgramSplit()
     return true;
 }
 
+bool testFxParamTransportByteRoundTrip()
+{
+    for (int value = 0; value <= 255; ++value)
+    {
+        int pendingHighBit = (value >> 7) & 0x1;
+        int decoded = FxParamTransport::consumeByteFromController (value & 0x7F, pendingHighBit);
+        if (decoded != value || pendingHighBit != 0)
+        {
+            std::cerr << "FX byte transport round-trip mismatch for value " << value << "\n";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool testFxParamTransportSequenceOrdering()
+{
+    juce::MidiMessageSequence sequence;
+    FxParamTransport::appendByteAsControllers (sequence, 1, 110, 0xE9, 1.0);
+    FxParamTransport::appendByteAsControllers (sequence, 1, 110, 0x35, 1.0);
+
+    if (sequence.getNumEvents() != 4)
+    {
+        std::cerr << "FX byte transport should emit exactly 4 MIDI events\n";
+        return false;
+    }
+
+    int pendingHighBit = 0;
+    std::vector<int> decodedValues;
+    double firstTime = 0.0;
+    double lastTime = 0.0;
+
+    for (int i = 0; i < sequence.getNumEvents(); ++i)
+    {
+        auto* event = sequence.getEventPointer (i);
+        if (event == nullptr || ! event->message.isController())
+            continue;
+
+        if (i == 0) firstTime = event->message.getTimeStamp();
+        if (i == sequence.getNumEvents() - 1) lastTime = event->message.getTimeStamp();
+
+        int ccNum = event->message.getControllerNumber();
+        int ccVal = event->message.getControllerValue();
+
+        if (ccNum == FxParamTransport::kParamHighBitCc)
+            pendingHighBit = ccVal;
+        else if (ccNum == 110)
+            decodedValues.push_back (FxParamTransport::consumeByteFromController (ccVal, pendingHighBit));
+    }
+
+    if (decodedValues.size() != 2
+        || decodedValues[0] != 0xE9
+        || decodedValues[1] != 0x35)
+    {
+        std::cerr << "FX byte transport decode mismatch for same-time sequence test\n";
+        return false;
+    }
+
+    if (firstTime > lastTime)
+    {
+        std::cerr << "FX byte transport should emit high-bit CC before value CC\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testEmptyArrangementRoundTrip()
 {
     // Verify empty arrangement round-trips correctly
@@ -1688,6 +1757,8 @@ int main()
         { "SendBuffersMultipleAddAccumulates", &testSendBuffersMultipleAddAccumulates },
         { "SendBuffersZeroLengthSlice", &testSendBuffersZeroLengthSlice },
         { "InstrumentRoutingBankProgramSplit", &testInstrumentRoutingBankProgramSplit },
+        { "FxParamTransportByteRoundTrip", &testFxParamTransportByteRoundTrip },
+        { "FxParamTransportSequenceOrdering", &testFxParamTransportSequenceOrdering },
         { "EmptyArrangementRoundTrip", &testEmptyArrangementRoundTrip },
         { "PatternMultiFxSlotRoundTrip", &testPatternMultiFxSlotRoundTrip },
         { "TrackLayoutFxLaneCountRoundTrip", &testTrackLayoutFxLaneCountRoundTrip },

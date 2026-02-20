@@ -1,6 +1,7 @@
 #include "TrackerSamplerPlugin.h"
 #include "SimpleSampler.h"
 #include "InstrumentRouting.h"
+#include "FxParamTransport.h"
 
 const char* TrackerSamplerPlugin::xmlTypeName = "TrackerSampler";
 
@@ -23,6 +24,9 @@ void TrackerSamplerPlugin::deinitialise()
 {
     voice.reset();
     fadeOutVoice.reset();
+    pendingSampleOffset = -1;
+    pendingSampleOffsetHighBit = 0;
+    hasPendingSampleOffsetHighBit = false;
 }
 
 void TrackerSamplerPlugin::setSampleBank (std::shared_ptr<const SampleBank> bank)
@@ -597,10 +601,25 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 if (m.getControllerNumber() == 0) // Bank Select MSB
                 {
                     currentBankMsb = m.getControllerValue() & 0x7F;
+                    hasPendingSampleOffsetHighBit = false;
+                }
+                else if (m.getControllerNumber() == FxParamTransport::kParamHighBitCc)
+                {
+                    pendingSampleOffsetHighBit = m.getControllerValue() & 0x1;
+                    hasPendingSampleOffsetHighBit = true;
                 }
                 else if (m.getControllerNumber() == 9) // Sample Offset (9xx)
                 {
-                    pendingSampleOffset = m.getControllerValue();
+                    const int lowBits = m.getControllerValue() & 0x7F;
+                    pendingSampleOffset = hasPendingSampleOffsetHighBit
+                        ? ((pendingSampleOffsetHighBit << 7) | lowBits)
+                        : lowBits;
+                    hasPendingSampleOffsetHighBit = false;
+                }
+                else
+                {
+                    // Ignore extension messages not followed by sample-offset CC.
+                    hasPendingSampleOffsetHighBit = false;
                 }
             }
             else if (m.isNoteOn())

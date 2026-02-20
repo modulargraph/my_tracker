@@ -104,6 +104,9 @@ private:
         int lastSpeedTempo = 0;
         int trackerSpeed = 6; // ticks per row
 
+        // 8-bit FX parameter transport helper (high bit from CC#118)
+        int pendingParamHighBit = 0;
+
         // Current base MIDI note for pitch effects
         int currentNote = -1;
 
@@ -124,6 +127,7 @@ private:
             volumeSlide = 0.0f; volSlideUp = 0; volSlideDown = 0;
             sampleOffset = 0; lastSpeedTempo = 0;
             trackerSpeed = 6;
+            pendingParamHighBit = 0;
             currentNote = -1;
         }
     };
@@ -136,7 +140,6 @@ private:
     double currentTransportBeat = 0.0;
     int rowsPerBeat = 4;
     int bankSelectMsb = 0;
-    static std::atomic<uint64_t> blockCounter;
 
     // Parameter smoothing
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedGainL { 1.0f };
@@ -187,7 +190,7 @@ private:
     // Global modulation
     float computeGlobalLFO (const InstrumentParams::Modulation& mod);
     float readGlobalEnvelope (int destIndex, const InstrumentParams::Modulation& mod);
-    void advanceGlobalEnvelopes (const InstrumentParams& params);
+    void advanceGlobalEnvelopes (const InstrumentParams& params, juce::int64 blockStartSample, int numSamples);
     bool isModModeGlobal (int destIndex, const InstrumentParams& params) const;
 
     void triggerEnvelopes();

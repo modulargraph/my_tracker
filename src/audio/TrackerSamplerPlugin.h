@@ -140,6 +140,8 @@ private:
 
     // Sample offset from 9xx effect (set via CC#9, consumed on next note-on)
     int pendingSampleOffset = -1;
+    int pendingSampleOffsetHighBit = 0;
+    bool hasPendingSampleOffsetHighBit = false;
     int currentBankMsb = 0;
 
     // Audio thread state

@@ -6,6 +6,7 @@
 #include "SendEffectsPlugin.h"
 #include "MixerPlugin.h"
 #include "InstrumentRouting.h"
+#include "FxParamTransport.h"
 
 TrackerEngine::TrackerEngine()
 {
@@ -145,28 +146,28 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                     switch (slot.fx)
                     {
                         case 0x0: // Arpeggio: 0xy -> CC#20
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 20, slot.fxParam & 0x7F), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 20, slot.fxParam, ccTime);
                             break;
                         case 0x1: // Slide Up: 1xx -> CC#21
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 21, slot.fxParam & 0x7F), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 21, slot.fxParam, ccTime);
                             break;
                         case 0x2: // Slide Down: 2xx -> CC#22
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 22, slot.fxParam & 0x7F), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 22, slot.fxParam, ccTime);
                             break;
                         case 0x3: // Tone Portamento: 3xx -> CC#23
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 23, slot.fxParam & 0x7F), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 23, slot.fxParam, ccTime);
                             break;
                         case 0x4: // Vibrato: 4xy -> CC#24
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 24, slot.fxParam & 0x7F), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 24, slot.fxParam, ccTime);
                             break;
                         case 0x5: // Vol Slide+Porta: 5xy -> CC#25
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 25, slot.fxParam & 0x7F), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 25, slot.fxParam, ccTime);
                             break;
                         case 0x6: // Vol Slide+Vibrato: 6xy -> CC#26
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 26, slot.fxParam & 0x7F), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 26, slot.fxParam, ccTime);
                             break;
                         case 0x7: // Tremolo: 7xy -> CC#27
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 27, slot.fxParam & 0x7F), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 27, slot.fxParam, ccTime);
                             break;
                         case 0x8: // Panning: 8xx -> CC#10
                         {
@@ -175,10 +176,10 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                             break;
                         }
                         case 0x9: // Sample Offset: 9xx -> CC#9
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 9, juce::jlimit (0, 127, slot.fxParam)), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 9, slot.fxParam, ccTime);
                             break;
                         case 0xA: // Volume Slide: Axy -> CC#30
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 30, slot.fxParam & 0x7F), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 30, slot.fxParam, ccTime);
                             break;
                         case 0xC: // Set Volume: Cxx -> CC#7
                             midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, juce::jlimit (0, 127, slot.fxParam)), ccTime);
@@ -192,7 +193,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                             break;
                         }
                         case 0xF: // Set Speed/Tempo: Fxx -> CC#110
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 110, juce::jlimit (0, 127, slot.fxParam)), ccTime);
+                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 110, slot.fxParam, ccTime);
                             break;
                         default:
                             break;
@@ -398,20 +399,52 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
 
                             switch (slot.fx)
                             {
-                                case 0x0: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 20, slot.fxParam & 0x7F), ccTime); break;
-                                case 0x1: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 21, slot.fxParam & 0x7F), ccTime); break;
-                                case 0x2: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 22, slot.fxParam & 0x7F), ccTime); break;
-                                case 0x3: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 23, slot.fxParam & 0x7F), ccTime); break;
-                                case 0x4: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 24, slot.fxParam & 0x7F), ccTime); break;
-                                case 0x5: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 25, slot.fxParam & 0x7F), ccTime); break;
-                                case 0x6: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 26, slot.fxParam & 0x7F), ccTime); break;
-                                case 0x7: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 27, slot.fxParam & 0x7F), ccTime); break;
-                                case 0x8: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 10, juce::jlimit (0, 127, slot.fxParam / 2)), ccTime); break;
-                                case 0x9: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 9, juce::jlimit (0, 127, slot.fxParam)), ccTime); break;
-                                case 0xA: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 30, slot.fxParam & 0x7F), ccTime); break;
-                                case 0xC: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, juce::jlimit (0, 127, slot.fxParam)), ccTime); break;
-                                case 0xE: { int d=(slot.fxParam>>4)&0xF; int m=slot.fxParam&0x1; midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 85, d*2+m), ccTime); break; }
-                                case 0xF: midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 110, juce::jlimit (0, 127, slot.fxParam)), ccTime); break;
+                                case 0x0:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 20, slot.fxParam, ccTime);
+                                    break;
+                                case 0x1:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 21, slot.fxParam, ccTime);
+                                    break;
+                                case 0x2:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 22, slot.fxParam, ccTime);
+                                    break;
+                                case 0x3:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 23, slot.fxParam, ccTime);
+                                    break;
+                                case 0x4:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 24, slot.fxParam, ccTime);
+                                    break;
+                                case 0x5:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 25, slot.fxParam, ccTime);
+                                    break;
+                                case 0x6:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 26, slot.fxParam, ccTime);
+                                    break;
+                                case 0x7:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 27, slot.fxParam, ccTime);
+                                    break;
+                                case 0x8:
+                                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 10, juce::jlimit (0, 127, slot.fxParam / 2)), ccTime);
+                                    break;
+                                case 0x9:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 9, slot.fxParam, ccTime);
+                                    break;
+                                case 0xA:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 30, slot.fxParam, ccTime);
+                                    break;
+                                case 0xC:
+                                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, juce::jlimit (0, 127, slot.fxParam)), ccTime);
+                                    break;
+                                case 0xE:
+                                {
+                                    int d = (slot.fxParam >> 4) & 0xF;
+                                    int m = slot.fxParam & 0x1;
+                                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 85, d * 2 + m), ccTime);
+                                    break;
+                                }
+                                case 0xF:
+                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 110, slot.fxParam, ccTime);
+                                    break;
                                 default: break;
                             }
                         }
@@ -734,8 +767,11 @@ void TrackerEngine::ensureTrackHasInstrument (int trackIndex, int instrumentInde
 
     if (currentTrackInstrument[static_cast<size_t> (trackIndex)] != instrumentIndex)
     {
-        sampler.applyParams (*track, instrumentIndex);
-        currentTrackInstrument[static_cast<size_t> (trackIndex)] = instrumentIndex;
+        auto applyError = sampler.applyParams (*track, instrumentIndex);
+        if (applyError.isEmpty())
+            currentTrackInstrument[static_cast<size_t> (trackIndex)] = instrumentIndex;
+        else
+            currentTrackInstrument[static_cast<size_t> (trackIndex)] = -1;
     }
 }
 
@@ -778,8 +814,11 @@ void TrackerEngine::prepareTracksForInstrumentUsage (const std::array<std::vecto
         // Load the first (default) instrument onto this track
         if (firstInst != currentTrackInstrument[static_cast<size_t> (t)])
         {
-            sampler.applyParams (*tracks[t], firstInst);
-            currentTrackInstrument[static_cast<size_t> (t)] = firstInst;
+            auto applyError = sampler.applyParams (*tracks[t], firstInst);
+            if (applyError.isEmpty())
+                currentTrackInstrument[static_cast<size_t> (t)] = firstInst;
+            else
+                currentTrackInstrument[static_cast<size_t> (t)] = -1;
         }
 
         // Pre-load all banks for multi-instrument support (and clear stale banks

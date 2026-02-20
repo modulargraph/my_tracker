@@ -2,9 +2,9 @@
 #include "SimpleSampler.h"
 #include "TrackerSamplerPlugin.h"
 #include "InstrumentRouting.h"
+#include "FxParamTransport.h"
 
 const char* InstrumentEffectsPlugin::xmlTypeName = "InstrumentEffects";
-std::atomic<uint64_t> InstrumentEffectsPlugin::blockCounter { 0 };
 
 InstrumentEffectsPlugin::InstrumentEffectsPlugin (te::PluginCreationInfo info)
     : te::Plugin (info)
@@ -287,22 +287,25 @@ float InstrumentEffectsPlugin::readGlobalEnvelope (int destIndex, const Instrume
     return level * (static_cast<float> (mod.amount) / 100.0f);
 }
 
-void InstrumentEffectsPlugin::advanceGlobalEnvelopes (const InstrumentParams& params)
+void InstrumentEffectsPlugin::advanceGlobalEnvelopes (const InstrumentParams& params,
+                                                      juce::int64 blockStartSample,
+                                                      int numSamples)
 {
-    if (globalModState == nullptr)
+    if (globalModState == nullptr || numSamples <= 0)
         return;
 
-    // CAS on lastProcessedBlock to ensure only one plugin advances per block
-    uint64_t currentBlock = blockCounter.load (std::memory_order_relaxed);
+    const auto blockTag = static_cast<uint64_t> (juce::jmax<juce::int64> (0, blockStartSample));
     uint64_t expected = globalModState->lastProcessedBlock.load (std::memory_order_relaxed);
-    if (expected >= currentBlock)
-        return; // Already processed this block
+    if (expected == blockTag)
+        return;
 
     if (! globalModState->lastProcessedBlock.compare_exchange_strong (
-            expected, currentBlock, std::memory_order_relaxed))
-        return; // Another plugin got there first
+            expected, blockTag, std::memory_order_relaxed))
+    {
+        return;
+    }
 
-    double blockDuration = static_cast<double> (blockSize) / sampleRate;
+    const double blockDuration = static_cast<double> (numSamples) / sampleRate;
 
     for (int d = 0; d < InstrumentParams::kNumModDests; ++d)
     {
@@ -708,9 +711,9 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     int startSample = fc.bufferStartSample;
     int numSamples = fc.bufferNumSamples;
 
-    // Increment global block counter and compute transport beat
-    blockCounter.fetch_add (1, std::memory_order_relaxed);
-    currentTransportBeat = edit.tempoSequence.toBeats (fc.editTime.getStart()).inBeats();
+    const auto blockStartTime = fc.editTime.getStart();
+    const auto blockStartSample = static_cast<juce::int64> (std::llround (blockStartTime.inSeconds() * sampleRate));
+    currentTransportBeat = edit.tempoSequence.toBeats (blockStartTime).inBeats();
 
     auto handleNoteRelease = [this]()
     {
@@ -735,6 +738,11 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     };
 
     // Process MIDI to track current instrument and handle CCs/global notes
+    auto decodeFxParam = [this] (int ccValue)
+    {
+        return FxParamTransport::consumeByteFromController (ccValue, fxState.pendingParamHighBit);
+    };
+
     if (fc.bufferForMidiMessages != nullptr)
     {
         bool handledAllNotesOffFlag = false;
@@ -782,6 +790,10 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 {
                     bankSelectMsb = ccVal & 0x7F;
                 }
+                else if (ccNum == FxParamTransport::kParamHighBitCc) // FX parameter bit 7 extension
+                {
+                    fxState.pendingParamHighBit = ccVal & 0x1;
+                }
                 else if (ccNum == 119) // Row boundary: clear per-row continuous effects
                 {
                     fxState.slideUpSpeed = 0;
@@ -793,6 +805,7 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     fxState.portaActive = false;
                     fxState.vibratoActive = false;
                     fxState.tremoloActive = false;
+                    fxState.pendingParamHighBit = 0;
                 }
                 else if (ccNum == 28) // Portamento target note (don't retrigger)
                 {
@@ -808,57 +821,63 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 }
                 else if (ccNum == 9) // Sample offset (from 9xx effect)
                 {
-                    fxState.sampleOffset = ccVal;
+                    fxState.sampleOffset = decodeFxParam (ccVal);
                 }
                 else if (ccNum == 20) // Arpeggio (0xy)
                 {
-                    fxState.arpParam = ccVal;
+                    fxState.arpParam = decodeFxParam (ccVal);
                     fxState.arpPhase = 0;
                     fxState.arpTickAccum = 0.0;
                 }
                 else if (ccNum == 21) // Slide Up (1xx)
                 {
-                    fxState.slideUpSpeed = ccVal;
+                    fxState.slideUpSpeed = decodeFxParam (ccVal);
                     fxState.slideDownSpeed = 0;
                 }
                 else if (ccNum == 22) // Slide Down (2xx)
                 {
-                    fxState.slideDownSpeed = ccVal;
+                    fxState.slideDownSpeed = decodeFxParam (ccVal);
                     fxState.slideUpSpeed = 0;
                 }
                 else if (ccNum == 23) // Tone Portamento (3xx)
                 {
+                    const int fxParam = decodeFxParam (ccVal);
                     fxState.portaActive = true;
-                    if (ccVal > 0) fxState.portaSpeed = ccVal;
+                    if (fxParam > 0) fxState.portaSpeed = fxParam;
                 }
                 else if (ccNum == 24) // Vibrato (4xy)
                 {
+                    const int fxParam = decodeFxParam (ccVal);
                     fxState.vibratoActive = true;
-                    if ((ccVal >> 4) > 0) fxState.vibratoSpeed = ccVal >> 4;
-                    if ((ccVal & 0xF) > 0) fxState.vibratoDepth = ccVal & 0xF;
+                    if ((fxParam >> 4) > 0) fxState.vibratoSpeed = fxParam >> 4;
+                    if ((fxParam & 0xF) > 0) fxState.vibratoDepth = fxParam & 0xF;
                 }
                 else if (ccNum == 25) // Vol Slide+Porta (5xy)
                 {
-                    fxState.volSlideUp = ccVal >> 4;
-                    fxState.volSlideDown = ccVal & 0xF;
+                    const int fxParam = decodeFxParam (ccVal);
+                    fxState.volSlideUp = fxParam >> 4;
+                    fxState.volSlideDown = fxParam & 0xF;
                     fxState.portaActive = true; // Keep portamento going
                 }
                 else if (ccNum == 26) // Vol Slide+Vibrato (6xy)
                 {
-                    fxState.volSlideUp = ccVal >> 4;
-                    fxState.volSlideDown = ccVal & 0xF;
+                    const int fxParam = decodeFxParam (ccVal);
+                    fxState.volSlideUp = fxParam >> 4;
+                    fxState.volSlideDown = fxParam & 0xF;
                     fxState.vibratoActive = true; // Keep vibrato going
                 }
                 else if (ccNum == 27) // Tremolo (7xy)
                 {
+                    const int fxParam = decodeFxParam (ccVal);
                     fxState.tremoloActive = true;
-                    if ((ccVal >> 4) > 0) fxState.tremoloSpeed = ccVal >> 4;
-                    if ((ccVal & 0xF) > 0) fxState.tremoloDepth = ccVal & 0xF;
+                    if ((fxParam >> 4) > 0) fxState.tremoloSpeed = fxParam >> 4;
+                    if ((fxParam & 0xF) > 0) fxState.tremoloDepth = fxParam & 0xF;
                 }
                 else if (ccNum == 30) // Volume Slide (Axy)
                 {
-                    fxState.volSlideUp = ccVal >> 4;
-                    fxState.volSlideDown = ccVal & 0xF;
+                    const int fxParam = decodeFxParam (ccVal);
+                    fxState.volSlideUp = fxParam >> 4;
+                    fxState.volSlideDown = fxParam & 0xF;
                 }
                 else if (ccNum == 85) // Mod mode override (from Exy effect, encoded as dest*2+mode)
                 {
@@ -877,17 +896,18 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 }
                 else if (ccNum == 110) // Set Speed/Tempo (Fxx)
                 {
-                    fxState.lastSpeedTempo = ccVal;
-                    if (ccVal >= 0x20)
+                    const int fxParam = decodeFxParam (ccVal);
+                    fxState.lastSpeedTempo = fxParam;
+                    if (fxParam >= 0x20)
                     {
                         // Values >= 0x20 set BPM directly.
                         if (onTempoChange)
-                            onTempoChange (ccVal);
+                            onTempoChange (fxParam);
                     }
-                    else if (ccVal > 0x00)
+                    else if (fxParam > 0x00)
                     {
                         // 0x01..0x1F set tracker speed (ticks per row).
-                        fxState.trackerSpeed = ccVal;
+                        fxState.trackerSpeed = fxParam;
                     }
                 }
             }
@@ -967,8 +987,8 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     if (! hasParams)
         return;
 
-    // Advance global envelopes (once per block across all plugins sharing the state)
-    advanceGlobalEnvelopes (params);
+    // Advance global envelopes once per rendered block start position.
+    advanceGlobalEnvelopes (params, blockStartSample, numSamples);
 
     // Get tempo for LFO sync
     double bpm = edit.tempoSequence.getTempos()[0]->getBpm();
