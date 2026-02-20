@@ -1,5 +1,6 @@
 build/
 cmake-build-*/
+run/
 .DS_Store
 *.o
 *.a

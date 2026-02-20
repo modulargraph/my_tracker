@@ -119,3 +119,43 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 endif()
 
 add_test(NAME TrackerAdjustTests COMMAND TrackerAdjustTests)
+
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    option(TRACKER_CREATE_APP_SHORTCUT "Create fixed app symlink at run/Tracker Adjust.app" ON)
+    option(TRACKER_ADHOC_CODESIGN "Ad-hoc sign app and test binaries after build on macOS" ON)
+
+    if(TRACKER_CREATE_APP_SHORTCUT)
+        set(TRACKER_APP_SHORTCUT_DIR "${CMAKE_SOURCE_DIR}/run")
+        set(TRACKER_APP_SHORTCUT_PATH "${TRACKER_APP_SHORTCUT_DIR}/Tracker Adjust.app")
+
+        add_custom_command(TARGET TrackerAdjust POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${TRACKER_APP_SHORTCUT_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E rm -f "${TRACKER_APP_SHORTCUT_PATH}"
+            COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_BUNDLE_DIR:TrackerAdjust>" "${TRACKER_APP_SHORTCUT_PATH}"
+            VERBATIM)
+    endif()
+
+    if(TRACKER_ADHOC_CODESIGN)
+        find_program(CODESIGN_COMMAND codesign)
+        find_program(XATTR_COMMAND xattr)
+
+        if(CODESIGN_COMMAND)
+            if(XATTR_COMMAND)
+                add_custom_command(TARGET TrackerAdjust POST_BUILD
+                    COMMAND ${XATTR_COMMAND} -cr "$<TARGET_BUNDLE_DIR:TrackerAdjust>"
+                    COMMAND ${CODESIGN_COMMAND} --force --deep --sign - "$<TARGET_BUNDLE_DIR:TrackerAdjust>"
+                    VERBATIM)
+            else()
+                add_custom_command(TARGET TrackerAdjust POST_BUILD
+                    COMMAND ${CODESIGN_COMMAND} --force --deep --sign - "$<TARGET_BUNDLE_DIR:TrackerAdjust>"
+                    VERBATIM)
+            endif()
+
+            add_custom_command(TARGET TrackerAdjustTests POST_BUILD
+                COMMAND ${CODESIGN_COMMAND} --force --sign - "$<TARGET_FILE:TrackerAdjustTests>"
+                VERBATIM)
+        else()
+            message(WARNING "codesign not found; TrackerAdjust targets will not be signed")
+        endif()
+    endif()
+endif()
