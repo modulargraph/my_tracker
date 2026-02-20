@@ -60,4 +60,43 @@ inline std::vector<double> getSliceBoundariesNorm (const InstrumentParams& param
     return boundaries;
 }
 
+inline int getSliceRegionCount (const InstrumentParams& params)
+{
+    const auto boundaries = getSliceBoundariesNorm (params);
+    return static_cast<int> (boundaries.size()) - 1;
+}
+
+inline int getBeatSliceRegionCount (const InstrumentParams& params, int defaultRegions = 16)
+{
+    if (params.slicePoints.empty())
+        return std::max (1, defaultRegions);
+
+    return static_cast<int> (params.slicePoints.size()) + 1;
+}
+
+inline std::vector<double> makeEqualSlicePointsNorm (double startNorm, double endNorm, int regionCount)
+{
+    const double start = clampNorm (startNorm);
+    const double end = std::clamp (endNorm, start, 1.0);
+
+    std::vector<double> points;
+    if (regionCount <= 1)
+        return points;
+
+    const int numPoints = regionCount - 1;
+    points.reserve (static_cast<size_t> (numPoints));
+
+    const double range = end - start;
+    if (range <= 0.0)
+        return points;
+
+    for (int i = 0; i < numPoints; ++i)
+    {
+        const double frac = static_cast<double> (i + 1) / static_cast<double> (regionCount);
+        points.push_back (start + frac * range);
+    }
+
+    return points;
+}
+
 } // namespace SamplePlaybackLayout

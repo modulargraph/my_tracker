@@ -27,9 +27,18 @@ struct SendBuffers
                      int numSamples, float gain)
     {
         if (gain <= 0.0f) return;
+        if (source.getNumChannels() <= 0) return;
 
         const juce::SpinLock::ScopedLockType sl (lock);
-        if (startSample < 0) return;
+        if (startSample < 0 || numSamples <= 0) return;
+
+        int requiredSamples = startSample + numSamples;
+        int requiredChannels = juce::jmax (delayBuffer.getNumChannels(), source.getNumChannels());
+        if (delayBuffer.getNumSamples() < requiredSamples
+            || delayBuffer.getNumChannels() < requiredChannels)
+        {
+            delayBuffer.setSize (requiredChannels, requiredSamples, true, true, false);
+        }
 
         int channels = juce::jmin (source.getNumChannels(), delayBuffer.getNumChannels());
         int srcAvail = juce::jmax (0, source.getNumSamples() - startSample);
@@ -46,9 +55,18 @@ struct SendBuffers
                       int numSamples, float gain)
     {
         if (gain <= 0.0f) return;
+        if (source.getNumChannels() <= 0) return;
 
         const juce::SpinLock::ScopedLockType sl (lock);
-        if (startSample < 0) return;
+        if (startSample < 0 || numSamples <= 0) return;
+
+        int requiredSamples = startSample + numSamples;
+        int requiredChannels = juce::jmax (reverbBuffer.getNumChannels(), source.getNumChannels());
+        if (reverbBuffer.getNumSamples() < requiredSamples
+            || reverbBuffer.getNumChannels() < requiredChannels)
+        {
+            reverbBuffer.setSize (requiredChannels, requiredSamples, true, true, false);
+        }
 
         int channels = juce::jmin (source.getNumChannels(), reverbBuffer.getNumChannels());
         int srcAvail = juce::jmax (0, source.getNumSamples() - startSample);

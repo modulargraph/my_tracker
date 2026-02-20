@@ -157,9 +157,7 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
         else
         {
             // BeatSlice: equal divisions
-            int numSlices = params.slicePoints.empty()
-                ? 16
-                : static_cast<int> (params.slicePoints.size()) + 1;
+            int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (params);
             sliceIndex = juce::jlimit (0, numSlices - 1, sliceIndex);
 
             double regionLen = regionEnd - regionStart;

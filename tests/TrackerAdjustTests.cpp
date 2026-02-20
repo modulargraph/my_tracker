@@ -16,6 +16,7 @@
 #include "SamplePlaybackLayout.h"
 #include "SendBuffers.h"
 #include "SendEffectsParams.h"
+#include "PanMapping.h"
 #include "TrackLayout.h"
 #include "TrackerLookAndFeel.h"
 
@@ -383,6 +384,79 @@ bool testSendBuffersStartSampleAlignmentAndConsume()
     return true;
 }
 
+bool testSendBuffersAutoResizeForLargeWrites()
+{
+    SendBuffers buffers;
+    buffers.prepare (8, 2);
+
+    juce::AudioBuffer<float> source (2, 24);
+    for (int ch = 0; ch < source.getNumChannels(); ++ch)
+        for (int i = 0; i < source.getNumSamples(); ++i)
+            source.setSample (ch, i, static_cast<float> ((ch + 1) * 100 + i));
+
+    // Write beyond initial prepared length; addTo* should resize and keep all samples.
+    buffers.addToDelay (source, 4, 20, 1.0f);
+    buffers.addToReverb (source, 4, 20, 0.5f);
+
+    juce::AudioBuffer<float> delayOut;
+    juce::AudioBuffer<float> reverbOut;
+    buffers.consumeSlice (delayOut, reverbOut, 4, 20, 2);
+
+    if (delayOut.getNumSamples() != 20 || reverbOut.getNumSamples() != 20)
+    {
+        std::cerr << "auto-resize send consume returned wrong slice size\n";
+        return false;
+    }
+
+    for (int i = 0; i < 20; ++i)
+    {
+        const float expectedDelayL = source.getSample (0, 4 + i);
+        const float expectedDelayR = source.getSample (1, 4 + i);
+        const float expectedReverbL = source.getSample (0, 4 + i) * 0.5f;
+        const float expectedReverbR = source.getSample (1, 4 + i) * 0.5f;
+
+        if (! floatsClose (delayOut.getSample (0, i), expectedDelayL)
+            || ! floatsClose (delayOut.getSample (1, i), expectedDelayR)
+            || ! floatsClose (reverbOut.getSample (0, i), expectedReverbL)
+            || ! floatsClose (reverbOut.getSample (1, i), expectedReverbR))
+        {
+            std::cerr << "auto-resize send buffer mismatch at sample " << i << "\n";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool testPanMappingCenterAndExtremes()
+{
+    if (! floatsClose (PanMapping::cc10ToPan (0), -50.0f))
+    {
+        std::cerr << "CC10 pan at 0 should map to -50\n";
+        return false;
+    }
+
+    if (! floatsClose (PanMapping::cc10ToPan (64), 0.0f))
+    {
+        std::cerr << "CC10 pan at 64 should map to exact center 0\n";
+        return false;
+    }
+
+    if (! floatsClose (PanMapping::cc10ToPan (127), 50.0f))
+    {
+        std::cerr << "CC10 pan at 127 should map to +50\n";
+        return false;
+    }
+
+    if (PanMapping::cc10ToPan (63) >= 0.0f || PanMapping::cc10ToPan (65) <= 0.0f)
+    {
+        std::cerr << "CC10 pan should be negative below 64 and positive above 64\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testInstrumentRoutingRoundTripFullRange()
 {
     for (int instrument = 0; instrument <= 255; ++instrument)
@@ -713,6 +787,8 @@ bool testProjectRoundTripKeepsMixerLayoutAndInstrumentParams()
     InstrumentParams params;
     params.volume = -9.0;
     params.panning = -12;
+    params.reverbSend = -18.0;
+    params.delaySend = -24.0;
     params.playMode = InstrumentParams::PlayMode::Granular;
     params.granularLength = 333;
     params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].type
@@ -815,6 +891,8 @@ bool testProjectRoundTripKeepsMixerLayoutAndInstrumentParams()
     const auto& loadedParams = it->second;
     if (std::abs (loadedParams.volume - (-9.0)) > 1.0e-6
         || loadedParams.panning != -12
+        || std::abs (loadedParams.reverbSend - (-18.0)) > 1.0e-6
+        || std::abs (loadedParams.delaySend - (-24.0)) > 1.0e-6
         || loadedParams.playMode != InstrumentParams::PlayMode::Granular
         || loadedParams.granularLength != 333
         || loadedParams.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].type
@@ -1814,6 +1892,47 @@ bool testSliceBoundariesClampAndDeduplicate()
     return true;
 }
 
+bool testEqualSlicePointGenerationUsesRegionCount()
+{
+    const auto points = SamplePlaybackLayout::makeEqualSlicePointsNorm (0.2, 0.8, 4);
+    const std::vector<double> expected { 0.35, 0.5, 0.65 };
+    if (! vectorsClose (points, expected))
+    {
+        std::cerr << "equal slice generation should create N-1 points for N regions\n";
+        return false;
+    }
+
+    const auto singleRegionPoints = SamplePlaybackLayout::makeEqualSlicePointsNorm (0.1, 0.9, 1);
+    if (! singleRegionPoints.empty())
+    {
+        std::cerr << "single-region equal slice generation should produce no points\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testBeatSliceRegionCountDefaultsAndPointCount()
+{
+    InstrumentParams params;
+    params.playMode = InstrumentParams::PlayMode::BeatSlice;
+
+    if (SamplePlaybackLayout::getBeatSliceRegionCount (params) != 16)
+    {
+        std::cerr << "BeatSlice with no points should default to 16 regions\n";
+        return false;
+    }
+
+    params.slicePoints = { 0.25, 0.5, 0.75 };
+    if (SamplePlaybackLayout::getBeatSliceRegionCount (params) != 4)
+    {
+        std::cerr << "BeatSlice region count should be slicePoints + 1\n";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -1830,6 +1949,8 @@ int main()
         { "PatternRoundTripNoExtraPattern", &testPatternRoundTripNoExtraPattern },
         { "SinglePatternRoundTripStaysSingle", &testSinglePatternRoundTripStaysSingle },
         { "SendBuffersStartSampleAlignmentAndConsume", &testSendBuffersStartSampleAlignmentAndConsume },
+        { "SendBuffersAutoResizeForLargeWrites", &testSendBuffersAutoResizeForLargeWrites },
+        { "PanMappingCenterAndExtremes", &testPanMappingCenterAndExtremes },
         { "InstrumentRoutingRoundTripFullRange", &testInstrumentRoutingRoundTripFullRange },
         { "InstrumentRoutingClampsOutOfRange", &testInstrumentRoutingClampsOutOfRange },
         { "ArrangementRemapAfterPatternRemoved", &testArrangementRemapAfterPatternRemoved },
@@ -1860,6 +1981,8 @@ int main()
         { "GranularCenterClampsToRegion", &testGranularCenterClampsToRegion },
         { "SliceBoundariesUseAbsolutePositions", &testSliceBoundariesUseAbsolutePositions },
         { "SliceBoundariesClampAndDeduplicate", &testSliceBoundariesClampAndDeduplicate },
+        { "EqualSlicePointGenerationUsesRegionCount", &testEqualSlicePointGenerationUsesRegionCount },
+        { "BeatSliceRegionCountDefaultsAndPointCount", &testBeatSliceRegionCountDefaultsAndPointCount },
     };
 
     int failures = 0;

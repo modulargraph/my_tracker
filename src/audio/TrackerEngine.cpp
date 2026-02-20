@@ -952,6 +952,12 @@ void TrackerEngine::previewAudioFile (const juce::File& file)
     if (samplerPlugin == nullptr)
         return;
 
+    // Browser file previews should use neutral/default sampler params.
+    samplerPlugin->setSamplerSource (nullptr);
+    currentTrackInstrument[static_cast<size_t> (kPreviewTrack)] = -1;
+    if (auto* fxPlugin = track->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
+        fxPlugin->setSamplerSource (nullptr);
+
     samplerPlugin->setSampleBank (bank);
     samplerPlugin->playNote (60, previewVolume);
 
@@ -968,32 +974,7 @@ void TrackerEngine::previewInstrument (int instrumentIndex)
     if (bank == nullptr)
         return;
 
-    // Stop any current preview
-    stopPreview();
-
-    auto* track = getTrack (kPreviewTrack);
-    if (track == nullptr)
-        return;
-
-    auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>();
-    if (samplerPlugin == nullptr)
-    {
-        if (auto plugin = dynamic_cast<TrackerSamplerPlugin*> (
-                track->edit.getPluginCache().createNewPlugin (TrackerSamplerPlugin::xmlTypeName, {}).get()))
-        {
-            track->pluginList.insertPlugin (*plugin, 0, nullptr);
-            samplerPlugin = plugin;
-        }
-    }
-
-    if (samplerPlugin == nullptr)
-        return;
-
-    samplerPlugin->setSampleBank (bank);
-    samplerPlugin->playNote (60, previewVolume);
-
-    activePreviewTrack = kPreviewTrack;
-    startTimer (kPreviewDurationMs);
+    previewNote (kPreviewTrack, instrumentIndex, 60, true);
 }
 
 void TrackerEngine::stopPreview()

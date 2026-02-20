@@ -1,6 +1,7 @@
 #include "SampleEditorComponent.h"
 #include "NoteUtils.h"
 #include "FormatUtils.h"
+#include "SamplePlaybackLayout.h"
 #include <algorithm>
 #include <cmath>
 
@@ -199,10 +200,21 @@ void SampleEditorComponent::constrainPlaybackMarkersToRegion()
                      [] (double a, double b) { return std::abs (a - b) <= kDuplicateEps; }),
         currentParams.slicePoints.end());
 
-    if (currentParams.slicePoints.empty())
-        selectedSliceIndex = -1;
-    else if (selectedSliceIndex >= static_cast<int> (currentParams.slicePoints.size()))
-        selectedSliceIndex = static_cast<int> (currentParams.slicePoints.size()) - 1;
+    if (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
+    {
+        // BeatSlice selects regions, so allow one index beyond the last marker.
+        int maxSelected = currentParams.slicePoints.empty()
+            ? (SamplePlaybackLayout::getBeatSliceRegionCount (currentParams) - 1)
+            : static_cast<int> (currentParams.slicePoints.size());
+        selectedSliceIndex = juce::jlimit (0, juce::jmax (0, maxSelected), selectedSliceIndex);
+    }
+    else
+    {
+        if (currentParams.slicePoints.empty())
+            selectedSliceIndex = -1;
+        else if (selectedSliceIndex >= static_cast<int> (currentParams.slicePoints.size()))
+            selectedSliceIndex = static_cast<int> (currentParams.slicePoints.size()) - 1;
+    }
 }
 
 void SampleEditorComponent::notifyParamsChanged()
@@ -361,7 +373,7 @@ int SampleEditorComponent::getColumnCount() const
     if (displayMode == DisplayMode::InstrumentEdit)
     {
         if (editSubTab == EditSubTab::Parameters)
-            return 9; // Vol, Pan, Tune, Fine, Filter, Cutoff, Rez, OD, BitDepth
+            return 11; // Vol, Pan, Tune, Fine, Filter, Cutoff, Rez, OD, BitDepth, RevSend, DlySend
         else
             return 8; // Modulation page
     }
@@ -393,8 +405,9 @@ juce::String SampleEditorComponent::getColumnName (int col) const
         if (editSubTab == EditSubTab::Parameters)
         {
             const char* names[] = { "Volume", "Panning", "Tune", "Finetune", "Filter",
-                                    "Cutoff", "Resonance", "Overdrive", "Bit Depth" };
-            if (col >= 0 && col < 9) return names[col];
+                                    "Cutoff", "Resonance", "Overdrive", "Bit Depth",
+                                    "Reverb Send", "Delay Send" };
+            if (col >= 0 && col < 11) return names[col];
         }
         else // Modulation
         {
@@ -480,6 +493,8 @@ juce::String SampleEditorComponent::getColumnValue (int col) const
                 case 6: return formatPercent (currentParams.resonance);
                 case 7: return formatPercent (currentParams.overdrive);
                 case 8: return juce::String (currentParams.bitDepth);
+                case 9: return formatDb (currentParams.reverbSend);
+                case 10: return formatDb (currentParams.delaySend);
             }
         }
         else // Modulation
@@ -547,16 +562,27 @@ juce::String SampleEditorComponent::getColumnValue (int col) const
                 {
                     case 0: return formatPosSec (currentParams.startPos, totalLen);
                     case 1: return formatPosSec (currentParams.endPos, totalLen);
-                    case 2: return juce::String (static_cast<int> (currentParams.slicePoints.size()));
+                    case 2:
+                    {
+                        if (mode == InstrumentParams::PlayMode::BeatSlice)
+                            return juce::String (SamplePlaybackLayout::getBeatSliceRegionCount (currentParams));
+                        return juce::String (SamplePlaybackLayout::getSliceRegionCount (currentParams));
+                    }
                     case 3:
+                        if (mode == InstrumentParams::PlayMode::BeatSlice)
+                        {
+                            int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (currentParams);
+                            int idx = juce::jlimit (0, numSlices - 1, juce::jmax (0, selectedSliceIndex));
+                            return juce::String (idx);
+                        }
                         if (selectedSliceIndex >= 0 && selectedSliceIndex < static_cast<int> (currentParams.slicePoints.size()))
                             return juce::String (selectedSliceIndex);
                         return "--";
                     case 4: return juce::String (static_cast<int> (autoSliceSensitivity * 100.0)) + "%";
                     case 5:
                     {
-                        int num = static_cast<int> (currentParams.slicePoints.size());
-                        return num > 0 ? juce::String (num) : "8";
+                        int regions = SamplePlaybackLayout::getSliceRegionCount (currentParams);
+                        return regions > 1 ? juce::String (regions) : "8";
                     }
                 }
                 break;
@@ -896,7 +922,7 @@ void SampleEditorComponent::drawBarMeter (juce::Graphics& g, juce::Rectangle<int
 
 void SampleEditorComponent::drawParametersPage (juce::Graphics& g, juce::Rectangle<int> area)
 {
-    int numCols = 9;
+    int numCols = 11;
     int colW = area.getWidth() / numCols;
     auto greenCol = lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
     auto blueCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
@@ -945,6 +971,14 @@ void SampleEditorComponent::drawParametersPage (juce::Graphics& g, juce::Rectang
     // Col 8: Bit Depth bar
     float bd01 = static_cast<float> (currentParams.bitDepth - 4) / 12.0f;
     drawBarMeter (g, colRect (8), bd01, parametersColumn == 8, amberCol);
+
+    // Col 9: Reverb Send (-100..0 dB)
+    float rev01 = static_cast<float> ((currentParams.reverbSend + 100.0) / 100.0);
+    drawBarMeter (g, colRect (9), rev01, parametersColumn == 9, blueCol);
+
+    // Col 10: Delay Send (-100..0 dB)
+    float dly01 = static_cast<float> ((currentParams.delaySend + 100.0) / 100.0);
+    drawBarMeter (g, colRect (10), dly01, parametersColumn == 10, blueCol);
 }
 
 //==============================================================================
@@ -1313,6 +1347,20 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     currentParams.bitDepth = juce::jlimit (4, 16,
                         currentParams.bitDepth + direction);
                     break;
+                case 9: // Reverb Send
+                {
+                    double step = fine ? 0.5 : (large ? 12.0 : 1.0);
+                    currentParams.reverbSend = juce::jlimit (-100.0, 0.0,
+                        currentParams.reverbSend + direction * step);
+                    break;
+                }
+                case 10: // Delay Send
+                {
+                    double step = fine ? 0.5 : (large ? 12.0 : 1.0);
+                    currentParams.delaySend = juce::jlimit (-100.0, 0.0,
+                        currentParams.delaySend + direction * step);
+                    break;
+                }
             }
         }
         else // Modulation
@@ -1524,8 +1572,8 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     {
                         if (mode == InstrumentParams::PlayMode::BeatSlice)
                         {
-                            int numSlices = static_cast<int> (currentParams.slicePoints.size()) + direction;
-                            numSlices = juce::jlimit (0, 128, numSlices);
+                            int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (currentParams) + direction;
+                            numSlices = juce::jlimit (2, 128, numSlices);
                             generateEqualSlices (numSlices);
                         }
                         // For Slice mode, Slices column is read-only (shows count)
@@ -1533,7 +1581,9 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     }
                     case 3: // Selected slice
                     {
-                        int numSlices = static_cast<int> (currentParams.slicePoints.size());
+                        int numSlices = (mode == InstrumentParams::PlayMode::BeatSlice)
+                            ? SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
+                            : static_cast<int> (currentParams.slicePoints.size());
                         if (numSlices > 0)
                         {
                             selectedSliceIndex += direction;
@@ -1551,8 +1601,8 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     }
                     case 5: // Equal Chop count
                     {
-                        int current = static_cast<int> (currentParams.slicePoints.size());
-                        if (current < 1) current = 8;
+                        int current = SamplePlaybackLayout::getSliceRegionCount (currentParams);
+                        if (current < 2) current = 8;
                         int step = fine ? 1 : (large ? 8 : 1);
                         int numSlices = juce::jlimit (1, 128, current + direction * step);
                         generateEqualSlices (numSlices);
@@ -1679,6 +1729,14 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                 case 8: // Bit Depth 4-16
                     currentParams.bitDepth = juce::jlimit (4, 16,
                         currentParams.bitDepth + juce::roundToInt (normDelta * 12.0));
+                    break;
+                case 9: // Reverb Send -100..0 dB
+                    currentParams.reverbSend = juce::jlimit (-100.0, 0.0,
+                        currentParams.reverbSend + normDelta * 100.0);
+                    break;
+                case 10: // Delay Send -100..0 dB
+                    currentParams.delaySend = juce::jlimit (-100.0, 0.0,
+                        currentParams.delaySend + normDelta * 100.0);
                     break;
             }
         }
@@ -1839,16 +1897,18 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                     {
                         if (mode == InstrumentParams::PlayMode::BeatSlice)
                         {
-                            int numSlices = static_cast<int> (currentParams.slicePoints.size())
+                            int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
                                             + juce::roundToInt (normDelta * 32.0);
-                            numSlices = juce::jlimit (0, 128, numSlices);
+                            numSlices = juce::jlimit (2, 128, numSlices);
                             generateEqualSlices (numSlices);
                         }
                         break;
                     }
                     case 3: // Selected slice
                     {
-                        int numSlices = static_cast<int> (currentParams.slicePoints.size());
+                        int numSlices = (mode == InstrumentParams::PlayMode::BeatSlice)
+                            ? SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
+                            : static_cast<int> (currentParams.slicePoints.size());
                         if (numSlices > 0)
                         {
                             int idx = selectedSliceIndex - juce::roundToInt (normDelta * static_cast<double> (numSlices));
@@ -1865,8 +1925,8 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                     }
                     case 5: // Equal Chop count
                     {
-                        int current = static_cast<int> (currentParams.slicePoints.size());
-                        if (current < 1) current = 8;
+                        int current = SamplePlaybackLayout::getSliceRegionCount (currentParams);
+                        if (current < 2) current = 8;
                         int numSlices = current + juce::roundToInt (normDelta * 32.0);
                         numSlices = juce::jlimit (1, 128, numSlices);
                         generateEqualSlices (numSlices);
@@ -1978,7 +2038,7 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
             && (currentParams.playMode == InstrumentParams::PlayMode::Slice
                 || currentParams.playMode == InstrumentParams::PlayMode::BeatSlice))
         {
-            int numSlices = static_cast<int> (currentParams.slicePoints.size());
+            int numSlices = SamplePlaybackLayout::getSliceRegionCount (currentParams);
             if (numSlices < 2) numSlices = 8; // default to 8 slices
             generateEqualSlices (numSlices);
             notifyParamsChanged();
@@ -2028,13 +2088,17 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
                 onParamsChanged (currentInstrument, currentParams);
         }
 
-        // In slice mode, space previews the currently selected slice
-        if (displayMode == DisplayMode::InstrumentType
-            && (currentParams.playMode == InstrumentParams::PlayMode::Slice
-                || currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
-            && ! currentParams.slicePoints.empty())
+        // In slice modes, space previews the currently selected slice region.
+        const bool isSliceMode = (currentParams.playMode == InstrumentParams::PlayMode::Slice
+                                  || currentParams.playMode == InstrumentParams::PlayMode::BeatSlice);
+        const bool canSlicePreview = (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
+                                     || ! currentParams.slicePoints.empty();
+        if (displayMode == DisplayMode::InstrumentType && isSliceMode && canSlicePreview)
         {
-            int sliceIndex = juce::jmax (0, selectedSliceIndex);
+            int numSlices = (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
+                ? SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
+                : SamplePlaybackLayout::getSliceRegionCount (currentParams);
+            int sliceIndex = juce::jlimit (0, numSlices - 1, juce::jmax (0, selectedSliceIndex));
             if (onPreviewRequested)
                 onPreviewRequested (currentInstrument, 60 + sliceIndex);
         }
@@ -2214,7 +2278,8 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
     if (displayMode == DisplayMode::InstrumentType
         && (currentParams.playMode == InstrumentParams::PlayMode::Slice
             || currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
-        && ! currentParams.slicePoints.empty())
+        && ((currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
+            || ! currentParams.slicePoints.empty()))
     {
         // Map note keys to sequential slice indices instead of pitched notes.
         // The sampler uses (note - 60) as the slice index.
@@ -2229,7 +2294,9 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
             // Keys are laid out chromatically: lowest key = slice 0, next = slice 1, etc.
             // The octave-relative note offset from the base octave gives us the slice index.
             int sliceIndex = note - (currentOctave * 12);
-            int numSlices = static_cast<int> (currentParams.slicePoints.size()) + 1; // +1 for region after last slice
+            int numSlices = (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
+                ? SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
+                : SamplePlaybackLayout::getSliceRegionCount (currentParams);
             sliceIndex = juce::jlimit (0, numSlices - 1, sliceIndex);
 
             // Update selected slice in UI (select the slice point, not the region)
@@ -2624,6 +2691,8 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                         case 6: currentParams.resonance = static_cast<int> (norm * 85.0); break;
                         case 7: currentParams.overdrive = static_cast<int> (norm * 100.0); break;
                         case 8: currentParams.bitDepth  = 4 + static_cast<int> (norm * 12.0); break;
+                        case 9: currentParams.reverbSend = -100.0 + norm * 100.0; break;
+                        case 10: currentParams.delaySend = -100.0 + norm * 100.0; break;
                         default: break;
                     }
                 }
@@ -3088,39 +3157,28 @@ void SampleEditorComponent::removeSlice (int sliceIdx)
 
     // Adjust selected index
     int numSlices = static_cast<int> (currentParams.slicePoints.size());
-    if (numSlices == 0)
-        selectedSliceIndex = -1;
-    else if (selectedSliceIndex >= numSlices)
-        selectedSliceIndex = numSlices - 1;
+    if (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
+    {
+        int maxSelected = numSlices > 0
+            ? numSlices
+            : SamplePlaybackLayout::getBeatSliceRegionCount (currentParams) - 1;
+        selectedSliceIndex = juce::jlimit (0, juce::jmax (0, maxSelected), selectedSliceIndex);
+    }
+    else
+    {
+        if (numSlices == 0)
+            selectedSliceIndex = -1;
+        else if (selectedSliceIndex >= numSlices)
+            selectedSliceIndex = numSlices - 1;
+    }
 }
 
 void SampleEditorComponent::generateEqualSlices (int numSlices)
 {
-    currentParams.slicePoints.clear();
+    currentParams.slicePoints = SamplePlaybackLayout::makeEqualSlicePointsNorm (
+        currentParams.startPos, currentParams.endPos, numSlices);
 
-    if (numSlices <= 0) return;
-
-    double range = currentParams.endPos - currentParams.startPos;
-    if (range <= 0.0) return;
-
-    // Generate numSlices - 1 internal slice points (numSlices regions between start and end)
-    // Actually, numSlices slice points creates numSlices+1 regions. For equal chop into N pieces,
-    // we need N-1 slice points.
-    // But conventionally "N slices" means N slice points creating N+1 regions, or
-    // N regions requiring N-1 points.
-    // Let's follow the convention: user specifies number of resulting pieces.
-    // So for N pieces we need N-1 internal slice points.
-    // However the bottom bar shows "Num Slices" as the count of slicePoints, so let's
-    // keep it simple: numSlices = number of slice points.
-    for (int i = 0; i < numSlices; ++i)
-    {
-        double frac = static_cast<double> (i + 1) / static_cast<double> (numSlices + 1);
-        double pos = currentParams.startPos + frac * range;
-        currentParams.slicePoints.push_back (pos);
-    }
-
-    if (numSlices > 0)
-        selectedSliceIndex = 0;
+    selectedSliceIndex = currentParams.slicePoints.empty() ? -1 : 0;
 }
 
 void SampleEditorComponent::autoSlice()

@@ -664,11 +664,21 @@ MixerComponent::HitResult MixerComponent::hitTestStrip (juce::Point<int> pos) co
 
     // EQ label + section
     y += kSectionLabelHeight;
+    int eqStart = y;
     y += kEqSectionHeight;
     if (relY < y)
     {
         result.section = Section::EQ;
-        // Determine which of 3 bands based on x position within strip
+        int relEqY = relY - eqStart;
+
+        // Bottom readout area controls mid frequency (param 3).
+        if (relEqY >= (kEqSectionHeight - 18))
+        {
+            result.param = 3;
+            return result;
+        }
+
+        // Upper area controls the 3 EQ gain bands.
         int relX = pos.x - bounds.getX();
         int barWidth = (bounds.getWidth() - 16) / 3;
         result.param = juce::jlimit (0, 2, (relX - 4) / (barWidth + 4));

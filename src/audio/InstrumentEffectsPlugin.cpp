@@ -3,6 +3,7 @@
 #include "TrackerSamplerPlugin.h"
 #include "InstrumentRouting.h"
 #include "FxParamTransport.h"
+#include "PanMapping.h"
 
 const char* InstrumentEffectsPlugin::xmlTypeName = "InstrumentEffects";
 
@@ -546,8 +547,8 @@ void InstrumentEffectsPlugin::processVolumeAndPan (juce::AudioBuffer<float>& buf
     float basePan;
     if (overrides.panningOverride >= 0)
     {
-        // Map CC10 0-127 → -50..+50 (0=hard left, 64=center, 127=hard right)
-        basePan = (static_cast<float> (overrides.panningOverride) / 127.0f) * 100.0f - 50.0f;
+        // Map CC10 0-127 -> -50..+50 with exact center at CC64.
+        basePan = PanMapping::cc10ToPan (overrides.panningOverride);
     }
     else
     {
@@ -985,7 +986,12 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     }
 
     if (! hasParams)
+    {
+        if (auto* track = dynamic_cast<te::AudioTrack*> (getOwnerTrack()))
+            if (auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+                samplerPlugin->setPitchOffset (0.0f);
         return;
+    }
 
     // Advance global envelopes once per rendered block start position.
     advanceGlobalEnvelopes (params, blockStartSample, numSamples);
@@ -1084,7 +1090,21 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         }
     }
 
-    // Send routing is handled exclusively by MixerPlugin (per-track sends).
+    // Instrument-level sends bypass track mixer sends by design.
+    if (sendBuffers != nullptr)
+    {
+        if (params.reverbSend > -99.0)
+        {
+            float reverbGain = juce::Decibels::decibelsToGain (static_cast<float> (params.reverbSend));
+            sendBuffers->addToReverb (buffer, startSample, numSamples, reverbGain);
+        }
+
+        if (params.delaySend > -99.0)
+        {
+            float delayGain = juce::Decibels::decibelsToGain (static_cast<float> (params.delaySend));
+            sendBuffers->addToDelay (buffer, startSample, numSamples, delayGain);
+        }
+    }
 }
 
 void InstrumentEffectsPlugin::setInstrumentIndex (int index)
