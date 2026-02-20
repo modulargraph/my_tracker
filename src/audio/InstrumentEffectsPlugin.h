@@ -42,6 +42,7 @@ public:
     void setGlobalModStates (const std::map<int, GlobalModState*>& states);
     void setRowsPerBeat (int rpb) { rowsPerBeat = rpb; }
     void setSendBuffers (SendBuffers* buffers) { sendBuffers = buffers; }
+    void setOutputGainLinear (float gain) { outputGainLinear.store (juce::jlimit (0.0f, 1.0f, gain), std::memory_order_relaxed); }
 
     // Callback for Fxx (Set Speed/Tempo) — called on audio thread
     std::function<void (int)> onTempoChange;
@@ -140,6 +141,7 @@ private:
     double currentTransportBeat = 0.0;
     int rowsPerBeat = 4;
     int bankSelectMsb = 0;
+    std::atomic<float> outputGainLinear { 1.0f };
 
     // Parameter smoothing
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedGainL { 1.0f };

@@ -874,6 +874,9 @@ void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNo
 {
     juce::ignoreUnused (trackIndex);
 
+    if (instrumentIndex < 0)
+        return;
+
     // Preview routing is always through the dedicated preview track.
     auto* track = getTrack (kPreviewTrack);
     if (track == nullptr)
@@ -881,7 +884,21 @@ void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNo
 
     stopPreview();
     ensureTrackHasInstrument (kPreviewTrack, instrumentIndex);
-    sampler.playNote (*track, midiNote, previewVolume);
+
+    // Preview should match instrument DSP and sends, with preview volume applied
+    // as a track-level output gain (not as note velocity).
+    if (auto* fxPlugin = sampler.getOrCreateEffectsPlugin (*track, instrumentIndex))
+    {
+        fxPlugin->setRowsPerBeat (rowsPerBeat);
+        auto* globalState = sampler.getOrCreateGlobalModState (instrumentIndex);
+        fxPlugin->setGlobalModState (globalState);
+        std::map<int, GlobalModState*> globalStates;
+        globalStates[instrumentIndex] = globalState;
+        fxPlugin->setGlobalModStates (globalStates);
+        fxPlugin->setOutputGainLinear (previewVolume);
+    }
+
+    sampler.playNote (*track, midiNote, 1.0f);
 
     activePreviewTrack = kPreviewTrack;
 
@@ -996,6 +1013,10 @@ void TrackerEngine::stopPreview()
 void TrackerEngine::setPreviewVolume (float gainLinear)
 {
     previewVolume = juce::jlimit (0.0f, 1.0f, gainLinear);
+
+    if (auto* track = getTrack (kPreviewTrack))
+        if (auto* fxPlugin = track->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
+            fxPlugin->setOutputGainLinear (previewVolume);
 }
 
 void TrackerEngine::timerCallback()

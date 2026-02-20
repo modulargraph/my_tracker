@@ -1090,6 +1090,11 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         }
     }
 
+    // Track-level output gain (used by preview routing to keep dry/wet balanced).
+    float outputGain = outputGainLinear.load (std::memory_order_relaxed);
+    if (std::abs (outputGain - 1.0f) > 0.0001f)
+        buffer.applyGain (startSample, numSamples, outputGain);
+
     // Instrument-level sends bypass track mixer sends by design.
     if (sendBuffers != nullptr)
     {
