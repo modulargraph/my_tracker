@@ -102,6 +102,7 @@ private:
 
         // Set Speed/Tempo (Fxx)
         int lastSpeedTempo = 0;
+        int trackerSpeed = 6; // ticks per row
 
         // Current base MIDI note for pitch effects
         int currentNote = -1;
@@ -122,6 +123,7 @@ private:
             tremoloSpeed = 0; tremoloDepth = 0; tremoloPhase = 0.0; tremoloActive = false;
             volumeSlide = 0.0f; volSlideUp = 0; volSlideDown = 0;
             sampleOffset = 0; lastSpeedTempo = 0;
+            trackerSpeed = 6;
             currentNote = -1;
         }
     };
@@ -133,6 +135,7 @@ private:
     std::map<int, GlobalModState*> globalStatesByInstrument;
     double currentTransportBeat = 0.0;
     int rowsPerBeat = 4;
+    int bankSelectMsb = 0;
     static std::atomic<uint64_t> blockCounter;
 
     // Parameter smoothing

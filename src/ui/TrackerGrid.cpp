@@ -220,6 +220,8 @@ void TrackerGrid::drawRowNumbers (juce::Graphics& g)
     g.setFont (lookAndFeel.getMonoFont (12.0f));
 
     int visibleRows = getVisibleRowCount();
+    const int beatRows = juce::jmax (1, rowsPerBeat);
+    const int barRows = beatRows * 4;
     for (int i = 0; i < visibleRows; ++i)
     {
         int row = scrollOffset + i;
@@ -228,21 +230,21 @@ void TrackerGrid::drawRowNumbers (juce::Graphics& g)
 
         int y = effectiveHeaderH + i * kRowHeight;
 
-        // Beat marker background on every 4th row
-        if (row % 4 == 0)
+        // Beat marker background.
+        if (row % beatRows == 0)
         {
             g.setColour (beatColour);
             g.fillRect (0, y, kRowNumberWidth, kRowHeight);
         }
 
-        // More prominent bar marker every 16th row
-        if (row % 16 == 0)
+        // More prominent bar marker every 4 beats.
+        if (row % barRows == 0)
         {
             g.setColour (juce::Colour (0xff2a2a2a));
             g.fillRect (0, y, kRowNumberWidth, kRowHeight);
         }
 
-        g.setColour (textColour.withAlpha (row % 4 == 0 ? 1.0f : 0.6f));
+        g.setColour (textColour.withAlpha (row % beatRows == 0 ? 1.0f : 0.6f));
         g.drawText (juce::String::formatted ("%02X", row), 2, y, kRowNumberWidth - 4, kRowHeight,
                     juce::Justification::centredRight);
     }
@@ -256,6 +258,8 @@ void TrackerGrid::drawCells (juce::Graphics& g)
 
     int visibleRows = getVisibleRowCount();
     int visibleTracks = getVisibleTrackCount();
+    const int beatRows = juce::jmax (1, rowsPerBeat);
+    const int barRows = beatRows * 4;
 
     // Calculate total visible width for horizontal lines
     int totalVisibleWidth = 0;
@@ -270,8 +274,8 @@ void TrackerGrid::drawCells (juce::Graphics& g)
 
         int y = effectiveHeaderH + i * kRowHeight;
 
-        // Bar marker line every 16th row
-        if (row % 16 == 0 && row > 0)
+        // Bar marker line every 4 beats.
+        if (row % barRows == 0 && row > 0)
         {
             g.setColour (juce::Colour (0xff444444));
             g.drawHorizontalLine (y, static_cast<float> (kRowNumberWidth),

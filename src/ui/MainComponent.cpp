@@ -40,7 +40,7 @@ MainComponent::MainComponent()
 
         auto doRemove = [this, idx]
         {
-            patternData.removePattern (idx);
+            removePatternAndRepairArrangement (idx);
             switchToPattern (juce::jmin (idx, patternData.getNumPatterns() - 1));
             markDirty();
         };
@@ -90,7 +90,7 @@ MainComponent::MainComponent()
                             hasData = true;
                 if (! hasData)
                 {
-                    patternData.removePattern (idx);
+                    removePatternAndRepairArrangement (idx);
                     markDirty();
                 }
             }
@@ -109,11 +109,15 @@ MainComponent::MainComponent()
             juce::jmin (trackerGrid->getCursorRow(), newLen - 1),
             trackerGrid->getCursorTrack());
 
-        // Re-sync edit if playing in pattern mode
-        if (trackerEngine.isPlaying() && ! songMode)
+        if (trackerEngine.isPlaying())
         {
-            trackerEngine.syncPatternToEdit (pat, getReleaseModes());
-            trackerEngine.updateLoopRangeForPatternLength (pat.numRows);
+            if (songMode)
+                syncArrangementToEdit();
+            else
+            {
+                trackerEngine.syncPatternToEdit (pat, getReleaseModes());
+                trackerEngine.updateLoopRangeForPatternLength (pat.numRows);
+            }
         }
 
         updateToolbar();
@@ -125,12 +129,18 @@ MainComponent::MainComponent()
         trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() + delta));
         updateStatusBar();
         updateToolbar();
+        markDirty();
     };
 
     toolbar->onRpbDrag = [this] (int delta)
     {
         int rpb = juce::jlimit (1, 16, trackerEngine.getRowsPerBeat() + delta);
         trackerEngine.setRowsPerBeat (rpb);
+        trackerGrid->setRowsPerBeat (rpb);
+
+        if (trackerEngine.isPlaying())
+            resyncPlaybackForCurrentMode();
+
         updateToolbar();
         markDirty();
     };
@@ -193,6 +203,7 @@ MainComponent::MainComponent()
         else
             followMode = FollowMode::Off;
         toolbar->setFollowMode (static_cast<int> (followMode));
+        markDirty();
     };
 
     toolbar->onMetronomeToggle = [this]
@@ -239,10 +250,17 @@ MainComponent::MainComponent()
                       : arrangement.getNumEntries();
         arrangement.insertEntry (pos, patIdx);
         arrangementComponent->setSelectedEntry (pos);
+
+        if (trackerEngine.isPlaying() && songMode)
+            syncArrangementToEdit();
+
         markDirty();
     };
     arrangementComponent->onArrangementChanged = [this]
     {
+        if (trackerEngine.isPlaying() && songMode)
+            syncArrangementToEdit();
+
         markDirty();
     };
 
@@ -374,9 +392,13 @@ MainComponent::MainComponent()
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Load Error", error);
         else
         {
-            // Re-apply instrument to active tracks during playback
             if (trackerEngine.isPlaying())
-                trackerEngine.refreshTracksForInstrument (instrument, patternData.getCurrentPattern());
+            {
+                if (songMode)
+                    syncArrangementToEdit();
+                else
+                    trackerEngine.refreshTracksForInstrument (instrument, patternData.getCurrentPattern());
+            }
 
             trackerGrid->repaint();
             updateToolbar();
@@ -415,6 +437,7 @@ MainComponent::MainComponent()
 
     // Create the grid
     trackerGrid = std::make_unique<TrackerGrid> (patternData, trackerLookAndFeel, trackLayout);
+    trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     trackerGrid->setUndoManager (&undoManager);
     addAndMakeVisible (*trackerGrid);
 
@@ -471,17 +494,24 @@ MainComponent::MainComponent()
     };
 
     // File drop on track
-    trackerGrid->onFileDroppedOnTrack = [this] (int /*track*/, const juce::File& file)
+    trackerGrid->onFileDroppedOnTrack = [this] (int track, const juce::File& file)
     {
-        int inst = trackerGrid->getCurrentInstrument();
+        int inst = resolveInstrumentForTrackDrop (track);
+        trackerGrid->setCurrentInstrument (inst);
+        instrumentPanel->setSelectedInstrument (inst);
+
         auto error = trackerEngine.loadSampleForInstrument (inst, file);
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Load Error", error);
         else
         {
-            // Re-apply instrument to active tracks during playback
             if (trackerEngine.isPlaying())
-                trackerEngine.refreshTracksForInstrument (inst, patternData.getCurrentPattern());
+            {
+                if (songMode)
+                    syncArrangementToEdit();
+                else
+                    trackerEngine.refreshTracksForInstrument (inst, patternData.getCurrentPattern());
+            }
 
             trackerGrid->repaint();
             updateToolbar();
@@ -774,6 +804,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         {
             t->setMute (! t->isMuted (false));
             updateMuteSoloState();
+            markDirty();
         }
         return true;
     }
@@ -787,6 +818,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         {
             t->setSolo (! t->isSolo (false));
             updateMuteSoloState();
+            markDirty();
         }
         return true;
     }
@@ -824,16 +856,18 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     // Cmd+[ / Cmd+]: decrease/increase BPM (MacBook-friendly alternative to F9/F10)
     if (cmd && ! shift && textChar == '[')
     {
-        trackerEngine.setBpm (trackerEngine.getBpm() - 1.0);
+        trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() - 1.0));
         updateStatusBar();
         updateToolbar();
+        markDirty();
         return true;
     }
     if (cmd && ! shift && textChar == ']')
     {
-        trackerEngine.setBpm (trackerEngine.getBpm() + 1.0);
+        trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() + 1.0));
         updateStatusBar();
         updateToolbar();
+        markDirty();
         return true;
     }
 
@@ -859,13 +893,19 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
 
     if (keyCode == juce::KeyPress::F9Key)
     {
-        trackerEngine.setBpm (trackerEngine.getBpm() - 1.0);
-        updateStatusBar(); updateToolbar(); return true;
+        trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() - 1.0));
+        updateStatusBar();
+        updateToolbar();
+        markDirty();
+        return true;
     }
     if (keyCode == juce::KeyPress::F10Key)
     {
-        trackerEngine.setBpm (trackerEngine.getBpm() + 1.0);
-        updateStatusBar(); updateToolbar(); return true;
+        trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() + 1.0));
+        updateStatusBar();
+        updateToolbar();
+        markDirty();
+        return true;
     }
     if (keyCode == juce::KeyPress::F11Key)
     {
@@ -1008,19 +1048,20 @@ bool MainComponent::perform (const InvocationInfo& info)
         case addPattern:
             patternData.addPattern (patternData.getCurrentPattern().numRows);
             switchToPattern (patternData.getNumPatterns() - 1);
+            markDirty();
             return true;
         case muteTrack:
         {
             int track = trackerGrid->getCursorTrack();
             auto* t = trackerEngine.getTrack (track);
-            if (t) { t->setMute (! t->isMuted (false)); updateMuteSoloState(); }
+            if (t) { t->setMute (! t->isMuted (false)); updateMuteSoloState(); markDirty(); }
             return true;
         }
         case soloTrack:
         {
             int track = trackerGrid->getCursorTrack();
             auto* t = trackerEngine.getTrack (track);
-            if (t) { t->setSolo (! t->isSolo (false)); updateMuteSoloState(); }
+            if (t) { t->setSolo (! t->isSolo (false)); updateMuteSoloState(); markDirty(); }
             return true;
         }
         case cmdCopy:
@@ -1253,7 +1294,7 @@ void MainComponent::updateStatusBar()
 void MainComponent::updateToolbar()
 {
     auto& pat = patternData.getCurrentPattern();
-    toolbar->setPatternInfo (patternData.getCurrentPatternIndex(), patternData.getNumPatterns(), pat.name);
+    toolbar->setPatternInfo (patternData.getCurrentPatternIndex() + 1, patternData.getNumPatterns(), pat.name);
     toolbar->setPatternLength (pat.numRows);
     toolbar->setInstrument (trackerGrid->getCurrentInstrument());
     toolbar->setOctave (trackerGrid->getOctave());
@@ -1288,9 +1329,13 @@ void MainComponent::loadSampleForCurrentTrack()
                                                                               "Load Error", error);
                                   else
                                   {
-                                      // Re-apply instrument to active tracks during playback
                                       if (trackerEngine.isPlaying())
-                                          trackerEngine.refreshTracksForInstrument (inst, patternData.getCurrentPattern());
+                                      {
+                                          if (songMode)
+                                              syncArrangementToEdit();
+                                          else
+                                              trackerEngine.refreshTracksForInstrument (inst, patternData.getCurrentPattern());
+                                      }
 
                                       trackerGrid->repaint();
                                       updateToolbar();
@@ -1345,11 +1390,16 @@ void MainComponent::showPatternLengthEditor()
                 juce::jmin (trackerGrid->getCursorRow(), newLen - 1),
                 trackerGrid->getCursorTrack());
 
-            // Re-sync edit if playing in pattern mode
-            if (trackerEngine.isPlaying() && ! songMode)
+            // Re-sync edit while playing.
+            if (trackerEngine.isPlaying())
             {
-                trackerEngine.syncPatternToEdit (pat, getReleaseModes());
-                trackerEngine.updateLoopRangeForPatternLength (pat.numRows);
+                if (songMode)
+                    syncArrangementToEdit();
+                else
+                {
+                    trackerEngine.syncPatternToEdit (pat, getReleaseModes());
+                    trackerEngine.updateLoopRangeForPatternLength (pat.numRows);
+                }
             }
 
             trackerGrid->repaint();
@@ -1446,11 +1496,13 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                             {
                                 t->setMute (! t->isMuted (false));
                                 updateMuteSoloState();
+                                markDirty();
                             }
                             else if (result == 2 && t)
                             {
                                 t->setSolo (! t->isSolo (false));
                                 updateMuteSoloState();
+                                markDirty();
                             }
                             else if (result == 3)
                             {
@@ -1597,6 +1649,8 @@ void MainComponent::newProject()
         trackerGrid->trackSoloed[static_cast<size_t> (i)] = false;
     }
     trackerEngine.setBpm (120.0);
+    trackerEngine.setRowsPerBeat (4);
+    trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     trackerEngine.invalidateTrackInstruments();
     mixerState.reset();
     undoManager.clearUndoHistory();
@@ -1647,6 +1701,7 @@ void MainComponent::openProject()
 
                               trackerEngine.setBpm (bpm);
                               trackerEngine.setRowsPerBeat (rpb);
+                              trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
 
                               // Reload samples
                               trackerEngine.getSampler().clearLoadedSamples();
@@ -1930,7 +1985,60 @@ void MainComponent::toggleSongMode()
 {
     songMode = ! songMode;
     toolbar->setPlaybackMode (songMode);
+
+    if (trackerEngine.isPlaying())
+        resyncPlaybackForCurrentMode();
+
     updateToolbar();
+    markDirty();
+}
+
+void MainComponent::removePatternAndRepairArrangement (int index)
+{
+    patternData.removePattern (index);
+    arrangement.remapAfterPatternRemoved (index, patternData.getNumPatterns());
+
+    if (arrangementComponent != nullptr && arrangementComponent->getSelectedEntry() >= arrangement.getNumEntries())
+        arrangementComponent->setSelectedEntry (arrangement.getNumEntries() - 1);
+
+    if (trackerEngine.isPlaying() && songMode)
+        syncArrangementToEdit();
+}
+
+int MainComponent::resolveInstrumentForTrackDrop (int track) const
+{
+    track = juce::jlimit (0, kNumTracks - 1, track);
+
+    int trackInst = trackerEngine.getTrackInstrument (track);
+    if (trackInst >= 0)
+        return juce::jlimit (0, 255, trackInst);
+
+    auto& pat = patternData.getCurrentPattern();
+    for (int row = 0; row < pat.numRows; ++row)
+    {
+        int inst = pat.getCell (row, track).instrument;
+        if (inst >= 0)
+            return juce::jlimit (0, 255, inst);
+    }
+
+    return juce::jlimit (0, 255, track);
+}
+
+void MainComponent::resyncPlaybackForCurrentMode()
+{
+    if (! trackerEngine.isPlaying())
+        return;
+
+    if (songMode)
+    {
+        syncArrangementToEdit();
+    }
+    else
+    {
+        auto& pat = patternData.getCurrentPattern();
+        trackerEngine.syncPatternToEdit (pat, getReleaseModes());
+        trackerEngine.updateLoopRangeForPatternLength (pat.numRows);
+    }
 }
 
 void MainComponent::syncArrangementToEdit()
@@ -2109,9 +2217,13 @@ void MainComponent::loadSampleForInstrument (int instrument)
                                                                               "Load Error", error);
                                   else
                                   {
-                                      // Re-apply instrument to active tracks during playback
                                       if (trackerEngine.isPlaying())
-                                          trackerEngine.refreshTracksForInstrument (instrument, patternData.getCurrentPattern());
+                                      {
+                                          if (songMode)
+                                              syncArrangementToEdit();
+                                          else
+                                              trackerEngine.refreshTracksForInstrument (instrument, patternData.getCurrentPattern());
+                                      }
 
                                       trackerGrid->repaint();
                                       updateToolbar();

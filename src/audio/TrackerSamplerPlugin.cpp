@@ -1,5 +1,6 @@
 #include "TrackerSamplerPlugin.h"
 #include "SimpleSampler.h"
+#include "InstrumentRouting.h"
 
 const char* TrackerSamplerPlugin::xmlTypeName = "TrackerSampler";
 
@@ -570,19 +571,37 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             {
                 // Switch to a preloaded bank for multi-instrument support
                 int progNum = m.getProgramChangeNumber();
+                const int instrument = InstrumentRouting::decodeInstrumentFromBankAndProgram (currentBankMsb, progNum);
                 const juce::SpinLock::ScopedLockType lock (bankLock);
-                auto it = preloadedBanks.find (progNum);
+                auto it = preloadedBanks.find (instrument);
                 if (it != preloadedBanks.end() && it->second != nullptr)
                 {
                     sharedBank = it->second;
                     bank = sharedBank;
-                    instrumentIndex = progNum;
+                    instrumentIndex = instrument;
+                }
+                else
+                {
+                    // Legacy fallback: older sessions that only used 7-bit program numbers.
+                    auto legacyIt = preloadedBanks.find (progNum);
+                    if (legacyIt != preloadedBanks.end() && legacyIt->second != nullptr)
+                    {
+                        sharedBank = legacyIt->second;
+                        bank = sharedBank;
+                        instrumentIndex = progNum;
+                    }
                 }
             }
             else if (m.isController())
             {
-                if (m.getControllerNumber() == 9) // Sample Offset (9xx)
+                if (m.getControllerNumber() == 0) // Bank Select MSB
+                {
+                    currentBankMsb = m.getControllerValue() & 0x7F;
+                }
+                else if (m.getControllerNumber() == 9) // Sample Offset (9xx)
+                {
                     pendingSampleOffset = m.getControllerValue();
+                }
             }
             else if (m.isNoteOn())
             {

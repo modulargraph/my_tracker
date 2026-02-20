@@ -1,6 +1,7 @@
 #include "InstrumentEffectsPlugin.h"
 #include "SimpleSampler.h"
 #include "TrackerSamplerPlugin.h"
+#include "InstrumentRouting.h"
 
 const char* InstrumentEffectsPlugin::xmlTypeName = "InstrumentEffects";
 std::atomic<uint64_t> InstrumentEffectsPlugin::blockCounter { 0 };
@@ -590,10 +591,9 @@ void InstrumentEffectsPlugin::processFxCommands (int numSamples, float& pitchMod
     double blockDuration = static_cast<double> (numSamples) / sampleRate;
     double bpm = edit.tempoSequence.getTempos()[0]->getBpm();
 
-    // Tick rate: how many "ticks" per second (standard tracker: speed ticks per row)
-    // We approximate: one row = rowsPerBeat-th of a beat. At bpm, that's bpm/60/rowsPerBeat seconds per row.
-    // A typical tracker has 6 ticks per row, so tick rate = 6 * rowsPerBeat * bpm / 60
-    double ticksPerSecond = 6.0 * static_cast<double> (rowsPerBeat) * bpm / 60.0;
+    // Tick rate: speed (ticks per row) * rows per beat * beats per second.
+    const int speed = juce::jmax (1, fxState.trackerSpeed);
+    double ticksPerSecond = static_cast<double> (speed) * static_cast<double> (rowsPerBeat) * bpm / 60.0;
     double ticksThisBlock = ticksPerSecond * blockDuration;
 
     // --- Arpeggio (0xy) ---
@@ -749,7 +749,8 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             if (m.isProgramChange())
             {
                 // Multi-instrument support: update current instrument on program change
-                currentInstrument = m.getProgramChangeNumber();
+                const int program = m.getProgramChangeNumber();
+                currentInstrument = InstrumentRouting::decodeInstrumentFromBankAndProgram (bankSelectMsb, program);
 
                 // Use preloaded per-instrument global modulation state for this track.
                 GlobalModState* switchedState = nullptr;
@@ -760,6 +761,13 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                         auto it = globalStatesByInstrument.find (currentInstrument);
                         if (it != globalStatesByInstrument.end())
                             switchedState = it->second;
+                        else
+                        {
+                            // Legacy fallback for old sessions using 7-bit instrument indices.
+                            auto legacyIt = globalStatesByInstrument.find (program);
+                            if (legacyIt != globalStatesByInstrument.end())
+                                switchedState = legacyIt->second;
+                        }
                     }
                 }
                 if (switchedState != nullptr)
@@ -770,7 +778,11 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 int ccNum = m.getControllerNumber();
                 int ccVal = m.getControllerValue();
 
-                if (ccNum == 119) // Row boundary: clear per-row continuous effects
+                if (ccNum == 0) // Bank Select MSB
+                {
+                    bankSelectMsb = ccVal & 0x7F;
+                }
+                else if (ccNum == 119) // Row boundary: clear per-row continuous effects
                 {
                     fxState.slideUpSpeed = 0;
                     fxState.slideDownSpeed = 0;
@@ -866,9 +878,17 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 else if (ccNum == 110) // Set Speed/Tempo (Fxx)
                 {
                     fxState.lastSpeedTempo = ccVal;
-                    // Values >= 0x20 (32) set BPM directly
-                    if (ccVal >= 0x20 && onTempoChange)
-                        onTempoChange (ccVal);
+                    if (ccVal >= 0x20)
+                    {
+                        // Values >= 0x20 set BPM directly.
+                        if (onTempoChange)
+                            onTempoChange (ccVal);
+                    }
+                    else if (ccVal > 0x00)
+                    {
+                        // 0x01..0x1F set tracker speed (ticks per row).
+                        fxState.trackerSpeed = ccVal;
+                    }
                 }
             }
             else if (m.isNoteOn())
@@ -1049,10 +1069,11 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
 void InstrumentEffectsPlugin::setInstrumentIndex (int index)
 {
-    currentInstrument = index;
+    currentInstrument = InstrumentRouting::clampInstrumentIndex (index);
+    bankSelectMsb = InstrumentRouting::getBankMsbForInstrument (currentInstrument);
 
     const juce::SpinLock::ScopedLockType lock (globalStateLock);
-    auto it = globalStatesByInstrument.find (index);
+    auto it = globalStatesByInstrument.find (currentInstrument);
     if (it != globalStatesByInstrument.end())
         globalModState = it->second;
 }

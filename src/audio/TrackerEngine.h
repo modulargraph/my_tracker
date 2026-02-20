@@ -56,7 +56,7 @@ public:
     double getBpm() const;
 
     // Rows per beat (default 4 = 16th notes)
-    void setRowsPerBeat (int rpb) { rowsPerBeat = rpb; }
+    void setRowsPerBeat (int rpb);
     int getRowsPerBeat() const { return rowsPerBeat; }
 
     // Sample loading (instrument-only, no track coupling)
@@ -130,6 +130,7 @@ private:
     const MixerState* mixerStatePtr = nullptr;
     void setupSendEffectsTrack();
     void setupMixerPlugins();
+    void refreshTransportLoopRangeFromClip();
     static constexpr int kPreviewDurationMs = 3000;
     int activePreviewTrack = -1;
     std::shared_ptr<SampleBank> previewBank;

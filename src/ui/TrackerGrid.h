@@ -41,6 +41,8 @@ public:
     int getScrollOffset() const { return scrollOffset; }
     void setScrollOffset (int offset);
     int getVisibleRowCount() const;
+    void setRowsPerBeat (int rpb) { rowsPerBeat = juce::jlimit (1, 16, rpb); repaint(); }
+    int getRowsPerBeat() const { return rowsPerBeat; }
 
     // Edit step (rows to advance after note entry)
     void setEditStep (int step) { editStep = step; }
@@ -51,7 +53,7 @@ public:
     int getOctave() const { return currentOctave; }
 
     // Current instrument for note entry
-    void setCurrentInstrument (int inst) { currentInstrument = inst; }
+    void setCurrentInstrument (int inst) { currentInstrument = juce::jlimit (0, 255, inst); }
     int getCurrentInstrument() const { return currentInstrument; }
 
     // Selection
@@ -134,6 +136,7 @@ private:
     int editStep = 1;
     int currentOctave = 4;
     int currentInstrument = 0;
+    int rowsPerBeat = 4;
 
     // Hex entry state for multi-digit input
     int hexDigitCount = 0;

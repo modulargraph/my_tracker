@@ -128,6 +128,9 @@ private:
     void showPatternNameEditor();
     void showTrackHeaderMenu (int track, juce::Point<int> screenPos);
     void showRenameTrackDialog (int track);
+    void removePatternAndRepairArrangement (int index);
+    int resolveInstrumentForTrackDrop (int track) const;
+    void resyncPlaybackForCurrentMode();
     void updateMuteSoloState();
     void doCopy();
     void doPaste();

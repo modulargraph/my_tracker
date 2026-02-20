@@ -5,6 +5,7 @@
 #include "MetronomePlugin.h"
 #include "SendEffectsPlugin.h"
 #include "MixerPlugin.h"
+#include "InstrumentRouting.h"
 
 TrackerEngine::TrackerEngine()
 {
@@ -239,9 +240,13 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
             // Insert program change if instrument changes
             if (cell.instrument >= 0 && cell.instrument != currentInst)
             {
-                currentInst = cell.instrument;
-                midiSeq.addEvent (juce::MidiMessage::programChange (1, currentInst),
-                                  juce::jmax (0.0, rowTime.inSeconds() - 0.0001));
+                currentInst = InstrumentRouting::clampInstrumentIndex (cell.instrument);
+                const double bankTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00012);
+                const double progTime = juce::jmax (0.0, rowTime.inSeconds() - 0.0001);
+                midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 0,
+                                  InstrumentRouting::getBankMsbForInstrument (currentInst)), bankTime);
+                midiSeq.addEvent (juce::MidiMessage::programChange (1,
+                                  InstrumentRouting::getProgramForInstrument (currentInst)), progTime);
             }
 
             // Calculate note end time: sustain until next non-porta note/OFF/KILL or pattern end
@@ -293,6 +298,8 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
         midiSeq.updateMatchedPairs();
         midiClip->mergeInMidiSequence (midiSeq, te::MidiList::NoteAutomationType::none);
     }
+
+    refreshTransportLoopRangeFromClip();
 }
 
 void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pattern*, int>>& sequence, int rpb,
@@ -447,9 +454,13 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     // Insert program change if instrument changes
                     if (cell.instrument >= 0 && cell.instrument != currentInst)
                     {
-                        currentInst = cell.instrument;
-                        midiSeq.addEvent (juce::MidiMessage::programChange (1, currentInst),
-                                          juce::jmax (0.0, rowTime.inSeconds() - 0.0001));
+                        currentInst = InstrumentRouting::clampInstrumentIndex (cell.instrument);
+                        const double bankTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00012);
+                        const double progTime = juce::jmax (0.0, rowTime.inSeconds() - 0.0001);
+                        midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 0,
+                                          InstrumentRouting::getBankMsbForInstrument (currentInst)), bankTime);
+                        midiSeq.addEvent (juce::MidiMessage::programChange (1,
+                                          InstrumentRouting::getProgramForInstrument (currentInst)), progTime);
                     }
 
                     // Calculate note end time: sustain until next non-porta note/OFF/KILL or end of repeat
@@ -504,6 +515,8 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
         midiSeq.updateMatchedPairs();
         midiClip->mergeInMidiSequence (midiSeq, te::MidiList::NoteAutomationType::none);
     }
+
+    refreshTransportLoopRangeFromClip();
 }
 
 void TrackerEngine::play()
@@ -512,19 +525,7 @@ void TrackerEngine::play()
         return;
 
     auto& transport = edit->getTransport();
-
-    // Set loop range to the full pattern
-    auto tracks = te::getAudioTracks (*edit);
-    if (tracks.size() > 0)
-    {
-        auto clips = tracks[0]->getClips();
-        if (clips.size() > 0)
-        {
-            auto clipRange = clips[0]->getEditTimeRange();
-            transport.setLoopRange (clipRange);
-            transport.looping = true;
-        }
-    }
+    refreshTransportLoopRangeFromClip();
 
     transport.setPosition (te::TimePosition::fromSeconds (0.0));
     transport.play (false);
@@ -595,13 +596,64 @@ void TrackerEngine::updateLoopRangeForPatternLength (int numRows)
         transport.setPosition (startTime);
 }
 
+void TrackerEngine::refreshTransportLoopRangeFromClip()
+{
+    if (edit == nullptr)
+        return;
+
+    auto& transport = edit->getTransport();
+    auto tracks = te::getAudioTracks (*edit);
+    if (tracks.isEmpty())
+        return;
+
+    auto clips = tracks[0]->getClips();
+    if (clips.isEmpty())
+        return;
+
+    auto clipRange = clips[0]->getEditTimeRange();
+    transport.setLoopRange (clipRange);
+    transport.looping = true;
+
+    auto currentPos = transport.getPosition();
+    if (currentPos < clipRange.getStart() || currentPos >= clipRange.getEnd())
+        transport.setPosition (clipRange.getStart());
+}
+
 void TrackerEngine::refreshTracksForInstrument (int instrumentIndex, const Pattern& pattern)
 {
     if (edit == nullptr || instrumentIndex < 0)
         return;
 
-    // Re-prepare tracks so the new sample bank is applied
-    prepareTracksForPattern (pattern);
+    auto tracks = te::getAudioTracks (*edit);
+
+    for (int t = 0; t < kNumTracks && t < tracks.size(); ++t)
+    {
+        // Check if this track uses the specified instrument
+        bool usesInstrument = false;
+        for (int row = 0; row < pattern.numRows; ++row)
+        {
+            if (pattern.getCell (row, t).instrument == instrumentIndex)
+            {
+                usesInstrument = true;
+                break;
+            }
+        }
+
+        if (! usesInstrument)
+            continue;
+
+        // Reload the bank for this instrument on the track's sampler plugin
+        if (auto* samplerPlugin = tracks[t]->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+        {
+            auto bank = sampler.getSampleBank (instrumentIndex);
+            if (bank != nullptr)
+                samplerPlugin->updateBank (instrumentIndex, bank);
+        }
+
+        // If this track's current instrument matches, re-apply params
+        if (currentTrackInstrument[static_cast<size_t> (t)] == instrumentIndex)
+            sampler.applyParams (*tracks[t], instrumentIndex);
+    }
 }
 
 double TrackerEngine::getPlaybackBeatPosition() const
@@ -613,12 +665,25 @@ double TrackerEngine::getPlaybackBeatPosition() const
     return edit->tempoSequence.toBeats (pos).inBeats();
 }
 
+void TrackerEngine::setRowsPerBeat (int rpb)
+{
+    rowsPerBeat = juce::jlimit (1, 16, rpb);
+
+    if (edit == nullptr)
+        return;
+
+    auto tracks = te::getAudioTracks (*edit);
+    for (int t = 0; t < kNumTracks && t < tracks.size(); ++t)
+        if (auto* fxPlugin = tracks[t]->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
+            fxPlugin->setRowsPerBeat (rowsPerBeat);
+}
+
 void TrackerEngine::setBpm (double bpm)
 {
     if (edit == nullptr)
         return;
 
-    edit->tempoSequence.getTempos()[0]->setBpm (bpm);
+    edit->tempoSequence.getTempos()[0]->setBpm (juce::jlimit (20.0, 999.0, bpm));
 }
 
 double TrackerEngine::getBpm() const

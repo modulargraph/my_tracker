@@ -61,6 +61,26 @@ public:
 
     const std::vector<ArrangementEntry>& getEntries() const { return entries; }
 
+    // Keep arrangement indices coherent after a pattern deletion.
+    // Entries pointing past the new pattern range are clamped.
+    void remapAfterPatternRemoved (int removedPatternIndex, int newPatternCount)
+    {
+        if (newPatternCount <= 0)
+            return;
+
+        for (auto& e : entries)
+        {
+            if (e.patternIndex > removedPatternIndex)
+                --e.patternIndex;
+
+            if (e.patternIndex >= newPatternCount)
+                e.patternIndex = newPatternCount - 1;
+
+            if (e.patternIndex < 0)
+                e.patternIndex = 0;
+        }
+    }
+
 private:
     std::vector<ArrangementEntry> entries;
 };

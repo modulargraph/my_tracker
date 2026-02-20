@@ -46,7 +46,11 @@ public:
     // --- Message-thread API ---
     void setSampleBank (std::shared_ptr<const SampleBank> bank);
     void setSamplerSource (SimpleSampler* s) { samplerSource = s; }
-    void setInstrumentIndex (int index) { instrumentIndex = index; }
+    void setInstrumentIndex (int index)
+    {
+        instrumentIndex = juce::jlimit (0, 255, index);
+        currentBankMsb = (instrumentIndex >> 7) & 0x7F;
+    }
     void setPitchOffset (float semitones) { pitchOffset.store (semitones, std::memory_order_relaxed); }
 
     // Pre-load multiple banks for multi-instrument per track
@@ -54,6 +58,16 @@ public:
     {
         const juce::SpinLock::ScopedLockType lock (bankLock);
         preloadedBanks = banks;
+    }
+
+    // Update a single bank in the preloaded set (e.g. after reloading a sample)
+    void updateBank (int instrument, std::shared_ptr<const SampleBank> bank)
+    {
+        const juce::SpinLock::ScopedLockType lock (bankLock);
+        if (bank != nullptr)
+            preloadedBanks[instrument] = std::move (bank);
+        else
+            preloadedBanks.erase (instrument);
     }
 
     // Preview support (called from message thread, consumed on audio thread)
@@ -126,6 +140,7 @@ private:
 
     // Sample offset from 9xx effect (set via CC#9, consumed on next note-on)
     int pendingSampleOffset = -1;
+    int currentBankMsb = 0;
 
     // Audio thread state
     double outputSampleRate = 44100.0;
