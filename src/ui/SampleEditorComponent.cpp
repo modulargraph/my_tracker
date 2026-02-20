@@ -70,7 +70,8 @@ void SampleEditorComponent::setInstrument (int instrumentIndex, const juce::File
     currentInstrument = instrumentIndex;
     currentFile = sampleFile;
     currentParams = params;
-    lastCommittedParams = params;
+    constrainPlaybackMarkersToRegion();
+    lastCommittedParams = currentParams;
     paramsDirty = false;
 
     // Reset zoom when switching instruments
@@ -122,7 +123,24 @@ void SampleEditorComponent::clearInstrument()
 
 void SampleEditorComponent::timerCallback()
 {
-    stopTimer();
+    if (previewActive)
+    {
+        if (onGetPreviewPosition)
+            currentPlaybackPos = onGetPreviewPosition();
+        else
+            currentPlaybackPos = -1.0f;
+
+        // Detect natural end of playback (voice went idle)
+        if (currentPlaybackPos < 0.0f)
+        {
+            previewActive = false;
+            previewKeyCode = -1;
+            if (onPreviewStopped)
+                onPreviewStopped();
+        }
+        repaint();
+    }
+
     if (paramsDirty)
     {
         paramsDirty = false;
@@ -130,6 +148,9 @@ void SampleEditorComponent::timerCallback()
             onParamsChanged (currentInstrument, currentParams);
         lastCommittedParams = currentParams;
     }
+
+    if (! previewActive && ! paramsDirty)
+        stopTimer();
 }
 
 void SampleEditorComponent::scheduleApply()
@@ -159,8 +180,35 @@ bool SampleEditorComponent::isRealtimeOnlyChange (const InstrumentParams& oldP, 
     return true;
 }
 
+void SampleEditorComponent::constrainPlaybackMarkersToRegion()
+{
+    constexpr double kDuplicateEps = 1.0e-6;
+
+    currentParams.startPos = juce::jlimit (0.0, 1.0, currentParams.startPos);
+    currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0, currentParams.endPos);
+    currentParams.granularPosition = juce::jlimit (currentParams.startPos, currentParams.endPos,
+                                                   currentParams.granularPosition);
+
+    for (auto& slicePos : currentParams.slicePoints)
+        slicePos = juce::jlimit (currentParams.startPos, currentParams.endPos, slicePos);
+
+    std::sort (currentParams.slicePoints.begin(), currentParams.slicePoints.end());
+    currentParams.slicePoints.erase (
+        std::unique (currentParams.slicePoints.begin(),
+                     currentParams.slicePoints.end(),
+                     [] (double a, double b) { return std::abs (a - b) <= kDuplicateEps; }),
+        currentParams.slicePoints.end());
+
+    if (currentParams.slicePoints.empty())
+        selectedSliceIndex = -1;
+    else if (selectedSliceIndex >= static_cast<int> (currentParams.slicePoints.size()))
+        selectedSliceIndex = static_cast<int> (currentParams.slicePoints.size()) - 1;
+}
+
 void SampleEditorComponent::notifyParamsChanged()
 {
+    constrainPlaybackMarkersToRegion();
+
     if (currentInstrument >= 0 && isRealtimeOnlyChange (lastCommittedParams, currentParams))
     {
         // DSP-only change: push directly to engine, no debounce, no sample reload
@@ -1165,6 +1213,21 @@ void SampleEditorComponent::drawWaveformMarkers (juce::Graphics& g, juce::Rectan
         bool gHi = (hoveredMarker == MarkerType::GranPos || draggingMarker == MarkerType::GranPos);
         drawMarker (currentParams.granularPosition, juce::Colour (0xffffaa44), "G", gHi, gHi);
     }
+
+    // Draw playback cursor
+    if (currentPlaybackPos >= 0.0f)
+    {
+        auto cursorCol = lookAndFeel.findColour (TrackerLookAndFeel::playbackCursorColourId).brighter (0.3f);
+        int cx = normPosToPixel (static_cast<double> (currentPlaybackPos), area);
+        if (cx >= area.getX() && cx <= area.getRight())
+        {
+            g.setColour (cursorCol.withAlpha (0.15f));
+            g.fillRect (cx - 3, area.getY(), 7, area.getHeight());
+            g.setColour (cursorCol);
+            g.drawVerticalLine (cx, static_cast<float> (area.getY()), static_cast<float> (area.getBottom()));
+            g.drawVerticalLine (cx + 1, static_cast<float> (area.getY()), static_cast<float> (area.getBottom()));
+        }
+    }
 }
 
 //==============================================================================
@@ -1953,6 +2016,10 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
     // Space: preview current note or selected slice
     if (keyCode == juce::KeyPress::spaceKey)
     {
+        // Ignore key repeat while already previewing
+        if (previewActive && previewKeyCode == juce::KeyPress::spaceKey)
+            return true;
+
         if (paramsDirty)
         {
             stopTimer();
@@ -1976,6 +2043,9 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
             if (onPreviewRequested)
                 onPreviewRequested (currentInstrument, currentOctave * 12);
         }
+        previewActive = true;
+        previewKeyCode = juce::KeyPress::spaceKey;
+        startTimerHz (30);
         return true;
     }
 
@@ -2151,6 +2221,10 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
         int note = keyToNote (key);
         if (note >= 0 && note < 128)
         {
+            // Ignore key repeat while already previewing
+            if (previewActive && previewKeyCode == key.getKeyCode())
+                return true;
+
             // Convert the note into a sequential slice index based on keyboard position.
             // Keys are laid out chromatically: lowest key = slice 0, next = slice 1, etc.
             // The octave-relative note offset from the base octave gives us the slice index.
@@ -2175,6 +2249,9 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
             if (onPreviewRequested)
                 onPreviewRequested (currentInstrument, 60 + sliceIndex);
 
+            previewActive = true;
+            previewKeyCode = key.getKeyCode();
+            startTimerHz (30);
             repaint();
             return true;
         }
@@ -2184,6 +2261,10 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
     int note = keyToNote (key);
     if (note >= 0 && note < 128)
     {
+        // Ignore key repeat while already previewing
+        if (previewActive && previewKeyCode == key.getKeyCode())
+            return true;
+
         if (paramsDirty)
         {
             stopTimer();
@@ -2193,6 +2274,9 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
         }
         if (onPreviewRequested)
             onPreviewRequested (currentInstrument, note);
+        previewActive = true;
+        previewKeyCode = key.getKeyCode();
+        startTimerHz (30);
         return true;
     }
 
@@ -2200,6 +2284,25 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
     if (! key.getModifiers().isAnyModifierKeyDown())
         return true;
 
+    return false;
+}
+
+bool SampleEditorComponent::keyStateChanged (bool isKeyDown)
+{
+    if (! isKeyDown && previewActive && previewKeyCode >= 0)
+    {
+        if (! juce::KeyPress::isKeyCurrentlyDown (previewKeyCode))
+        {
+            previewActive = false;
+            previewKeyCode = -1;
+            currentPlaybackPos = -1.0f;
+            if (onPreviewStopped)
+                onPreviewStopped();
+            if (! paramsDirty)
+                stopTimer();
+            repaint();
+        }
+    }
     return false;
 }
 

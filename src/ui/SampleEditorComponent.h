@@ -36,10 +36,13 @@ public:
     std::function<void (int instrument, const InstrumentParams& params)> onParamsChanged;
     std::function<void (int instrument, const InstrumentParams& params)> onRealtimeParamsChanged;
     std::function<void (int instrument, int note)> onPreviewRequested;
+    std::function<void()> onPreviewStopped;
+    std::function<float()> onGetPreviewPosition;
 
     void paint (juce::Graphics& g) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress& key) override;
+    bool keyStateChanged (bool isKeyDown) override;
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
@@ -112,8 +115,14 @@ private:
     // ── Auto-slice sensitivity ──
     double autoSliceSensitivity = 0.5;   // 0.0 - 1.0
 
+    // Preview state (for hold-to-preview and cursor)
+    bool previewActive = false;
+    int previewKeyCode = -1;
+    float currentPlaybackPos = -1.0f;
+
     // Debounced apply
     bool paramsDirty = false;
+    void constrainPlaybackMarkersToRegion();
     void timerCallback() override;
     void scheduleApply();
     void notifyParamsChanged();

@@ -37,7 +37,7 @@ struct InstrumentParams
     bool reversed = false;
 
     // === Granular params ===
-    double granularPosition = 0.0; // 0.0-1.0 normalized
+    double granularPosition = 0.0; // absolute normalized sample position (0.0-1.0)
     int    granularLength   = 500; // 1-1000 ms
     enum class GranShape { Square, Triangle, Gauss };
     GranShape granularShape = GranShape::Triangle;
@@ -45,7 +45,7 @@ struct InstrumentParams
     GranLoop granularLoop = GranLoop::Forward;
 
     // === Slice data ===
-    std::vector<double> slicePoints; // normalized positions, sorted
+    std::vector<double> slicePoints; // absolute normalized sample positions, sorted
 
     // === Modulation (per destination) ===
     enum class ModDest { Volume, Panning, Cutoff, GranularPos, Finetune };

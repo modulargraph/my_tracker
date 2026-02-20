@@ -870,7 +870,7 @@ void TrackerEngine::invalidateTrackInstruments()
     currentTrackInstrument.fill (-1);
 }
 
-void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNote)
+void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNote, bool autoStop)
 {
     juce::ignoreUnused (trackIndex);
 
@@ -883,9 +883,27 @@ void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNo
     ensureTrackHasInstrument (kPreviewTrack, instrumentIndex);
     sampler.playNote (*track, midiNote, previewVolume);
 
-    // Auto-stop after preview duration
     activePreviewTrack = kPreviewTrack;
-    startTimer (kPreviewDurationMs);
+
+    // Auto-stop: safety timeout; hold-to-preview relies on stopPreview() from key release
+    if (autoStop)
+        startTimer (kPreviewDurationMs);
+}
+
+float TrackerEngine::getPreviewPlaybackPosition() const
+{
+    if (edit == nullptr || activePreviewTrack < 0)
+        return -1.0f;
+
+    auto tracks = te::getAudioTracks (*edit);
+    if (activePreviewTrack >= tracks.size())
+        return -1.0f;
+
+    auto* samplerPlugin = tracks[activePreviewTrack]->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>();
+    if (samplerPlugin == nullptr)
+        return -1.0f;
+
+    return samplerPlugin->getPlaybackPosition();
 }
 
 void TrackerEngine::previewAudioFile (const juce::File& file)

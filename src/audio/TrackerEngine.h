@@ -75,8 +75,12 @@ public:
     // Force re-load of instruments on next sync (call after loading a project)
     void invalidateTrackInstruments();
 
-    // Preview a note on a track using a specific instrument (auto-stops after ~3s)
-    void previewNote (int trackIndex, int instrumentIndex, int midiNote);
+    // Preview a note on a track using a specific instrument
+    // autoStop: when true (default), stops after kPreviewDurationMs; when false, plays until stopPreview()
+    void previewNote (int trackIndex, int instrumentIndex, int midiNote, bool autoStop = true);
+
+    // Get the normalized playback position (0-1) of the preview voice, or -1 if idle
+    float getPreviewPlaybackPosition() const;
 
     // Preview an audio file from disk (for browser, plays on dedicated preview track)
     void previewAudioFile (const juce::File& file);
@@ -135,7 +139,7 @@ private:
     void setupSendEffectsTrack();
     void setupMixerPlugins();
     void refreshTransportLoopRangeFromClip();
-    static constexpr int kPreviewDurationMs = 3000;
+    static constexpr int kPreviewDurationMs = 30000;
     int activePreviewTrack = -1;
     std::shared_ptr<SampleBank> previewBank;
     float previewVolume = 1.0f;

@@ -74,6 +74,9 @@ public:
     void playNote (int note, float velocity);
     void stopAllNotes();
 
+    // Playback position for UI cursor (normalized 0-1, -1 = idle)
+    float getPlaybackPosition() const { return playbackPosNorm.load (std::memory_order_relaxed); }
+
 private:
     // Monophonic voice for tracker-style playback
     struct Voice
@@ -148,6 +151,9 @@ private:
     double outputSampleRate = 44100.0;
     juce::AudioBuffer<float> scratchBuffer;
     bool voiceTriggeredByPreview = false;
+
+    // Playback position for UI cursor (normalized 0-1, -1 = idle)
+    std::atomic<float> playbackPosNorm { -1.0f };
 
     // Rendering
     void triggerNote (Voice& v, int note, float vel,

@@ -2,6 +2,7 @@
 #include "SimpleSampler.h"
 #include "InstrumentRouting.h"
 #include "FxParamTransport.h"
+#include "SamplePlaybackLayout.h"
 
 const char* TrackerSamplerPlugin::xmlTypeName = "TrackerSampler";
 
@@ -131,11 +132,7 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
 
         if (playMode == InstrumentParams::PlayMode::Slice && ! params.slicePoints.empty())
         {
-            std::vector<double> boundaries;
-            boundaries.push_back (params.startPos);
-            for (auto sp : params.slicePoints)
-                boundaries.push_back (params.startPos + sp * (params.endPos - params.startPos));
-            boundaries.push_back (params.endPos);
+            auto boundaries = SamplePlaybackLayout::getSliceBoundariesNorm (params);
 
             int numSlices = static_cast<int> (boundaries.size()) - 1;
             sliceIndex = juce::jlimit (0, numSlices - 1, sliceIndex);
@@ -177,11 +174,10 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
     // --- Granular ---
     if (playMode == InstrumentParams::PlayMode::Granular)
     {
-        double regionLen = regionEnd - regionStart;
         int grainLenSamples = static_cast<int> (params.granularLength * 0.001 * bank.sampleRate);
         grainLenSamples = juce::jmax (64, grainLenSamples);
 
-        double grainCenter = regionStart + params.granularPosition * regionLen;
+        double grainCenter = SamplePlaybackLayout::getGranularCenterNorm (params) * totalSmp;
         v.grainStart = juce::jmax (regionStart, grainCenter - grainLenSamples / 2.0);
         v.grainEnd = juce::jmin (regionEnd, v.grainStart + grainLenSamples);
         v.grainLength = static_cast<int> (v.grainEnd - v.grainStart);
@@ -547,10 +543,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
         }
 
-        // Preview notes always play as OneShot (no looping)
-        InstrumentParams previewParams = params;
-        previewParams.playMode = InstrumentParams::PlayMode::OneShot;
-        triggerNote (voice, pNote, pVel, *bank, previewParams);
+        triggerNote (voice, pNote, pVel, *bank, params);
         voiceTriggeredByPreview = true;
     }
 
@@ -723,14 +716,12 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     }
 
     // --- Render main voice ---
-    if (voiceTriggeredByPreview)
-    {
-        InstrumentParams previewParams = params;
-        previewParams.playMode = InstrumentParams::PlayMode::OneShot;
-        renderVoice (voice, buffer, startSample, numSamples, *bank, previewParams);
-    }
+    renderVoice (voice, buffer, startSample, numSamples, *bank, params);
+
+    // Publish playback position for UI cursor
+    if (voice.state == Voice::State::Playing && bank->totalSamples > 0)
+        playbackPosNorm.store (static_cast<float> (voice.playbackPos / static_cast<double> (bank->totalSamples)),
+                               std::memory_order_relaxed);
     else
-    {
-        renderVoice (voice, buffer, startSample, numSamples, *bank, params);
-    }
+        playbackPosNorm.store (-1.0f, std::memory_order_relaxed);
 }

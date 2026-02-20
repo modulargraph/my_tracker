@@ -13,6 +13,7 @@
 #include "MixerState.h"
 #include "PatternData.h"
 #include "ProjectSerializer.h"
+#include "SamplePlaybackLayout.h"
 #include "SendBuffers.h"
 #include "SendEffectsParams.h"
 #include "TrackLayout.h"
@@ -24,6 +25,25 @@ namespace
 bool floatsClose (float a, float b, float eps = 1.0e-6f)
 {
     return std::abs (a - b) <= eps;
+}
+
+bool doublesClose (double a, double b, double eps = 1.0e-6)
+{
+    return std::abs (a - b) <= eps;
+}
+
+bool vectorsClose (const std::vector<double>& a, const std::vector<double>& b, double eps = 1.0e-6)
+{
+    if (a.size() != b.size())
+        return false;
+
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        if (! doublesClose (a[i], b[i], eps))
+            return false;
+    }
+
+    return true;
 }
 
 juce::String runProjectRoundTrip (const juce::String& fileStem,
@@ -1722,6 +1742,78 @@ bool testArrangementRemapPreservesRepeats()
     return true;
 }
 
+bool testGranularCenterUsesAbsolutePosition()
+{
+    InstrumentParams params;
+    params.startPos = 0.25;
+    params.endPos = 0.75;
+    params.granularPosition = 0.60;
+
+    const double center = SamplePlaybackLayout::getGranularCenterNorm (params);
+    if (! doublesClose (center, 0.60))
+    {
+        std::cerr << "granular center should use absolute position; got " << center << "\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testGranularCenterClampsToRegion()
+{
+    InstrumentParams params;
+    params.startPos = 0.25;
+    params.endPos = 0.75;
+    params.granularPosition = 0.05;
+
+    const double center = SamplePlaybackLayout::getGranularCenterNorm (params);
+    if (! doublesClose (center, 0.25))
+    {
+        std::cerr << "granular center should clamp to region start; got " << center << "\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testSliceBoundariesUseAbsolutePositions()
+{
+    InstrumentParams params;
+    params.startPos = 0.2;
+    params.endPos = 0.8;
+    params.slicePoints = { 0.3, 0.5, 0.7 };
+
+    const auto boundaries = SamplePlaybackLayout::getSliceBoundariesNorm (params);
+    const std::vector<double> expected { 0.2, 0.3, 0.5, 0.7, 0.8 };
+
+    if (! vectorsClose (boundaries, expected))
+    {
+        std::cerr << "slice boundaries mismatch for absolute points\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testSliceBoundariesClampAndDeduplicate()
+{
+    InstrumentParams params;
+    params.startPos = 0.2;
+    params.endPos = 0.8;
+    params.slicePoints = { 0.1, 0.2, 0.2000000001, 0.4, 1.0, 0.4 };
+
+    const auto boundaries = SamplePlaybackLayout::getSliceBoundariesNorm (params);
+    const std::vector<double> expected { 0.2, 0.4, 0.8 };
+
+    if (! vectorsClose (boundaries, expected))
+    {
+        std::cerr << "slice boundaries should clamp + dedupe\n";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -1764,6 +1856,10 @@ int main()
         { "TrackLayoutFxLaneCountRoundTrip", &testTrackLayoutFxLaneCountRoundTrip },
         { "MixerMuteSoloRoundTrip", &testMixerMuteSoloRoundTrip },
         { "ArrangementRemapPreservesRepeats", &testArrangementRemapPreservesRepeats },
+        { "GranularCenterUsesAbsolutePosition", &testGranularCenterUsesAbsolutePosition },
+        { "GranularCenterClampsToRegion", &testGranularCenterClampsToRegion },
+        { "SliceBoundariesUseAbsolutePositions", &testSliceBoundariesUseAbsolutePositions },
+        { "SliceBoundariesClampAndDeduplicate", &testSliceBoundariesClampAndDeduplicate },
     };
 
     int failures = 0;

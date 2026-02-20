@@ -332,8 +332,16 @@ MainComponent::MainComponent()
     };
     sampleEditor->onPreviewRequested = [this] (int inst, int note)
     {
-        // Preview through dedicated preview track.
-        trackerEngine.previewNote (trackerGrid->getCursorTrack(), inst, note);
+        // Preview through dedicated preview track (no auto-stop; key release stops it).
+        trackerEngine.previewNote (trackerGrid->getCursorTrack(), inst, note, false);
+    };
+    sampleEditor->onPreviewStopped = [this]()
+    {
+        trackerEngine.stopPreview();
+    };
+    sampleEditor->onGetPreviewPosition = [this]() -> float
+    {
+        return trackerEngine.getPreviewPlaybackPosition();
     };
 
     // Create mixer component (hidden by default)
