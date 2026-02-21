@@ -193,6 +193,9 @@ public:
     /** Callback for click-to-automate: navigates to the automation lane for a parameter. */
     std::function<void (const juce::String& pluginId, int paramIndex)> onNavigateToAutomation;
 
+    /** Callback when a plugin instrument is cleared (for automation cleanup). */
+    std::function<void (const juce::String& pluginId)> onPluginInstrumentCleared;
+
     //==============================================================================
     // Plugin automation (Phase 5)
     //==============================================================================

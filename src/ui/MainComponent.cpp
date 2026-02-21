@@ -362,8 +362,16 @@ MainComponent::MainComponent()
                                 if (result > 0 && result <= instruments.size())
                                 {
                                     auto& desc = instruments.getReference (result - 1);
+
+                                    // Clear stale automation for this instrument slot (param indices change with new plugin)
+                                    auto pluginId = "inst:" + juce::String (inst);
+                                    for (int p = 0; p < patternData.getNumPatterns(); ++p)
+                                        patternData.getPattern (p).automationData.removeAllLanesForPlugin (pluginId);
+
                                     trackerEngine.setPluginInstrument (inst, desc, cursorTrack);
                                     updateInstrumentPanel();
+                                    if (automationPanelVisible)
+                                        refreshAutomationPanel();
                                     markDirty();
                                     setTemporaryStatus ("Plugin instrument set: " + desc.name
                                                         + " on track " + juce::String (cursorTrack + 1),
@@ -375,6 +383,8 @@ MainComponent::MainComponent()
     {
         trackerEngine.clearPluginInstrument (inst);
         updateInstrumentPanel();
+        if (automationPanelVisible)
+            refreshAutomationPanel();
         markDirty();
     };
     instrumentPanel->onOpenPluginEditorRequested = [this] (int inst)
@@ -816,6 +826,17 @@ MainComponent::MainComponent()
     trackerEngine.onNavigateToAutomation = [this] (const juce::String& pluginId, int paramIndex)
     {
         navigateToAutomationParam (pluginId, paramIndex);
+    };
+
+    trackerEngine.onPluginInstrumentCleared = [this] (const juce::String& pluginId)
+    {
+        // Remove automation lanes for this plugin from all patterns
+        for (int p = 0; p < patternData.getNumPatterns(); ++p)
+            patternData.getPattern (p).automationData.removeAllLanesForPlugin (pluginId);
+
+        // Refresh automation panel if visible
+        if (automationPanelVisible)
+            refreshAutomationPanel();
     };
 
     // Status bar

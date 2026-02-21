@@ -1925,10 +1925,14 @@ bool TrackerEngine::setPluginInstrument (int instrumentIndex, const juce::Plugin
     if (ownerTrack < 0 || ownerTrack >= kNumTracks)
         return false;
 
+    // Close editor window and unload old plugin before switching
+    closePluginInstrumentEditor (instrumentIndex);
+    removePluginInstrumentFromTrack (instrumentIndex);
+
     auto& info = instrumentSlotInfos[instrumentIndex];
     info.setPlugin (desc, ownerTrack);
 
-    // Load the plugin on the owner track
+    // Load the new plugin on the owner track
     ensurePluginInstrumentLoaded (instrumentIndex);
 
     return true;
@@ -1941,6 +1945,11 @@ void TrackerEngine::clearPluginInstrument (int instrumentIndex)
 
     // Remove plugin from track
     removePluginInstrumentFromTrack (instrumentIndex);
+
+    // Notify for automation cleanup before erasing slot info
+    auto pluginId = "inst:" + juce::String (instrumentIndex);
+    if (onPluginInstrumentCleared)
+        onPluginInstrumentCleared (pluginId);
 
     // Remove from slot infos
     instrumentSlotInfos.erase (instrumentIndex);
@@ -2122,11 +2131,17 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
         return;
 
     //==========================================================================
-    // Content component: wraps the VST editor + toolbar at the bottom
+    // Content component: wraps the VST editor + toolbar at the bottom.
+    // Implements KeyListener to intercept note keys before the VST editor
+    // consumes them (VST editors aggressively grab keyboard focus).
     //==========================================================================
     struct PluginEditorContent : public juce::Component,
+                                 public juce::KeyListener,
                                  public juce::AudioProcessorListener
     {
+        using juce::Component::keyPressed;
+        using juce::Component::keyStateChanged;
+
         PluginEditorContent (juce::AudioProcessorEditor* ed,
                              juce::AudioPluginInstance* api,
                              TrackerEngine& eng,
@@ -2159,8 +2174,6 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             octaveLabel.setJustificationType (juce::Justification::centred);
             addAndMakeVisible (octaveLabel);
 
-            setWantsKeyboardFocus (true);
-
             auto edW = vstEditor->getWidth();
             auto edH = vstEditor->getHeight();
             setSize (juce::jmax (edW, 300), edH + kToolbarHeight);
@@ -2184,7 +2197,8 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             autoLearnButton.setBounds (toolbar.removeFromLeft (100).reduced (4));
         }
 
-        bool keyPressed (const juce::KeyPress& key) override
+        // KeyListener — intercepts keys before the VST editor can consume them
+        bool keyPressed (const juce::KeyPress& key, juce::Component*) override
         {
             if (! previewKbButton.getToggleState())
                 return false;
@@ -2211,7 +2225,7 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             return true;
         }
 
-        bool keyStateChanged (bool isKeyDown) override
+        bool keyStateChanged (bool isKeyDown, juce::Component*) override
         {
             if (! previewKbButton.getToggleState())
                 return false;
@@ -2221,7 +2235,6 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             auto it = heldNotes.begin();
             while (it != heldNotes.end())
             {
-                // Reconstruct what key character this note maps to
                 bool stillDown = isNoteKeyDown (*it);
                 if (! stillDown)
                 {
@@ -2271,7 +2284,6 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 
         bool isNoteKeyDown (int midiNote) const
         {
-            // Map MIDI note back to key character and check if it's still held
             int baseNote = currentOctave * 12;
             int upperBase = (currentOctave + 1) * 12;
 
@@ -2333,6 +2345,10 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
     window->centreWithSize (content->getWidth(), content->getHeight());
     window->setVisible (true);
     window->setAlwaysOnTop (true);
+
+    // Register the content as a KeyListener on the window so it intercepts
+    // keys before the VST editor can consume them.
+    window->addKeyListener (content);
 
     pluginInstrumentEditorWindows[instrumentIndex] = std::move (window);
 }

@@ -264,6 +264,15 @@ struct PatternAutomationData
         return false;
     }
 
+    /** Remove all lanes targeting a specific plugin ID. */
+    void removeAllLanesForPlugin (const juce::String& pluginId)
+    {
+        lanes.erase (std::remove_if (lanes.begin(), lanes.end(),
+                                      [&pluginId] (const AutomationLane& lane)
+                                      { return lane.pluginId == pluginId; }),
+                     lanes.end());
+    }
+
     /** Remove all lanes for a given owning track. */
     void removeAllLanesForTrack (int trackIndex)
     {
