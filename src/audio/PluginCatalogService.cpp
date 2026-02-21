@@ -5,72 +5,6 @@ PluginCatalogService::PluginCatalogService (te::Engine& e)
 {
 }
 
-void PluginCatalogService::validatePluginBundles (juce::AudioPluginFormat& format,
-                                                   const juce::FileSearchPath& searchPath)
-{
-   #if JUCE_MAC
-    auto exe = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
-    auto deadFile = getDeadPluginsFile();
-
-    // Read existing dead plugins so we don't re-test them
-    juce::StringArray alreadyDead;
-    if (deadFile.existsAsFile())
-        alreadyDead.addLines (deadFile.loadFileAsString());
-
-    // Enumerate plugin files/identifiers for this format
-    auto files = format.searchPathsForPlugins (searchPath, true, true);
-
-    for (auto& pluginPath : files)
-    {
-        if (alreadyDead.contains (pluginPath))
-            continue;
-
-        // Resolve to the actual bundle path on disk
-        // VST3 identifiers and AU identifiers may differ, but for VST3
-        // the identifier is the file path. For AU, it's a component ID.
-        juce::File bundleFile (pluginPath);
-
-        if (! bundleFile.exists())
-            continue; // AU identifiers aren't file paths; skip validation for those
-
-        juce::ChildProcess child;
-        juce::StringArray args;
-        args.add (exe.getFullPathName());
-        args.add ("--validate-bundle");
-        args.add (bundleFile.getFullPathName());
-
-        if (! child.start (args))
-        {
-            DBG ("Failed to launch validator for: " + pluginPath);
-            continue;
-        }
-
-        // Wait up to 15 seconds for the child
-        if (! child.waitForProcessToFinish (15000))
-        {
-            child.kill();
-            DBG ("Plugin validation timed out: " + pluginPath);
-
-            // Record as dead
-            deadFile.appendText (pluginPath + "\n");
-            continue;
-        }
-
-        auto exitCode = child.getExitCode();
-
-        if (exitCode != 0)
-        {
-            DBG ("Plugin validation failed (exit " + juce::String (exitCode) + "): " + pluginPath);
-
-            // Record as dead so PluginDirectoryScanner will skip it
-            deadFile.appendText (pluginPath + "\n");
-        }
-    }
-   #else
-    juce::ignoreUnused (format, searchPath);
-   #endif
-}
-
 juce::File PluginCatalogService::getDeadPluginsFile()
 {
     auto dataDir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
@@ -108,9 +42,6 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
         {
             auto defaultPaths = format->getDefaultLocationsToSearch();
 
-            // Pre-validate bundles in child processes to avoid crashing on bad plugins
-            validatePluginBundles (*format, defaultPaths);
-
             juce::PluginDirectoryScanner scanner (knownList, *format, defaultPaths,
                                                    true,   // recursive
                                                    deadPluginsFile,
@@ -145,9 +76,6 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
             auto defaultPaths = format->getDefaultLocationsToSearch();
             for (int p = 0; p < defaultPaths.getNumPaths(); ++p)
                 searchPath.addIfNotAlreadyThere (defaultPaths[p]);
-
-            // Pre-validate bundles in child processes to avoid crashing on bad plugins
-            validatePluginBundles (*format, searchPath);
 
             juce::PluginDirectoryScanner scanner (knownList, *format, searchPath,
                                                    true,   // recursive
