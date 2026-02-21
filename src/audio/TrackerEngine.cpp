@@ -315,7 +315,13 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
 
         // Build MIDI sequence from pattern data (all note lanes)
         juce::MidiMessageSequence midiSeq;
+
+        // For plugin instrument tracks, always use release mode (no allSoundOff).
+        // allSoundOff kills ALL voices on the channel, preventing subsequent notes
+        // from sounding.  Kill/release mode only applies to sample instruments.
         bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
+        if (getTrackContentMode (trackIdx) == TrackContentMode::PluginInstrument)
+            isKill = false;
 
         // Determine how many note lanes this track has
         int numNoteLanes = 1;
@@ -563,6 +569,8 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
 
         juce::MidiMessageSequence midiSeq;
         bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
+        if (getTrackContentMode (trackIdx) == TrackContentMode::PluginInstrument)
+            isKill = false;
 
         // Determine how many note lanes this track has across all patterns
         int numNoteLanes = 1;
@@ -1776,10 +1784,29 @@ void TrackerEngine::openPluginEditor (int trackIndex, int slotIndex)
     if (editor == nullptr)
         return;
 
-    auto window = std::make_unique<juce::DocumentWindow> (
-        externalPlugin->getName(),
-        juce::Colours::darkgrey,
-        juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton);
+    struct PluginEditorWindow : public juce::DocumentWindow
+    {
+        PluginEditorWindow (const juce::String& name,
+                            std::map<juce::String, std::unique_ptr<juce::DocumentWindow>>& windowMap,
+                            const juce::String& mapKey)
+            : juce::DocumentWindow (name, juce::Colours::darkgrey,
+                                    juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton),
+              windows (windowMap), key (mapKey)
+        {
+        }
+
+        void closeButtonPressed() override
+        {
+            windows.erase (key);  // destroys this window
+        }
+
+    private:
+        std::map<juce::String, std::unique_ptr<juce::DocumentWindow>>& windows;
+        juce::String key;
+    };
+
+    auto window = std::make_unique<PluginEditorWindow> (
+        externalPlugin->getName(), pluginEditorWindows, key);
 
     window->setContentOwned (editor, true);
     window->setResizable (true, false);
@@ -1996,25 +2023,68 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
         ensurePluginInstrumentLoaded (instrumentIndex);
         plugin = getPluginInstrumentInstance (instrumentIndex);
         if (plugin == nullptr)
+        {
+            if (onStatusMessage)
+                onStatusMessage ("Failed to load plugin instrument " + juce::String::formatted ("%02X", instrumentIndex), true, 3000);
             return;
+        }
     }
 
-    // For external plugins, show via Tracktion's window state
+    // Check if window already exists
+    if (pluginInstrumentEditorWindows.count (instrumentIndex) > 0
+        && pluginInstrumentEditorWindows[instrumentIndex] != nullptr)
+    {
+        pluginInstrumentEditorWindows[instrumentIndex]->toFront (true);
+        return;
+    }
+
     auto* extPlugin = dynamic_cast<te::ExternalPlugin*> (plugin);
-    if (extPlugin != nullptr && extPlugin->windowState != nullptr)
-        extPlugin->windowState->showWindowExplicitly();
+    if (extPlugin == nullptr)
+        return;
+
+    auto audioPlugin = extPlugin->getAudioPluginInstance();
+    if (audioPlugin == nullptr)
+        return;
+
+    auto editor = audioPlugin->createEditorIfNeeded();
+    if (editor == nullptr)
+        return;
+
+    struct PluginInstrumentEditorWindow : public juce::DocumentWindow
+    {
+        PluginInstrumentEditorWindow (const juce::String& name,
+                                       std::map<int, std::unique_ptr<juce::DocumentWindow>>& windowMap,
+                                       int instIndex)
+            : juce::DocumentWindow (name, juce::Colours::darkgrey,
+                                    juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton),
+              windows (windowMap), instrumentIndex (instIndex)
+        {
+        }
+
+        void closeButtonPressed() override
+        {
+            windows.erase (instrumentIndex);  // destroys this window
+        }
+
+    private:
+        std::map<int, std::unique_ptr<juce::DocumentWindow>>& windows;
+        int instrumentIndex;
+    };
+
+    auto window = std::make_unique<PluginInstrumentEditorWindow> (
+        extPlugin->getName(), pluginInstrumentEditorWindows, instrumentIndex);
+
+    window->setContentOwned (editor, true);
+    window->setResizable (true, false);
+    window->centreWithSize (editor->getWidth(), editor->getHeight());
+    window->setVisible (true);
+    window->setAlwaysOnTop (true);
+
+    pluginInstrumentEditorWindows[instrumentIndex] = std::move (window);
 }
 
 void TrackerEngine::closePluginInstrumentEditor (int instrumentIndex)
 {
-    auto* plugin = getPluginInstrumentInstance (instrumentIndex);
-    if (plugin == nullptr)
-        return;
-
-    auto* extPlugin = dynamic_cast<te::ExternalPlugin*> (plugin);
-    if (extPlugin != nullptr && extPlugin->windowState != nullptr)
-        extPlugin->windowState->closeWindowExplicitly();
-
     pluginInstrumentEditorWindows.erase (instrumentIndex);
 }
 

@@ -42,6 +42,9 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
         {
             auto defaultPaths = format->getDefaultLocationsToSearch();
 
+            // Pre-validate AU bundles out-of-process before scanning
+            prevalidatePluginBundles (knownList, *format, defaultPaths);
+
             juce::PluginDirectoryScanner scanner (knownList, *format, defaultPaths,
                                                    true,   // recursive
                                                    deadPluginsFile,
@@ -76,6 +79,9 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
             auto defaultPaths = format->getDefaultLocationsToSearch();
             for (int p = 0; p < defaultPaths.getNumPaths(); ++p)
                 searchPath.addIfNotAlreadyThere (defaultPaths[p]);
+
+            // Pre-validate VST3 bundles out-of-process before scanning
+            prevalidatePluginBundles (knownList, *format, searchPath);
 
             juce::PluginDirectoryScanner scanner (knownList, *format, searchPath,
                                                    true,   // recursive
@@ -223,4 +229,101 @@ juce::StringArray PluginCatalogService::getDefaultScanPaths()
    #endif
 
     return paths;
+}
+
+//==============================================================================
+// Out-of-process plugin pre-validation
+//==============================================================================
+
+void PluginCatalogService::prevalidatePluginBundles (
+    juce::KnownPluginList& knownList,
+    juce::AudioPluginFormat& format,
+    const juce::FileSearchPath& searchPath)
+{
+   #if JUCE_MAC
+    // Locate the PluginValidator helper binary inside the app bundle
+    auto appFile = juce::File::getSpecialLocation (juce::File::currentApplicationFile);
+    auto validatorPath = appFile.getChildFile ("Contents/MacOS/PluginValidator");
+
+    if (! validatorPath.existsAsFile())
+    {
+        // Fallback: next to the executable (development builds)
+        auto exeFile = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
+        validatorPath = exeFile.getSiblingFile ("PluginValidator");
+    }
+
+    if (! validatorPath.existsAsFile())
+    {
+        DBG ("PluginValidator binary not found — skipping pre-validation");
+        return;
+    }
+
+    // Get all plugin file paths the scanner would enumerate
+    auto pluginFiles = format.searchPathsForPlugins (searchPath, true);
+
+    // Skip already-known (successfully scanned) plugins
+    for (auto& known : knownList.getTypes())
+        pluginFiles.removeString (known.fileOrIdentifier);
+
+    // Skip already-blacklisted plugins
+    for (auto& bl : knownList.getBlacklistedFiles())
+        pluginFiles.removeString (bl);
+
+    if (pluginFiles.isEmpty())
+        return;
+
+    DBG ("Pre-validating " + juce::String (pluginFiles.size()) + " plugin bundles...");
+
+    auto validatorCmd = validatorPath.getFullPathName();
+
+    for (auto& pluginPath : pluginFiles)
+    {
+        juce::ChildProcess child;
+        auto command = validatorCmd.quoted() + " " + juce::String (pluginPath).quoted();
+
+        if (child.start (command))
+        {
+            bool finished = child.waitForProcessToFinish (10000); // 10 s timeout
+
+            if (! finished)
+            {
+                child.kill();
+                knownList.addToBlacklist (pluginPath);
+                DBG ("Plugin pre-validation TIMEOUT — blacklisted: " + pluginPath);
+            }
+            else
+            {
+                auto exitCode = child.getExitCode();
+
+                if (exitCode == 42)
+                {
+                    // dlopen succeeded — safe to scan
+                }
+                else if (exitCode == 99 || exitCode == 0)
+                {
+                    // 99 = signal handler caught crash
+                    //  0 = killed by uncaught signal (JUCE returns 0 for signal deaths)
+                    knownList.addToBlacklist (pluginPath);
+                    DBG ("Plugin pre-validation CRASHED (exit "
+                         + juce::String ((int) exitCode) + ") — blacklisted: " + pluginPath);
+                }
+                else
+                {
+                    // 1 = usage error, 2 = bundle not found, 3 = dlopen failed gracefully
+                    // Let the real scanner try its own loading path
+                    DBG ("Plugin pre-validation: dlopen issue (exit "
+                         + juce::String ((int) exitCode) + "): " + pluginPath);
+                }
+            }
+        }
+        else
+        {
+            DBG ("Failed to start PluginValidator for: " + pluginPath);
+        }
+    }
+
+    DBG ("Pre-validation complete");
+   #else
+    juce::ignoreUnused (knownList, format, searchPath);
+   #endif
 }

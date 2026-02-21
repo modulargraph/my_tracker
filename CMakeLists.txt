@@ -128,6 +128,18 @@ endif()
 add_test(NAME TrackerAdjustTests COMMAND TrackerAdjustTests)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    # --- Out-of-process plugin validator (tiny C binary) ---
+    add_executable(PluginValidator src/audio/PluginValidator.c)
+    add_dependencies(TrackerAdjust PluginValidator)
+
+    # Copy PluginValidator into app bundle (before codesigning)
+    add_custom_command(TARGET TrackerAdjust POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:PluginValidator>"
+            "$<TARGET_BUNDLE_DIR:TrackerAdjust>/Contents/MacOS/PluginValidator"
+        COMMENT "Copying PluginValidator into app bundle"
+        VERBATIM)
+
     option(TRACKER_CREATE_APP_SHORTCUT "Create fixed app symlink at run/Tracker Adjust.app" ON)
     option(TRACKER_ADHOC_CODESIGN "Ad-hoc sign app and test binaries after build on macOS" ON)
 

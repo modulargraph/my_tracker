@@ -59,5 +59,11 @@ private:
     te::Engine& engine;
     std::atomic<bool> scanning { false };
 
+    /** Pre-validate plugin bundles by loading them in a child process.
+     *  Plugins that crash during loading are added to the blacklist. */
+    void prevalidatePluginBundles (juce::KnownPluginList& knownList,
+                                   juce::AudioPluginFormat& format,
+                                   const juce::FileSearchPath& searchPath);
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginCatalogService)
 };

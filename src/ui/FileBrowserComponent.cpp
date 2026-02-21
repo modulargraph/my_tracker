@@ -161,6 +161,11 @@ void SampleBrowserComponent::loadSelectedFile()
         return;
     }
 
+    // Block sample loading on plugin instrument slots
+    if (instrumentSelection >= 0 && instrumentSelection < 256
+        && instrumentSlots[static_cast<size_t> (instrumentSelection)].isPlugin)
+        return;
+
     // Load audio file into the selected instrument slot
     if (onLoadSample)
         onLoadSample (instrumentSelection, entry.file);
@@ -170,16 +175,47 @@ void SampleBrowserComponent::updateInstrumentSlots (const std::map<int, juce::Fi
 {
     for (auto& slot : instrumentSlots)
     {
-        slot.sampleName.clear();
-        slot.hasData = false;
+        if (! slot.isPlugin)
+        {
+            slot.sampleName.clear();
+            slot.hasData = false;
+        }
     }
 
     for (auto& [index, file] : loadedSamples)
     {
         if (index >= 0 && index < 256)
         {
-            instrumentSlots[static_cast<size_t> (index)].sampleName = file.getFileNameWithoutExtension();
-            instrumentSlots[static_cast<size_t> (index)].hasData = true;
+            auto& slot = instrumentSlots[static_cast<size_t> (index)];
+            if (! slot.isPlugin)
+            {
+                slot.sampleName = file.getFileNameWithoutExtension();
+                slot.hasData = true;
+            }
+        }
+    }
+
+    repaint();
+}
+
+void SampleBrowserComponent::updatePluginSlots (const std::map<int, InstrumentSlotInfo>& slotInfos)
+{
+    // Clear all plugin flags first
+    for (auto& slot : instrumentSlots)
+    {
+        slot.isPlugin = false;
+        slot.pluginName.clear();
+    }
+
+    // Set plugin info
+    for (auto& [index, info] : slotInfos)
+    {
+        if (index >= 0 && index < 256 && info.isPlugin())
+        {
+            auto& slot = instrumentSlots[static_cast<size_t> (index)];
+            slot.isPlugin = true;
+            slot.pluginName = info.pluginDescription.name;
+            slot.hasData = true;
         }
     }
 
@@ -363,13 +399,22 @@ void SampleBrowserComponent::paintInstrumentPane (juce::Graphics& g, juce::Recta
         }
 
         // Hex index
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId)
-                         .withAlpha (slot.hasData ? 1.0f : 0.4f));
+        auto instCol = lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
+        if (slot.isPlugin)
+            instCol = juce::Colour (0xff89b4fa); // Blue for plugin instruments
+        g.setColour (instCol.withAlpha (slot.hasData ? 1.0f : 0.4f));
         g.drawText (juce::String::formatted ("%02X", idx),
                     bounds.getX() + 6, y, 22, kRowHeight, juce::Justification::centredLeft);
 
-        // Sample name or empty
-        if (slot.hasData)
+        // Plugin instruments shown dimmed (can't load samples onto them)
+        if (slot.isPlugin)
+        {
+            g.setColour (juce::Colour (0xff89b4fa).withAlpha (0.5f));
+            auto truncName = slot.pluginName.substring (0, 20);
+            g.drawText (truncName, bounds.getX() + 32, y, bounds.getWidth() - 38, kRowHeight,
+                        juce::Justification::centredLeft);
+        }
+        else if (slot.hasData)
         {
             g.setColour (textCol);
             auto truncName = slot.sampleName.substring (0, 20);
@@ -751,10 +796,11 @@ void SampleBrowserComponent::advanceToNextEmptySlot()
     if (! autoAdvance)
         return;
 
-    // Search forward from current selection for the next empty slot
+    // Search forward from current selection for the next empty non-plugin slot
     for (int i = instrumentSelection + 1; i < 256; ++i)
     {
-        if (! instrumentSlots[static_cast<size_t> (i)].hasData)
+        auto& slot = instrumentSlots[static_cast<size_t> (i)];
+        if (! slot.hasData && ! slot.isPlugin)
         {
             instrumentSelection = i;
             ensureInstrumentSelectionVisible();
@@ -766,7 +812,8 @@ void SampleBrowserComponent::advanceToNextEmptySlot()
     // Wrap around from the beginning
     for (int i = 0; i < instrumentSelection; ++i)
     {
-        if (! instrumentSlots[static_cast<size_t> (i)].hasData)
+        auto& slot = instrumentSlots[static_cast<size_t> (i)];
+        if (! slot.hasData && ! slot.isPlugin)
         {
             instrumentSelection = i;
             ensureInstrumentSelectionVisible();

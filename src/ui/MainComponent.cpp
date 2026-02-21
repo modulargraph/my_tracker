@@ -2654,9 +2654,14 @@ void MainComponent::doCut()
 void MainComponent::updateInstrumentPanel()
 {
     auto loadedSamples = trackerEngine.getSampler().getLoadedSamples();
+    auto& pluginSlotInfos = trackerEngine.getAllInstrumentSlotInfos();
+
     instrumentPanel->updateSampleInfo (loadedSamples);
-    instrumentPanel->updatePluginInfo (trackerEngine.getAllInstrumentSlotInfos());
+    instrumentPanel->updatePluginInfo (pluginSlotInfos);
     instrumentPanel->setSelectedInstrument (trackerGrid->getCurrentInstrument());
+
+    // Keep file browser in sync with plugin instrument state
+    fileBrowser->updatePluginSlots (pluginSlotInfos);
 
     updateTrackSampleMarkers();
 }

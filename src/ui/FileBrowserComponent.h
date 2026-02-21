@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "TrackerLookAndFeel.h"
+#include "InstrumentSlotInfo.h"
 
 class SampleBrowserComponent : public juce::Component
 {
@@ -17,6 +18,7 @@ public:
 
     void setCurrentDirectory (const juce::File& dir);
     void updateInstrumentSlots (const std::map<int, juce::File>& loadedSamples);
+    void updatePluginSlots (const std::map<int, InstrumentSlotInfo>& slotInfos);
     void setSelectedInstrument (int inst);
 
     // Callback: instrument index + file to load
@@ -69,6 +71,8 @@ private:
     {
         juce::String sampleName;
         bool hasData = false;
+        bool isPlugin = false;
+        juce::String pluginName;
     };
     std::array<InstrumentSlot, 256> instrumentSlots {};
     int instrumentSelection = 0;
