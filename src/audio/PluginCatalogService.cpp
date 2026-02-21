@@ -5,6 +5,14 @@ PluginCatalogService::PluginCatalogService (te::Engine& e)
 {
 }
 
+juce::File PluginCatalogService::getDeadPluginsFile()
+{
+    auto dataDir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                       .getChildFile ("Tracker Adjust");
+    dataDir.createDirectory();
+    return dataDir.getChildFile ("dead-plugins.txt");
+}
+
 void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
 {
     if (scanning.load())
@@ -14,6 +22,7 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
 
     auto& formatManager = engine.getPluginManager().pluginFormatManager;
     auto& knownList = engine.getPluginManager().knownPluginList;
+    auto deadPluginsFile = getDeadPluginsFile();
 
     // Scan each format
     for (int i = 0; i < formatManager.getNumFormats(); ++i)
@@ -34,13 +43,25 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
             auto defaultPaths = format->getDefaultLocationsToSearch();
             juce::PluginDirectoryScanner scanner (knownList, *format, defaultPaths,
                                                    true,   // recursive
-                                                   juce::File(),  // dead plugins file
+                                                   deadPluginsFile,
                                                    true);  // allow plugins that require ASIO
 
             juce::String pluginName;
-            while (scanner.scanNextFile (true, pluginName))
+
+            try
             {
-                // scanning...
+                while (scanner.scanNextFile (true, pluginName))
+                {
+                    // scanning...
+                }
+            }
+            catch (const std::exception& e)
+            {
+                DBG ("Plugin scan exception (AudioUnit): " + juce::String (e.what()));
+            }
+            catch (...)
+            {
+                DBG ("Plugin scan unknown exception (AudioUnit)");
             }
         }
         else
@@ -57,13 +78,25 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
 
             juce::PluginDirectoryScanner scanner (knownList, *format, searchPath,
                                                    true,   // recursive
-                                                   juce::File(),  // dead plugins file
+                                                   deadPluginsFile,
                                                    true);  // allow plugins that require ASIO
 
             juce::String pluginName;
-            while (scanner.scanNextFile (true, pluginName))
+
+            try
             {
-                // scanning...
+                while (scanner.scanNextFile (true, pluginName))
+                {
+                    // scanning...
+                }
+            }
+            catch (const std::exception& e)
+            {
+                DBG ("Plugin scan exception (VST3): " + juce::String (e.what()));
+            }
+            catch (...)
+            {
+                DBG ("Plugin scan unknown exception (VST3)");
             }
         }
     }

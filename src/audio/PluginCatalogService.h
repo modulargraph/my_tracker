@@ -51,6 +51,10 @@ public:
     /** Default macOS VST3 scan paths. */
     static juce::StringArray getDefaultScanPaths();
 
+    /** File used to track plugins that crashed during scanning.
+     *  After a crash, the next scan will skip the offending plugin. */
+    static juce::File getDeadPluginsFile();
+
 private:
     te::Engine& engine;
     std::atomic<bool> scanning { false };
