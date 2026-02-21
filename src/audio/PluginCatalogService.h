@@ -55,6 +55,11 @@ public:
      *  After a crash, the next scan will skip the offending plugin. */
     static juce::File getDeadPluginsFile();
 
+    /** Pre-validate plugin bundles in child processes before scanning.
+     *  Any bundles that crash during loading are added to the dead-plugins file. */
+    void validatePluginBundles (juce::AudioPluginFormat& format,
+                                const juce::FileSearchPath& searchPath);
+
 private:
     te::Engine& engine;
     std::atomic<bool> scanning { false };
