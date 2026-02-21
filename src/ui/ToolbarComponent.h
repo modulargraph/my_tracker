@@ -31,6 +31,7 @@ public:
     void setArrangementVisible (bool v) { arrangementOn = v; repaint(); }
     void setInstrumentPanelVisible (bool v) { instrumentPanelOn = v; repaint(); }
     void setMetronomeEnabled (bool v) { metronomeOn = v; repaint(); }
+    void setAutomationPanelVisible (bool v) { automationOn = v; repaint(); }
     // 0 = off, 1 = center, 2 = page
     void setFollowMode (int mode) { followModeVal = mode; repaint(); }
 
@@ -53,6 +54,7 @@ public:
     std::function<void()> onFollowToggle;
     std::function<void()> onMetronomeToggle;
     std::function<void()> onShowFxReference;
+    std::function<void()> onToggleAutomation;
     std::function<void (int delta)> onRpbDrag;
 
     void setRowsPerBeat (int rpb) { rowsPerBeatVal = rpb; repaint(); }
@@ -76,6 +78,7 @@ private:
     bool arrangementOn = false;
     bool instrumentPanelOn = true;
     bool metronomeOn = false;
+    bool automationOn = false;
     int followModeVal = 0; // 0=off, 1=center, 2=page
     int rowsPerBeatVal = 4;
 
@@ -83,7 +86,7 @@ private:
     juce::Rectangle<int> addPatBounds, duplicatePatBounds, removePatBounds;
     juce::Rectangle<int> lengthBounds, bpmBounds, stepBounds, octaveBounds, modeBounds, patNameBounds;
     juce::Rectangle<int> arrangementToggleBounds, instrumentToggleBounds, patSelectorBounds;
-    juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, fxRefBounds, rpbBounds;
+    juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, fxRefBounds, rpbBounds, automationToggleBounds;
 
     // Drag state
     enum class DragTarget { None, Length, Bpm, Step, Octave, Instrument, Rpb };

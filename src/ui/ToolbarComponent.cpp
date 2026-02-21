@@ -176,6 +176,16 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.setFont (lookAndFeel.getMonoFont (9.0f));
     g.drawText ("FX", fxRefBounds, juce::Justification::centred);
     g.setFont (lookAndFeel.getMonoFont (13.0f));
+    x += 28;
+
+    // Automation panel toggle
+    automationToggleBounds = { x, 6, 32, 24 };
+    g.setColour (automationOn ? juce::Colour (0xff5c8abf) : juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (automationToggleBounds.toFloat(), 3.0f);
+    g.setColour (automationOn ? juce::Colours::white : textCol);
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.drawText ("AUTO", automationToggleBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
 
     // Instrument panel toggle (right-aligned)
     instrumentToggleBounds = { getWidth() - 32, 6, 24, 24 };
@@ -242,6 +252,11 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
     if (fxRefBounds.contains (pos) && onShowFxReference)
     {
         onShowFxReference();
+        return;
+    }
+    if (automationToggleBounds.contains (pos) && onToggleAutomation)
+    {
+        onToggleAutomation();
         return;
     }
 

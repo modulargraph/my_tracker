@@ -206,6 +206,9 @@ public:
      *  Called when switching patterns or stopping playback. */
     void resetAutomationParameters();
 
+    /** Resolve a plugin ID string to an AudioPluginInstance (public for automation panel). */
+    juce::AudioPluginInstance* resolvePluginInstance (const juce::String& pluginId);
+
 private:
     std::unique_ptr<te::Engine> engine;
     std::unique_ptr<te::Edit> edit;
@@ -252,9 +255,6 @@ private:
     std::vector<AutomatedParam> lastAutomatedParams;
     AutomatedParam* findAutomatedParam (const juce::String& pluginId, int paramIndex);
     const AutomatedParam* findAutomatedParam (const juce::String& pluginId, int paramIndex) const;
-
-    // Resolve a plugin ID string to an AudioPluginInstance
-    juce::AudioPluginInstance* resolvePluginInstance (const juce::String& pluginId);
 
     // Ensure the plugin instrument is loaded on its owner track
     void ensurePluginInstrumentLoaded (int instrumentIndex);

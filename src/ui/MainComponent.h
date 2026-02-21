@@ -172,6 +172,7 @@ private:
     void showAudioPluginSettings();
     void refreshAutomationPanel();
     void populateAutomationPlugins();
+    void navigateToAutomationParam (const juce::String& pluginId, int paramIndex);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

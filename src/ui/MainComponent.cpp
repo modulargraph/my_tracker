@@ -194,6 +194,15 @@ MainComponent::MainComponent()
         resized();
     };
 
+    toolbar->onToggleAutomation = [this]
+    {
+        automationPanelVisible = ! automationPanelVisible;
+        toolbar->setAutomationPanelVisible (automationPanelVisible);
+        if (automationPanelVisible)
+            refreshAutomationPanel();
+        resized();
+    };
+
     toolbar->onInstrumentDrag = [this] (int delta)
     {
         int inst = juce::jlimit (0, 255, trackerGrid->getCurrentInstrument() + delta);
@@ -595,6 +604,25 @@ MainComponent::MainComponent()
         juce::ignoreUnused (pluginId, paramIndex);
         // Baseline is set when parameters are populated
     };
+    automationPanel->onPanelHeightChanged = [this] (int /*newHeight*/)
+    {
+        resized();
+    };
+    automationPanel->onGetCurrentParameterValue = [this]() -> float
+    {
+        auto pluginId = automationPanel->getSelectedPluginId();
+        int paramIdx = automationPanel->getSelectedParameterIndex();
+        if (pluginId.isEmpty() || paramIdx < 0)
+            return 0.5f;
+
+        if (auto* audioPlugin = trackerEngine.resolvePluginInstance (pluginId))
+        {
+            auto& params = audioPlugin->getParameters();
+            if (paramIdx >= 0 && paramIdx < params.size())
+                return params[paramIdx]->getValue();
+        }
+        return 0.5f;
+    };
 
     // Create the grid
     trackerGrid = std::make_unique<TrackerGrid> (patternData, trackerLookAndFeel, trackLayout);
@@ -851,7 +879,7 @@ void MainComponent::resized()
             // Automation panel (bottom, above status bar)
             if (automationPanelVisible)
             {
-                automationPanel->setBounds (r.removeFromBottom (PluginAutomationComponent::kPanelHeight));
+                automationPanel->setBounds (r.removeFromBottom (automationPanel->getPanelHeight()));
                 automationPanel->setVisible (true);
             }
 
@@ -1131,6 +1159,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     if (cmd && shift && textChar == 'B')
     {
         automationPanelVisible = ! automationPanelVisible;
+        toolbar->setAutomationPanelVisible (automationPanelVisible);
         if (automationPanelVisible)
             refreshAutomationPanel();
         resized();
@@ -1491,6 +1520,22 @@ void MainComponent::timerCallback()
         trackerGrid->setPlaybackRow (playRow);
         trackerGrid->setPlaying (true);
 
+        // Update automation panel playback position and recording
+        if (automationPanelVisible && automationPanel != nullptr)
+        {
+            automationPanel->setPlaybackRow (playRow);
+
+            // Automation recording: poll current parameter value and record it
+            if (automationPanel->isRecording() && playRow >= 0)
+            {
+                if (automationPanel->onGetCurrentParameterValue)
+                {
+                    float currentValue = automationPanel->onGetCurrentParameterValue();
+                    automationPanel->recordParameterValue (playRow, currentValue);
+                }
+            }
+        }
+
         // Follow mode
         if (followMode != FollowMode::Off && playRow >= 0)
         {
@@ -1518,6 +1563,8 @@ void MainComponent::timerCallback()
         trackerGrid->setPlaying (false);
         if (arrangementVisible)
             arrangementComponent->setPlayingEntry (-1);
+        if (automationPanelVisible && automationPanel != nullptr)
+            automationPanel->setPlaybackRow (-1);
     }
 }
 
@@ -1622,6 +1669,8 @@ void MainComponent::updateToolbar()
     toolbar->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     toolbar->setPlayState (trackerEngine.isPlaying());
     toolbar->setPlaybackMode (songMode);
+
+    toolbar->setAutomationPanelVisible (automationPanelVisible);
 
     // Show sample name for current instrument
     auto sampleFile = trackerEngine.getSampler().getSampleFile (trackerGrid->getCurrentInstrument());
@@ -3016,4 +3065,20 @@ void MainComponent::populateAutomationPlugins()
     }
 
     automationPanel->setAvailablePlugins (plugins);
+}
+
+void MainComponent::navigateToAutomationParam (const juce::String& pluginId, int paramIndex)
+{
+    // Show automation panel if hidden
+    if (! automationPanelVisible)
+    {
+        automationPanelVisible = true;
+        toolbar->setAutomationPanelVisible (true);
+        refreshAutomationPanel();
+        resized();
+    }
+
+    // Navigate to the specified param
+    if (automationPanel != nullptr)
+        automationPanel->navigateToParam (pluginId, paramIndex);
 }
