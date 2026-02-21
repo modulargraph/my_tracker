@@ -32,6 +32,7 @@ public:
         std::array<juce::String, kNumTracks> trackNames;
         std::array<NoteMode, kNumTracks> trackNoteModes {};
         std::array<int, kNumTracks> trackFxLaneCounts {};
+        std::array<int, kNumTracks> trackNoteLaneCounts {};
         int masterFxLaneCount = 1;
     };
 
@@ -226,6 +227,32 @@ public:
 
     void setVisualOrder (const std::array<int, kNumTracks>& order) { visualOrder = order; }
 
+    // Per-track note lane count (minimum 1, maximum 8)
+    int getTrackNoteLaneCount (int physicalTrack) const
+    {
+        return trackNoteLaneCounts[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))];
+    }
+
+    void setTrackNoteLaneCount (int physicalTrack, int count)
+    {
+        trackNoteLaneCounts[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))]
+            = juce::jlimit (1, 8, count);
+    }
+
+    void addNoteLane (int physicalTrack)
+    {
+        auto& c = trackNoteLaneCounts[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))];
+        if (c < 8) ++c;
+    }
+
+    void removeNoteLane (int physicalTrack)
+    {
+        auto& c = trackNoteLaneCounts[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))];
+        if (c > 1) --c;
+    }
+
+    const std::array<int, kNumTracks>& getTrackNoteLaneCounts() const { return trackNoteLaneCounts; }
+
     // Per-track FX lane count (minimum 1)
     int getTrackFxLaneCount (int physicalTrack) const
     {
@@ -263,6 +290,7 @@ public:
         for (auto& n : trackNames) n.clear();
         for (auto& m : trackNoteModes) m = NoteMode::Kill;
         trackFxLaneCounts.fill (1);
+        trackNoteLaneCounts.fill (1);
         masterFxLaneCount = 1;
     }
 
@@ -276,6 +304,7 @@ public:
         s.trackNames = trackNames;
         s.trackNoteModes = trackNoteModes;
         s.trackFxLaneCounts = trackFxLaneCounts;
+        s.trackNoteLaneCounts = trackNoteLaneCounts;
         s.masterFxLaneCount = masterFxLaneCount;
         return s;
     }
@@ -287,6 +316,7 @@ public:
         trackNames = snapshot.trackNames;
         trackNoteModes = snapshot.trackNoteModes;
         trackFxLaneCounts = snapshot.trackFxLaneCounts;
+        trackNoteLaneCounts = snapshot.trackNoteLaneCounts;
         masterFxLaneCount = juce::jlimit (1, 8, snapshot.masterFxLaneCount);
     }
 
@@ -297,6 +327,7 @@ public:
             && a.trackNames == b.trackNames
             && a.trackNoteModes == b.trackNoteModes
             && a.trackFxLaneCounts == b.trackFxLaneCounts
+            && a.trackNoteLaneCounts == b.trackNoteLaneCounts
             && a.masterFxLaneCount == b.masterFxLaneCount;
     }
 
@@ -306,6 +337,7 @@ private:
     std::array<juce::String, kNumTracks> trackNames;
     std::array<NoteMode, kNumTracks> trackNoteModes {};
     std::array<int, kNumTracks> trackFxLaneCounts {};
+    std::array<int, kNumTracks> trackNoteLaneCounts {};
     int masterFxLaneCount = 1;
 };
 

@@ -11,10 +11,11 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
                                             const DelayParams& delayParams,
                                             const ReverbParams& reverbParams,
                                             int followMode,
-                                            const juce::String& browserDir)
+                                            const juce::String& browserDir,
+                                            const std::map<int, InstrumentSlotInfo>* pluginSlots)
 {
     juce::ValueTree root ("TrackerAdjustProject");
-    root.setProperty ("version", 5, nullptr);
+    root.setProperty ("version", 8, nullptr);
 
     // Settings
     juce::ValueTree settings ("Settings");
@@ -206,6 +207,27 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
             }
         }
 
+        // Note lane counts (only save if any track has more than 1)
+        {
+            bool anyMultiNote = false;
+            for (int i = 0; i < kNumTracks; ++i)
+                if (trackLayout.getTrackNoteLaneCount (i) > 1)
+                    anyMultiNote = true;
+
+            if (anyMultiNote)
+            {
+                juce::String nlStr;
+                for (int i = 0; i < kNumTracks; ++i)
+                {
+                    if (i > 0) nlStr += ",";
+                    nlStr += juce::String (trackLayout.getTrackNoteLaneCount (i));
+                }
+                juce::ValueTree nlTree ("NoteLaneCounts");
+                nlTree.setProperty ("values", nlStr, nullptr);
+                layoutTree.addChild (nlTree, -1, nullptr);
+            }
+        }
+
         // Master FX lane count (only save if > 1)
         if (trackLayout.getMasterFxLaneCount() > 1)
         {
@@ -263,6 +285,72 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         root.addChild (mixTree, -1, nullptr);
     }
 
+    // Insert plugin slots (V7+)
+    {
+        bool hasInserts = false;
+        for (auto& slots : mixerState.insertSlots)
+            if (! slots.empty())
+                hasInserts = true;
+
+        if (hasInserts)
+        {
+            juce::ValueTree insertsTree ("InsertPlugins");
+            for (int i = 0; i < kNumTracks; ++i)
+            {
+                auto& slots = mixerState.insertSlots[static_cast<size_t> (i)];
+                if (slots.empty()) continue;
+
+                juce::ValueTree trackTree ("Track");
+                trackTree.setProperty ("index", i, nullptr);
+
+                for (size_t si = 0; si < slots.size(); ++si)
+                {
+                    auto& slot = slots[si];
+                    if (slot.isEmpty()) continue;
+
+                    juce::ValueTree slotTree ("InsertSlot");
+                    slotTree.setProperty ("name", slot.pluginName, nullptr);
+                    slotTree.setProperty ("identifier", slot.pluginIdentifier, nullptr);
+                    slotTree.setProperty ("format", slot.pluginFormatName, nullptr);
+                    if (slot.bypassed)
+                        slotTree.setProperty ("bypassed", true, nullptr);
+                    if (slot.pluginState.isValid())
+                        slotTree.addChild (slot.pluginState.createCopy(), -1, nullptr);
+
+                    trackTree.addChild (slotTree, -1, nullptr);
+                }
+
+                insertsTree.addChild (trackTree, -1, nullptr);
+            }
+            root.addChild (insertsTree, -1, nullptr);
+        }
+    }
+
+    // Plugin instrument slots (V7+)
+    if (pluginSlots != nullptr && ! pluginSlots->empty())
+    {
+        juce::ValueTree pluginSlotsTree ("PluginInstrumentSlots");
+        for (auto& [index, info] : *pluginSlots)
+        {
+            if (! info.isPlugin())
+                continue;
+
+            juce::ValueTree slotTree ("PluginSlot");
+            slotTree.setProperty ("index", index, nullptr);
+            slotTree.setProperty ("ownerTrack", info.ownerTrack, nullptr);
+            slotTree.setProperty ("pluginName", info.pluginDescription.name, nullptr);
+            slotTree.setProperty ("pluginId", info.pluginDescription.fileOrIdentifier, nullptr);
+            slotTree.setProperty ("pluginFormat", info.pluginDescription.pluginFormatName, nullptr);
+            slotTree.setProperty ("pluginUid", info.pluginDescription.uniqueId, nullptr);
+            slotTree.setProperty ("pluginDeprecatedUid", info.pluginDescription.deprecatedUid, nullptr);
+            slotTree.setProperty ("pluginManufacturer", info.pluginDescription.manufacturerName, nullptr);
+            slotTree.setProperty ("pluginCategory", info.pluginDescription.category, nullptr);
+            slotTree.setProperty ("isInstrument", info.pluginDescription.isInstrument, nullptr);
+            pluginSlotsTree.addChild (slotTree, -1, nullptr);
+        }
+        root.addChild (pluginSlotsTree, -1, nullptr);
+    }
+
     // Send effects params
     {
         juce::ValueTree sendTree ("SendEffects");
@@ -317,7 +405,8 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                                               DelayParams& delayParams,
                                               ReverbParams& reverbParams,
                                               int* followMode,
-                                              juce::String* browserDir)
+                                              juce::String* browserDir,
+                                              std::map<int, InstrumentSlotInfo>* pluginSlots)
 {
     auto xml = juce::XmlDocument::parse (file);
     if (xml == nullptr)
@@ -569,6 +658,18 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             }
         }
 
+        auto nlLaneTree = layoutTree.getChildWithName ("NoteLaneCounts");
+        if (nlLaneTree.isValid())
+        {
+            juce::String nlStr = nlLaneTree.getProperty ("values", "");
+            auto tokens = juce::StringArray::fromTokens (nlStr, ",", "");
+            if (tokens.size() == kNumTracks)
+            {
+                for (int i = 0; i < kNumTracks; ++i)
+                    trackLayout.setTrackNoteLaneCount (i, tokens[i].getIntValue());
+            }
+        }
+
         auto mfxTree = layoutTree.getChildWithName ("MasterFxLanes");
         if (mfxTree.isValid())
             trackLayout.setMasterFxLaneCount (mfxTree.getProperty ("count", 1));
@@ -626,6 +727,79 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             t.compRelease  = trackTree.getProperty ("compRelease", 100.0);
             t.reverbSend   = trackTree.getProperty ("reverbSend", -100.0);
             t.delaySend    = trackTree.getProperty ("delaySend", -100.0);
+        }
+    }
+
+    // Insert plugin slots (V7+)
+    for (auto& slots : mixerState.insertSlots)
+        slots.clear();
+
+    auto insertsTree = root.getChildWithName ("InsertPlugins");
+    if (insertsTree.isValid())
+    {
+        for (int i = 0; i < insertsTree.getNumChildren(); ++i)
+        {
+            auto trackTree = insertsTree.getChild (i);
+            if (! trackTree.hasType ("Track")) continue;
+
+            int idx = trackTree.getProperty ("index", -1);
+            if (idx < 0 || idx >= kNumTracks) continue;
+
+            auto& slots = mixerState.insertSlots[static_cast<size_t> (idx)];
+
+            for (int si = 0; si < trackTree.getNumChildren(); ++si)
+            {
+                auto slotTree = trackTree.getChild (si);
+                if (! slotTree.hasType ("InsertSlot")) continue;
+
+                if (static_cast<int> (slots.size()) >= kMaxInsertSlots)
+                    break;
+
+                InsertSlotState slot;
+                slot.pluginName = slotTree.getProperty ("name", "").toString();
+                slot.pluginIdentifier = slotTree.getProperty ("identifier", "").toString();
+                slot.pluginFormatName = slotTree.getProperty ("format", "").toString();
+                slot.bypassed = slotTree.getProperty ("bypassed", false);
+
+                // Restore plugin state (first child ValueTree if present)
+                if (slotTree.getNumChildren() > 0)
+                    slot.pluginState = slotTree.getChild (0).createCopy();
+
+                if (! slot.isEmpty())
+                    slots.push_back (std::move (slot));
+            }
+        }
+    }
+
+    // Plugin instrument slots (V7+)
+    if (pluginSlots != nullptr)
+    {
+        pluginSlots->clear();
+        auto pluginSlotsTree = root.getChildWithName ("PluginInstrumentSlots");
+        if (pluginSlotsTree.isValid())
+        {
+            for (int i = 0; i < pluginSlotsTree.getNumChildren(); ++i)
+            {
+                auto slotTree = pluginSlotsTree.getChild (i);
+                if (! slotTree.hasType ("PluginSlot")) continue;
+
+                int index = slotTree.getProperty ("index", -1);
+                if (index < 0 || index >= 256) continue;
+
+                InstrumentSlotInfo info;
+                info.sourceType = InstrumentSourceType::PluginInstrument;
+                info.ownerTrack = slotTree.getProperty ("ownerTrack", -1);
+                info.pluginDescription.name = slotTree.getProperty ("pluginName", "").toString();
+                info.pluginDescription.fileOrIdentifier = slotTree.getProperty ("pluginId", "").toString();
+                info.pluginDescription.pluginFormatName = slotTree.getProperty ("pluginFormat", "").toString();
+                info.pluginDescription.uniqueId = slotTree.getProperty ("pluginUid", 0);
+                info.pluginDescription.deprecatedUid = slotTree.getProperty ("pluginDeprecatedUid", 0);
+                info.pluginDescription.manufacturerName = slotTree.getProperty ("pluginManufacturer", "").toString();
+                info.pluginDescription.category = slotTree.getProperty ("pluginCategory", "").toString();
+                info.pluginDescription.isInstrument = slotTree.getProperty ("isInstrument", true);
+
+                (*pluginSlots)[index] = info;
+            }
         }
     }
 
@@ -728,6 +902,20 @@ juce::ValueTree ProjectSerializer::patternToValueTree (const Pattern& pattern, i
             cellTree.setProperty ("inst", cell.instrument, nullptr);
             cellTree.setProperty ("vol", cell.volume, nullptr);
 
+            // Save extra note lanes (lane 1+)
+            for (int nl = 0; nl < static_cast<int> (cell.extraNoteLanes.size()); ++nl)
+            {
+                const auto& slot = cell.extraNoteLanes[static_cast<size_t> (nl)];
+                if (slot.isEmpty()) continue;
+
+                juce::ValueTree nlTree ("NoteLane");
+                nlTree.setProperty ("lane", nl + 1, nullptr);
+                nlTree.setProperty ("note", slot.note, nullptr);
+                nlTree.setProperty ("inst", slot.instrument, nullptr);
+                nlTree.setProperty ("vol", slot.volume, nullptr);
+                cellTree.addChild (nlTree, -1, nullptr);
+            }
+
             // Save first FX slot
             if (cell.getNumFxSlots() > 0)
             {
@@ -778,6 +966,34 @@ juce::ValueTree ProjectSerializer::patternToValueTree (const Pattern& pattern, i
         patTree.addChild (rowTree, -1, nullptr);
     }
 
+    // Automation data (Phase 5)
+    if (! pattern.automationData.isEmpty())
+    {
+        juce::ValueTree autoTree ("Automation");
+        for (const auto& lane : pattern.automationData.lanes)
+        {
+            if (lane.isEmpty())
+                continue;
+
+            juce::ValueTree laneTree ("Lane");
+            laneTree.setProperty ("pluginId", lane.pluginId, nullptr);
+            laneTree.setProperty ("paramId", lane.parameterId, nullptr);
+            laneTree.setProperty ("track", lane.owningTrack, nullptr);
+
+            for (const auto& point : lane.points)
+            {
+                juce::ValueTree pointTree ("Point");
+                pointTree.setProperty ("row", point.row, nullptr);
+                pointTree.setProperty ("value", static_cast<double> (point.value), nullptr);
+                pointTree.setProperty ("curve", static_cast<int> (point.curveType), nullptr);
+                laneTree.addChild (pointTree, -1, nullptr);
+            }
+
+            autoTree.addChild (laneTree, -1, nullptr);
+        }
+        patTree.addChild (autoTree, -1, nullptr);
+    }
+
     return patTree;
 }
 
@@ -810,27 +1026,39 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
             cell.instrument = cellTree.getProperty ("inst", -1);
             cell.volume = cellTree.getProperty ("vol", -1);
 
+            // Load extra note lanes and FX slots from child nodes
+            for (int ci = 0; ci < cellTree.getNumChildren(); ++ci)
+            {
+                auto childTree = cellTree.getChild (ci);
+
+                if (childTree.hasType ("NoteLane"))
+                {
+                    int lane = childTree.getProperty ("lane", -1);
+                    if (lane < 1) continue;
+                    NoteSlot slot;
+                    slot.note = childTree.getProperty ("note", -1);
+                    slot.instrument = childTree.getProperty ("inst", -1);
+                    slot.volume = childTree.getProperty ("vol", -1);
+                    cell.setNoteLane (lane, slot);
+                }
+                else if (childTree.hasType ("FxSlot"))
+                {
+                    int lane = childTree.getProperty ("lane", -1);
+                    if (lane < 1) continue;
+                    auto& slot = cell.getFxSlot (lane);
+                    int fxp = childTree.getProperty ("fxp", 0);
+                    auto fxToken = childTree.getProperty ("fxc", "").toString();
+                    if (fxToken.isNotEmpty())
+                        slot.setSymbolicCommand (static_cast<char> (fxToken[0]), fxp);
+                }
+            }
+
+            // Load first FX slot (inline on Cell node)
             int fxp0 = cellTree.getProperty ("fxp", 0);
             auto fxToken0 = cellTree.getProperty ("fxc", "").toString();
             auto& firstSlot = cell.getFxSlot (0);
             if (fxToken0.isNotEmpty())
                 firstSlot.setSymbolicCommand (static_cast<char> (fxToken0[0]), fxp0);
-
-            // Load additional FX slots
-            for (int fxi = 0; fxi < cellTree.getNumChildren(); ++fxi)
-            {
-                auto fxSlotTree = cellTree.getChild (fxi);
-                if (! fxSlotTree.hasType ("FxSlot")) continue;
-
-                int lane = fxSlotTree.getProperty ("lane", -1);
-                if (lane < 1) continue;
-
-                auto& slot = cell.getFxSlot (lane);
-                int fxp = fxSlotTree.getProperty ("fxp", 0);
-                auto fxToken = fxSlotTree.getProperty ("fxc", "").toString();
-                if (fxToken.isNotEmpty())
-                    slot.setSymbolicCommand (static_cast<char> (fxToken[0]), fxp);
-            }
 
             pattern.setCell (row, track, cell);
         }
@@ -849,6 +1077,41 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
             auto& slot = pattern.getMasterFxSlot (row, lane);
             if (fxToken.isNotEmpty())
                 slot.setSymbolicCommand (static_cast<char> (fxToken[0]), fxp);
+        }
+    }
+
+    // Automation data (Phase 5)
+    pattern.automationData = PatternAutomationData {};
+    auto autoTree = tree.getChildWithName ("Automation");
+    if (autoTree.isValid())
+    {
+        for (int i = 0; i < autoTree.getNumChildren(); ++i)
+        {
+            auto laneTree = autoTree.getChild (i);
+            if (! laneTree.hasType ("Lane"))
+                continue;
+
+            AutomationLane lane;
+            lane.pluginId = laneTree.getProperty ("pluginId", "").toString();
+            lane.parameterId = laneTree.getProperty ("paramId", -1);
+            lane.owningTrack = laneTree.getProperty ("track", -1);
+
+            for (int pi = 0; pi < laneTree.getNumChildren(); ++pi)
+            {
+                auto pointTree = laneTree.getChild (pi);
+                if (! pointTree.hasType ("Point"))
+                    continue;
+
+                AutomationPoint point;
+                point.row = pointTree.getProperty ("row", 0);
+                point.value = static_cast<float> (static_cast<double> (pointTree.getProperty ("value", 0.5)));
+                point.curveType = static_cast<AutomationCurveType> (
+                    static_cast<int> (pointTree.getProperty ("curve", 0)));
+                lane.points.push_back (point);
+            }
+
+            lane.sortPoints();
+            pattern.automationData.lanes.push_back (std::move (lane));
         }
     }
 }
@@ -904,4 +1167,77 @@ juce::String ProjectSerializer::loadGlobalBrowserDir()
     if (! root.isValid())
         return {};
     return root.getProperty ("browserDir", "").toString();
+}
+
+//==============================================================================
+// Global plugin scan path persistence
+//==============================================================================
+
+void ProjectSerializer::saveGlobalPluginScanPaths (const juce::StringArray& paths)
+{
+    auto prefsFile = getGlobalPrefsFile();
+    if (! prefsFile.getParentDirectory().createDirectory())
+        return;
+
+    juce::ValueTree root ("TrackerAdjustPrefs");
+
+    // Load existing prefs if any
+    if (prefsFile.existsAsFile())
+    {
+        auto xml = juce::XmlDocument::parse (prefsFile);
+        if (xml != nullptr)
+        {
+            auto loaded = juce::ValueTree::fromXml (*xml);
+            if (loaded.isValid())
+                root = loaded;
+        }
+    }
+
+    // Remove any existing scan paths child
+    auto existing = root.getChildWithName ("PluginScanPaths");
+    if (existing.isValid())
+        root.removeChild (existing, nullptr);
+
+    // Add new scan paths
+    juce::ValueTree scanPathsTree ("PluginScanPaths");
+    for (auto& path : paths)
+    {
+        juce::ValueTree pathTree ("Path");
+        pathTree.setProperty ("dir", path, nullptr);
+        scanPathsTree.addChild (pathTree, -1, nullptr);
+    }
+    root.addChild (scanPathsTree, -1, nullptr);
+
+    if (auto xml = root.createXml())
+        xml->writeTo (prefsFile);
+}
+
+juce::StringArray ProjectSerializer::loadGlobalPluginScanPaths()
+{
+    auto prefsFile = getGlobalPrefsFile();
+    if (! prefsFile.existsAsFile())
+        return {};
+
+    auto xml = juce::XmlDocument::parse (prefsFile);
+    if (xml == nullptr)
+        return {};
+
+    auto root = juce::ValueTree::fromXml (*xml);
+    if (! root.isValid())
+        return {};
+
+    auto scanPathsTree = root.getChildWithName ("PluginScanPaths");
+    if (! scanPathsTree.isValid())
+        return {};
+
+    juce::StringArray paths;
+    for (int i = 0; i < scanPathsTree.getNumChildren(); ++i)
+    {
+        auto pathTree = scanPathsTree.getChild (i);
+        auto dir = pathTree.getProperty ("dir", "").toString();
+        if (dir.isNotEmpty())
+            paths.add (dir);
+    }
+
+    return paths;
 }

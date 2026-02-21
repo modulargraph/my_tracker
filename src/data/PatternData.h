@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <array>
 #include <vector>
+#include "PluginAutomationData.h"
 
 constexpr int kNumTracks = 16;
 
@@ -56,6 +57,21 @@ inline int fxLetterToCommand (char letter)
 }
 
 //==============================================================================
+// Note slot (note/instrument/volume per lane)
+//==============================================================================
+
+struct NoteSlot
+{
+    int note = -1;        // MIDI note (-1 = empty, 0-127 = note, 254=KILL, 255=OFF)
+    int instrument = -1;  // Instrument/sample index (-1 = none)
+    int volume = -1;      // Volume (-1 = default, 0-127)
+
+    bool isEmpty() const { return note < 0 && instrument < 0 && volume < 0; }
+    bool hasNote() const { return note >= 0; }
+    void clear() { note = -1; instrument = -1; volume = -1; }
+};
+
+//==============================================================================
 // FX slot and Cell structures
 //==============================================================================
 
@@ -104,9 +120,47 @@ struct Cell
     int note = -1;        // MIDI note (-1 = empty, 0-127 = note)
     int instrument = -1;  // Instrument/sample index (-1 = none)
     int volume = -1;      // Volume (-1 = default, 0-127)
+    std::vector<NoteSlot> extraNoteLanes; // Additional note lanes (lane 1+)
     std::vector<FxSlot> fxSlots; // At least 1 slot always present
 
     Cell() { fxSlots.push_back ({}); }
+
+    // Lane-aware note accessors
+    NoteSlot getNoteLane (int laneIndex) const
+    {
+        if (laneIndex == 0)
+            return { note, instrument, volume };
+        int idx = laneIndex - 1;
+        if (idx < 0 || idx >= static_cast<int> (extraNoteLanes.size()))
+            return {};
+        return extraNoteLanes[static_cast<size_t> (idx)];
+    }
+
+    void setNoteLane (int laneIndex, const NoteSlot& slot)
+    {
+        if (laneIndex == 0)
+        {
+            note = slot.note;
+            instrument = slot.instrument;
+            volume = slot.volume;
+            return;
+        }
+        int idx = laneIndex - 1;
+        while (static_cast<int> (extraNoteLanes.size()) <= idx)
+            extraNoteLanes.push_back ({});
+        extraNoteLanes[static_cast<size_t> (idx)] = slot;
+    }
+
+    int getNumNoteLanes() const { return 1 + static_cast<int> (extraNoteLanes.size()); }
+
+    void ensureNoteLanes (int count)
+    {
+        if (count > 1)
+        {
+            while (static_cast<int> (extraNoteLanes.size()) < count - 1)
+                extraNoteLanes.push_back ({});
+        }
+    }
 
     // Access a specific FX lane
     FxSlot& getFxSlot (int index)
@@ -135,6 +189,9 @@ struct Cell
     {
         if (note >= 0 || instrument >= 0 || volume >= 0)
             return false;
+        for (const auto& lane : extraNoteLanes)
+            if (! lane.isEmpty())
+                return false;
         for (const auto& slot : fxSlots)
             if (! slot.isEmpty())
                 return false;
@@ -146,6 +203,7 @@ struct Cell
     void clear()
     {
         note = -1; instrument = -1; volume = -1;
+        extraNoteLanes.clear();
         fxSlots.clear();
         fxSlots.push_back ({}); // Keep at least one slot
     }
@@ -159,6 +217,9 @@ struct Pattern
 
     // Master lane FX: masterFxRows[row][lane]
     std::vector<std::vector<FxSlot>> masterFxRows;
+
+    // Per-pattern plugin automation data (Phase 5)
+    PatternAutomationData automationData;
 
     Pattern();
     explicit Pattern (int rowCount);

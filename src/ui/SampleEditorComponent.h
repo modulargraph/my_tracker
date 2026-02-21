@@ -23,10 +23,12 @@ public:
 
     // Instrument management
     void setInstrument (int instrumentIndex, const juce::File& sampleFile, const InstrumentParams& params);
+    void setPluginInstrument (int instrumentIndex, const juce::String& pluginName, int ownerTrack);
     void clearInstrument();
 
     int getInstrument() const { return currentInstrument; }
     InstrumentParams getParams() const { return currentParams; }
+    bool isShowingPluginInstrument() const { return showingPlugin; }
 
     // Octave for keyboard note preview
     void setOctave (int oct) { currentOctave = juce::jlimit (0, 9, oct); }
@@ -38,6 +40,7 @@ public:
     std::function<void (int instrument, int note)> onPreviewRequested;
     std::function<void()> onPreviewStopped;
     std::function<float()> onGetPreviewPosition;
+    std::function<void (int instrument)> onOpenPluginEditorRequested;
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -57,6 +60,13 @@ private:
     juce::File currentFile;
     InstrumentParams currentParams;
     InstrumentParams lastCommittedParams;
+
+    // Plugin instrument display state
+    bool showingPlugin = false;
+    juce::String pluginInstrumentName;
+    int pluginOwnerTrack = -1;
+
+    void drawPluginInstrumentPage (juce::Graphics& g, juce::Rectangle<int> area);
 
     // Waveform display
     juce::AudioFormatManager formatManager;

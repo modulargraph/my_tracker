@@ -27,6 +27,12 @@ public:
     std::function<void (int track, bool soloed)> onSoloChanged;
     std::function<void()> onMixStateChanged;
 
+    // Insert plugin callbacks
+    std::function<void (int track)> onAddInsertClicked;                   // + button: open plugin picker
+    std::function<void (int track, int slotIndex)> onRemoveInsertClicked; // remove button
+    std::function<void (int track, int slotIndex, bool bypassed)> onInsertBypassToggled;
+    std::function<void (int track, int slotIndex)> onOpenInsertEditor;    // open plugin UI
+
     int getSelectedTrack() const { return selectedTrack; }
 
     // Peak level metering
@@ -43,7 +49,7 @@ private:
     int selectedTrack = 0;      // visual track index
 
     // Parameter navigation within a strip
-    enum class Section { EQ, Comp, Sends, Pan, Volume };
+    enum class Section { EQ, Comp, Inserts, Sends, Pan, Volume };
     Section currentSection = Section::Volume;
     int currentParam = 0;       // param index within section
 
@@ -68,6 +74,8 @@ private:
     static constexpr int kHeaderHeight = 31;
     static constexpr int kEqSectionHeight = 104;
     static constexpr int kCompSectionHeight = 104;
+    static constexpr int kInsertRowHeight = 20;
+    static constexpr int kInsertAddButtonHeight = 20;
     static constexpr int kSendsSectionHeight = 57;
     static constexpr int kPanSectionHeight = 36;
     static constexpr int kMuteSoloHeight = 31;
@@ -85,6 +93,8 @@ private:
                          bool isSelected, int selectedParam);
     void paintCompSection (juce::Graphics& g, const TrackMixState& state, juce::Rectangle<int> bounds,
                            bool isSelected, int selectedParam);
+    void paintInsertsSection (juce::Graphics& g, int physTrack, juce::Rectangle<int> bounds,
+                              bool isSelected, int selectedParam);
     void paintSendsSection (juce::Graphics& g, const TrackMixState& state, juce::Rectangle<int> bounds,
                             bool isSelected, int selectedParam);
     void paintPanSection (juce::Graphics& g, const TrackMixState& state, juce::Rectangle<int> bounds,
@@ -102,6 +112,9 @@ private:
     void paintKnob (juce::Graphics& g, juce::Rectangle<int> area, double value, double minVal,
                     double maxVal, juce::Colour colour, const juce::String& label);
 
+    // Insert section height helper (dynamic based on insert count)
+    int getInsertsSectionHeight (int physTrack) const;
+
     // Interaction
     void adjustCurrentParam (double delta);
     int getParamCountForSection (Section section) const;
@@ -117,6 +130,11 @@ private:
         int param = -1;
         bool hitMute = false;
         bool hitSolo = false;
+        bool hitInsertAdd = false;
+        int hitInsertSlot = -1;        // which insert slot was clicked
+        bool hitInsertBypass = false;
+        bool hitInsertOpen = false;
+        bool hitInsertRemove = false;
     };
     HitResult hitTestStrip (juce::Point<int> pos) const;
 

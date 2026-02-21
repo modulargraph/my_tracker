@@ -40,6 +40,8 @@ target_sources(TrackerAdjust PRIVATE
     src/audio/MetronomePlugin.cpp
     src/audio/SendEffectsPlugin.cpp
     src/audio/MixerPlugin.cpp
+    src/audio/ChannelStripPlugin.cpp
+    src/audio/TrackOutputPlugin.cpp
     src/ui/MainComponent.cpp
     src/ui/TrackerGrid.cpp
     src/ui/TrackerLookAndFeel.cpp
@@ -51,7 +53,10 @@ target_sources(TrackerAdjust PRIVATE
     src/ui/TabBarComponent.cpp
     src/ui/FileBrowserComponent.cpp
     src/ui/MixerComponent.cpp
-    src/ui/SendEffectsComponent.cpp)
+    src/ui/SendEffectsComponent.cpp
+    src/audio/PluginCatalogService.cpp
+    src/ui/AudioPluginSettingsComponent.cpp
+    src/ui/PluginAutomationComponent.cpp)
 
 target_include_directories(TrackerAdjust PRIVATE src src/data src/audio src/ui)
 
@@ -62,8 +67,8 @@ set_target_properties(TrackerAdjust PROPERTIES
     CXX_VISIBILITY_PRESET hidden)
 
 target_compile_definitions(TrackerAdjust PRIVATE
-    JUCE_PLUGINHOST_AU=0
-    JUCE_PLUGINHOST_VST3=0
+    JUCE_PLUGINHOST_AU=1
+    JUCE_PLUGINHOST_VST3=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
     JUCE_MODAL_LOOPS_PERMITTED=1
@@ -88,7 +93,9 @@ add_executable(TrackerAdjustTests
     src/data/PatternData.cpp
     src/ui/ProjectSerializer.cpp
     src/ui/ArrangementComponent.cpp
-    src/ui/TrackerLookAndFeel.cpp)
+    src/ui/TrackerLookAndFeel.cpp
+    src/ui/TrackerGrid.cpp
+    src/ui/PluginAutomationComponent.cpp)
 
 target_include_directories(TrackerAdjustTests PRIVATE
     src src/data src/audio src/ui
@@ -97,8 +104,8 @@ target_include_directories(TrackerAdjustTests PRIVATE
 target_compile_features(TrackerAdjustTests PRIVATE cxx_std_20)
 
 target_compile_definitions(TrackerAdjustTests PRIVATE
-    JUCE_PLUGINHOST_AU=0
-    JUCE_PLUGINHOST_VST3=0
+    JUCE_PLUGINHOST_AU=1
+    JUCE_PLUGINHOST_VST3=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
     JUCE_MODAL_LOOPS_PERMITTED=1

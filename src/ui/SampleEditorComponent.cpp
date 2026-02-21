@@ -69,6 +69,7 @@ void SampleEditorComponent::setInstrument (int instrumentIndex, const juce::File
     }
 
     currentInstrument = instrumentIndex;
+    showingPlugin = false;
     currentFile = sampleFile;
     currentParams = params;
     constrainPlaybackMarkersToRegion();
@@ -101,6 +102,7 @@ void SampleEditorComponent::clearInstrument()
     }
 
     currentInstrument = -1;
+    showingPlugin = false;
     currentFile = juce::File();
     currentParams = InstrumentParams();
     lastCommittedParams = InstrumentParams();
@@ -114,6 +116,29 @@ void SampleEditorComponent::clearInstrument()
     draggingMarker = MarkerType::None;
     isPanning = false;
 
+    thumbnail.clear();
+    repaint();
+}
+
+void SampleEditorComponent::setPluginInstrument (int instrumentIndex, const juce::String& pluginName, int ownerTrack)
+{
+    if (paramsDirty)
+    {
+        stopTimer();
+        paramsDirty = false;
+        if (onParamsChanged)
+            onParamsChanged (currentInstrument, currentParams);
+    }
+
+    currentInstrument = instrumentIndex;
+    showingPlugin = true;
+    pluginInstrumentName = pluginName;
+    pluginOwnerTrack = ownerTrack;
+
+    currentFile = juce::File();
+    currentParams = InstrumentParams();
+    lastCommittedParams = InstrumentParams();
+    paramsDirty = false;
     thumbnail.clear();
     repaint();
 }
@@ -634,6 +659,16 @@ void SampleEditorComponent::paint (juce::Graphics& g)
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
     g.drawRect (getLocalBounds(), 1);
 
+    // Plugin instrument: show simplified info page instead of sample editor
+    if (showingPlugin)
+    {
+        drawHeader (g, { 0, 0, getWidth(), kHeaderHeight });
+        auto contentArea = juce::Rectangle<int> (0, kHeaderHeight, getWidth(),
+                                                  getHeight() - kHeaderHeight);
+        drawPluginInstrumentPage (g, contentArea);
+        return;
+    }
+
     // Header
     drawHeader (g, { 0, 0, getWidth(), kHeaderHeight });
 
@@ -707,6 +742,48 @@ void SampleEditorComponent::drawSubTabBar (juce::Graphics& g, juce::Rectangle<in
         g.setColour (active ? textCol : textCol.withAlpha (0.4f));
         g.drawText (items[i].label, itemArea.withTrimmedLeft (8), juce::Justification::centredLeft);
     }
+}
+
+//==============================================================================
+// Drawing: Plugin instrument info page
+//==============================================================================
+
+void SampleEditorComponent::drawPluginInstrumentPage (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    auto textCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+    auto pluginCol = juce::Colour (0xff89b4fa); // Blue tint matching InstrumentPanel
+
+    int centerY = area.getCentreY();
+    int leftX = area.getX() + 30;
+
+    // Plugin instrument icon/label
+    g.setFont (lookAndFeel.getMonoFont (16.0f));
+    g.setColour (pluginCol);
+    g.drawText ("Plugin Instrument", leftX, centerY - 60, area.getWidth() - 60, 24,
+                juce::Justification::centredLeft);
+
+    // Plugin name
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
+    g.setColour (textCol);
+    g.drawText ("Name:  " + pluginInstrumentName, leftX, centerY - 30, area.getWidth() - 60, 20,
+                juce::Justification::centredLeft);
+
+    // Owner track
+    g.drawText ("Owner Track:  " + (pluginOwnerTrack >= 0
+                    ? juce::String (pluginOwnerTrack + 1)
+                    : juce::String ("(none)")),
+                leftX, centerY - 8, area.getWidth() - 60, 20,
+                juce::Justification::centredLeft);
+
+    // Instructions
+    g.setColour (textCol.withAlpha (0.5f));
+    g.setFont (lookAndFeel.getMonoFont (11.0f));
+    g.drawText ("Press Enter or double-click to open plugin editor",
+                leftX, centerY + 20, area.getWidth() - 60, 18,
+                juce::Justification::centredLeft);
+    g.drawText ("Right-click in Instrument Panel to change or clear",
+                leftX, centerY + 38, area.getWidth() - 60, 18,
+                juce::Justification::centredLeft);
 }
 
 //==============================================================================
@@ -2086,6 +2163,18 @@ int SampleEditorComponent::keyToNote (const juce::KeyPress& key) const
 bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
 {
     if (currentInstrument < 0) return false;
+
+    // Plugin instrument mode: only handle Enter to open editor
+    if (showingPlugin)
+    {
+        if (key.getKeyCode() == juce::KeyPress::returnKey)
+        {
+            if (onOpenPluginEditorRequested)
+                onOpenPluginEditorRequested (currentInstrument);
+            return true;
+        }
+        return false;
+    }
 
     auto keyCode = key.getKeyCode();
     bool shift = key.getModifiers().isShiftDown();

@@ -89,6 +89,8 @@ public:
     std::function<void (int track, const juce::File& file)> onFileDroppedOnTrack;
     // Callback for note mode toggle (K/R) on track header
     std::function<void (int track)> onNoteModeToggled;
+    // Callback for validating note entry (returns empty string if allowed, error message if blocked)
+    std::function<juce::String (int instrumentIndex, int trackIndex)> onValidateNoteEntry;
 
     // Layout constants (public for toolbar/status)
     static constexpr int kRowNumberWidth = 30;
@@ -104,15 +106,23 @@ public:
     static constexpr int kSubColSpace = 2; // Space between sub-columns (was 4)
     static constexpr int kGroupHeaderHeight = 16;
 
-    // Base cell width (1 FX lane): padding + Note + space + Inst + space + Vol + space + FX
-    static constexpr int kBaseCellWidth = kCellPadding + kNoteWidth + kSubColSpace + kInstWidth
-                                        + kSubColSpace + kVolWidth + kSubColSpace + kFxWidth;
+    // Width of one note lane (Note + space + Inst + space + Vol + space)
+    static constexpr int kNoteLaneWidth = kNoteWidth + kSubColSpace + kInstWidth
+                                        + kSubColSpace + kVolWidth + kSubColSpace;
 
-    // Compute cell width for a track with the given number of FX lanes
-    static int getCellWidth (int fxLaneCount)
+    // Base cell width (1 note lane, 1 FX lane): padding + NoteLane + FX
+    static constexpr int kBaseCellWidth = kCellPadding + kNoteLaneWidth + kFxWidth;
+
+    // Compute cell width for a track with the given number of note and FX lanes
+    static int getCellWidth (int fxLaneCount, int noteLaneCount = 1)
     {
-        return kBaseCellWidth + (fxLaneCount - 1) * (kFxWidth + kSubColSpace);
+        return kCellPadding
+             + noteLaneCount * kNoteLaneWidth
+             + fxLaneCount * kFxWidth + (fxLaneCount - 1) * kSubColSpace;
     }
+
+    // Current cursor note lane index (which note lane the cursor is in)
+    int getCursorNoteLane() const { return cursorNoteLane; }
 
     // Current cursor FX lane index (which FX lane the cursor is in)
     int getCursorFxLane() const { return cursorFxLane; }
@@ -133,6 +143,7 @@ private:
     int cursorRow = 0;
     int cursorTrack = 0;
     SubColumn cursorSubColumn = SubColumn::Note;
+    int cursorNoteLane = 0; // Which note lane the cursor is in when SubColumn::Note/Instrument/Volume
     int cursorFxLane = 0;  // Which FX lane the cursor is in when SubColumn::FX
     int playbackRow = -1;
     bool isPlaying = false;
@@ -203,6 +214,7 @@ private:
     // Hit test: convert pixel position to grid coordinates
     bool hitTestGrid (int x, int y, int& outRow, int& outTrack, SubColumn& outSubCol) const;
     bool hitTestGrid (int x, int y, int& outRow, int& outTrack, SubColumn& outSubCol, int& outFxLane) const;
+    bool hitTestGrid (int x, int y, int& outRow, int& outTrack, SubColumn& outSubCol, int& outFxLane, int& outNoteLane) const;
 
     // Variable-width track layout helpers
     int getTrackXOffset (int visualIndex) const;  // pixel X for a visual track index

@@ -8,6 +8,7 @@
 #include "TrackLayout.h"
 #include "MixerState.h"
 #include "SendEffectsParams.h"
+#include "InstrumentSlotInfo.h"
 
 class ProjectSerializer
 {
@@ -22,7 +23,8 @@ public:
                                     const DelayParams& delayParams,
                                     const ReverbParams& reverbParams,
                                     int followMode = 0,
-                                    const juce::String& browserDir = {});
+                                    const juce::String& browserDir = {},
+                                    const std::map<int, InstrumentSlotInfo>* pluginSlots = nullptr);
 
     static juce::String loadFromFile (const juce::File& file, PatternData& patternData,
                                       double& bpm, int& rowsPerBeat,
@@ -34,11 +36,16 @@ public:
                                       DelayParams& delayParams,
                                       ReverbParams& reverbParams,
                                       int* followMode = nullptr,
-                                      juce::String* browserDir = nullptr);
+                                      juce::String* browserDir = nullptr,
+                                      std::map<int, InstrumentSlotInfo>* pluginSlots = nullptr);
 
     // Global browser directory persistence (independent of project files)
     static void saveGlobalBrowserDir (const juce::String& dir);
     static juce::String loadGlobalBrowserDir();
+
+    // Global plugin scan path persistence (independent of project files)
+    static void saveGlobalPluginScanPaths (const juce::StringArray& paths);
+    static juce::StringArray loadGlobalPluginScanPaths();
 
 private:
     static juce::ValueTree patternToValueTree (const Pattern& pattern, int index);

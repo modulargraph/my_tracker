@@ -15,16 +15,50 @@ void InstrumentPanel::updateSampleInfo (const std::map<int, juce::File>& loadedS
 {
     for (auto& slot : slots)
     {
-        slot.sampleName = "";
-        slot.hasData = false;
+        if (! slot.isPlugin)
+        {
+            slot.sampleName = "";
+            slot.hasData = false;
+        }
     }
 
     for (auto& [index, file] : loadedSamples)
     {
         if (index >= 0 && index < 256)
         {
-            slots[static_cast<size_t> (index)].sampleName = file.getFileNameWithoutExtension();
-            slots[static_cast<size_t> (index)].hasData = true;
+            auto& slot = slots[static_cast<size_t> (index)];
+            if (! slot.isPlugin)
+            {
+                slot.sampleName = file.getFileNameWithoutExtension();
+                slot.hasData = true;
+            }
+        }
+    }
+
+    repaint();
+}
+
+void InstrumentPanel::updatePluginInfo (const std::map<int, InstrumentSlotInfo>& slotInfos)
+{
+    // First clear all plugin flags
+    for (auto& slot : slots)
+    {
+        slot.isPlugin = false;
+        slot.pluginName.clear();
+        slot.ownerTrack = -1;
+    }
+
+    // Then set plugin info
+    for (auto& [index, info] : slotInfos)
+    {
+        if (index >= 0 && index < 256 && info.isPlugin())
+        {
+            auto& slot = slots[static_cast<size_t> (index)];
+            slot.isPlugin = true;
+            slot.pluginName = info.pluginDescription.name;
+            slot.ownerTrack = info.ownerTrack;
+            slot.hasData = true;
+            slot.sampleName.clear(); // Not a sample
         }
     }
 
@@ -70,14 +104,24 @@ void InstrumentPanel::paint (juce::Graphics& g)
             g.fillRect (1, y, getWidth() - 1, kSlotHeight);
         }
 
-        // Index
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId)
-                         .withAlpha (slot.hasData ? 1.0f : 0.4f));
+        // Index with type indicator
+        auto indexColour = lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
+        if (slot.isPlugin)
+            indexColour = juce::Colour (0xff89b4fa); // Blue tint for plugin instruments
+        g.setColour (indexColour.withAlpha (slot.hasData ? 1.0f : 0.4f));
         g.drawText (juce::String::formatted ("%02X", inst), 6, y, 22, kSlotHeight,
                     juce::Justification::centredLeft);
 
-        // Sample name or empty indicator
-        if (slot.hasData)
+        // Name display
+        if (slot.isPlugin)
+        {
+            // Plugin instrument: show plugin name with type indicator
+            g.setColour (juce::Colour (0xff89b4fa));
+            auto truncName = slot.pluginName.substring (0, 14);
+            g.drawText (truncName, 32, y, getWidth() - 38, kSlotHeight,
+                        juce::Justification::centredLeft);
+        }
+        else if (slot.hasData)
         {
             g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
             auto truncName = slot.sampleName.substring (0, 16);
@@ -124,8 +168,16 @@ void InstrumentPanel::mouseDoubleClick (const juce::MouseEvent& event)
     int idx = (event.y - kHeaderHeight) / kSlotHeight + scrollOffset;
     if (idx < 0 || idx >= 256) return;
 
-    if (slots[static_cast<size_t> (idx)].hasData && onEditSampleRequested)
+    auto& slot = slots[static_cast<size_t> (idx)];
+
+    if (slot.isPlugin && onOpenPluginEditorRequested)
+    {
+        onOpenPluginEditorRequested (idx);
+    }
+    else if (slot.hasData && onEditSampleRequested)
+    {
         onEditSampleRequested (idx);
+    }
 }
 
 bool InstrumentPanel::keyPressed (const juce::KeyPress& key)
@@ -176,7 +228,10 @@ bool InstrumentPanel::keyPressed (const juce::KeyPress& key)
     }
     if (keyCode == juce::KeyPress::returnKey)
     {
-        if (slots[static_cast<size_t> (selectedInstrument)].hasData && onEditSampleRequested)
+        auto& slot = slots[static_cast<size_t> (selectedInstrument)];
+        if (slot.isPlugin && onOpenPluginEditorRequested)
+            onOpenPluginEditorRequested (selectedInstrument);
+        else if (slot.hasData && onEditSampleRequested)
             onEditSampleRequested (selectedInstrument);
         else if (onLoadSampleRequested)
             onLoadSampleRequested (selectedInstrument);
@@ -196,11 +251,22 @@ void InstrumentPanel::mouseWheelMove (const juce::MouseEvent&, const juce::Mouse
 
 void InstrumentPanel::showContextMenu (int instrument, juce::Point<int> screenPos)
 {
+    auto& slot = slots[static_cast<size_t> (instrument)];
+
     juce::PopupMenu menu;
     menu.addItem (1, "Load Sample...");
 
-    if (slots[static_cast<size_t> (instrument)].hasData)
+    if (slot.hasData && ! slot.isPlugin)
         menu.addItem (2, "Clear Sample");
+
+    menu.addSeparator();
+    menu.addItem (3, "Set Plugin Instrument...");
+
+    if (slot.isPlugin)
+    {
+        menu.addItem (4, "Open Plugin Editor");
+        menu.addItem (5, "Clear Plugin Instrument");
+    }
 
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }),
                         [this, instrument] (int result)
@@ -209,5 +275,11 @@ void InstrumentPanel::showContextMenu (int instrument, juce::Point<int> screenPo
                                 onLoadSampleRequested (instrument);
                             else if (result == 2 && onClearSampleRequested)
                                 onClearSampleRequested (instrument);
+                            else if (result == 3 && onSetPluginInstrumentRequested)
+                                onSetPluginInstrumentRequested (instrument);
+                            else if (result == 4 && onOpenPluginEditorRequested)
+                                onOpenPluginEditorRequested (instrument);
+                            else if (result == 5 && onClearPluginInstrumentRequested)
+                                onClearPluginInstrumentRequested (instrument);
                         });
 }

@@ -1,7 +1,24 @@
 #pragma once
 
 #include <array>
+#include <vector>
+#include <JuceHeader.h>
 #include "PatternData.h"
+
+// Maximum number of insert plugin slots per track
+static constexpr int kMaxInsertSlots = 8;
+
+// Represents a single insert plugin slot on a track
+struct InsertSlotState
+{
+    juce::String pluginName;                // Display name of the plugin
+    juce::String pluginIdentifier;          // Unique identifier for loading (PluginDescription::createIdentifierString)
+    juce::String pluginFormatName;          // e.g. "VST3", "AudioUnit"
+    juce::ValueTree pluginState;            // Saved plugin state (ValueTree snapshot)
+    bool bypassed = false;
+
+    bool isEmpty() const { return pluginIdentifier.isEmpty(); }
+};
 
 struct TrackMixState
 {
@@ -42,10 +59,16 @@ struct MixerState
 {
     std::array<TrackMixState, kNumTracks> tracks {};
 
+    // Per-track insert plugin slots (between channel strip and track output)
+    std::array<std::vector<InsertSlotState>, kNumTracks> insertSlots {};
+
     bool isDefault() const
     {
         for (auto& t : tracks)
             if (! t.isDefault())
+                return false;
+        for (auto& slots : insertSlots)
+            if (! slots.empty())
                 return false;
         return true;
     }
@@ -54,5 +77,7 @@ struct MixerState
     {
         for (auto& t : tracks)
             t = TrackMixState {};
+        for (auto& slots : insertSlots)
+            slots.clear();
     }
 };

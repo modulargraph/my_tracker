@@ -18,6 +18,8 @@
 #include "MixerComponent.h"
 #include "MixerState.h"
 #include "SendEffectsComponent.h"
+#include "AudioPluginSettingsComponent.h"
+#include "PluginAutomationComponent.h"
 
 class MainComponent : public juce::Component,
                       public juce::KeyListener,
@@ -70,7 +72,8 @@ public:
         cmdToggleArrangement = 0x1051,
         cmdToggleSongMode    = 0x1052,
         cmdToggleInstrumentPanel = 0x1053,
-        cmdToggleMetronome       = 0x1054
+        cmdToggleMetronome       = 0x1054,
+        cmdAudioPluginSettings   = 0x1060
     };
 
     // Access for serialization
@@ -97,6 +100,8 @@ private:
     std::unique_ptr<MixerComponent> mixerComponent;
     MixerState mixerState;
     std::unique_ptr<SendEffectsComponent> sendEffectsComponent;
+    std::unique_ptr<PluginAutomationComponent> automationPanel;
+    bool automationPanelVisible = false;
     bool arrangementVisible = false;
     bool instrumentPanelVisible = true;
     bool songMode = false;
@@ -118,6 +123,12 @@ private:
     juce::Label bpmLabel;
     juce::Label previewVolumeLabel;
     juce::Slider previewVolumeSlider;
+
+    // Temporary status message system (Phase 4)
+    juce::String temporaryStatusMessage;
+    bool temporaryStatusIsError = false;
+    juce::uint32 temporaryStatusExpiry = 0; // millisecond timestamp when message expires
+    void setTemporaryStatus (const juce::String& message, bool isError = false, int timeoutMs = 3000);
 
     void timerCallback() override;
     void updateStatusBar();
@@ -158,6 +169,9 @@ private:
     void updateTrackSampleMarkers();
     void cycleTab (int direction);
     void switchToTab (Tab tab);
+    void showAudioPluginSettings();
+    void refreshAutomationPanel();
+    void populateAutomationPlugins();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

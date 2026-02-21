@@ -59,6 +59,14 @@ juce::Rectangle<int> MixerComponent::getStripBounds (int visualTrack) const
     return { x, 0, kStripWidth, getHeight() };
 }
 
+int MixerComponent::getInsertsSectionHeight (int physTrack) const
+{
+    auto& slots = mixerState.insertSlots[static_cast<size_t> (physTrack)];
+    int numSlots = static_cast<int> (slots.size());
+    // Always show the + button, plus one row per existing insert
+    return numSlots * kInsertRowHeight + kInsertAddButtonHeight;
+}
+
 //==============================================================================
 // Main paint
 //==============================================================================
@@ -141,6 +149,20 @@ void MixerComponent::paintStrip (juce::Graphics& g, int visualTrack, juce::Recta
     auto compArea = r.removeFromTop (kCompSectionHeight);
     paintCompSection (g, state, compArea, isSelected,
                       (isSelected && currentSection == Section::Comp) ? currentParam : -1);
+
+    // Inserts section (between Comp and Send)
+    int insertHeight = getInsertsSectionHeight (physTrack);
+    if (insertHeight > 0)
+    {
+        auto insertLabelArea = r.removeFromTop (kSectionLabelHeight);
+        g.setFont (lookAndFeel.getMonoFont (12.0f));
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
+        g.drawText ("INSERTS", insertLabelArea, juce::Justification::centred);
+
+        auto insertsArea = r.removeFromTop (insertHeight);
+        paintInsertsSection (g, physTrack, insertsArea, isSelected,
+                             (isSelected && currentSection == Section::Inserts) ? currentParam : -1);
+    }
 
     // Sends section
     auto sendsLabelArea = r.removeFromTop (kSectionLabelHeight);
@@ -300,6 +322,72 @@ void MixerComponent::paintCompSection (juce::Graphics& g, const TrackMixState& s
 
         paintKnob (g, area, params[i].value, params[i].minV, params[i].maxV, colour, valueStr);
     }
+}
+
+//==============================================================================
+// Inserts Section: rows for insert plugins + add button
+//==============================================================================
+
+void MixerComponent::paintInsertsSection (juce::Graphics& g, int physTrack,
+                                           juce::Rectangle<int> bounds, bool isSelected, int selectedParam)
+{
+    auto inner = bounds.reduced (2, 1);
+    auto selCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto textCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+    auto bgCol = lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId).brighter (0.05f);
+
+    auto& slots = mixerState.insertSlots[static_cast<size_t> (physTrack)];
+    int numSlots = static_cast<int> (slots.size());
+
+    // Draw each insert row
+    for (int i = 0; i < numSlots; ++i)
+    {
+        auto& slot = slots[static_cast<size_t> (i)];
+        auto rowArea = juce::Rectangle<int> (inner.getX(), inner.getY() + i * kInsertRowHeight,
+                                              inner.getWidth(), kInsertRowHeight);
+        bool isSel = isSelected && (selectedParam == i);
+
+        // Row background
+        g.setColour (isSel ? bgCol.brighter (0.1f) : bgCol);
+        g.fillRect (rowArea);
+
+        // Bypass indicator (small dot)
+        auto bypassArea = rowArea.removeFromLeft (14);
+        g.setColour (slot.bypassed ? textCol.withAlpha (0.2f) : juce::Colour (0xff33aa55));
+        g.fillEllipse (bypassArea.getCentreX() - 3.0f, bypassArea.getCentreY() - 3.0f, 6.0f, 6.0f);
+
+        // Remove button (X) on the right
+        auto removeArea = rowArea.removeFromRight (16);
+        g.setFont (lookAndFeel.getMonoFont (10.0f));
+        g.setColour (textCol.withAlpha (0.5f));
+        g.drawText ("x", removeArea, juce::Justification::centred);
+
+        // Plugin name (truncated)
+        g.setFont (lookAndFeel.getMonoFont (9.0f));
+        g.setColour (isSel ? selCol : textCol.withAlpha (slot.bypassed ? 0.3f : 0.7f));
+        auto nameText = slot.pluginName;
+        if (nameText.length() > 10)
+            nameText = nameText.substring (0, 9) + "~";
+        g.drawText (nameText, rowArea.reduced (1, 0), juce::Justification::centredLeft);
+
+        // Bottom border
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+        g.drawHorizontalLine (inner.getY() + (i + 1) * kInsertRowHeight - 1,
+                              static_cast<float> (inner.getX()),
+                              static_cast<float> (inner.getRight()));
+    }
+
+    // "+" add button at bottom
+    int addY = inner.getY() + numSlots * kInsertRowHeight;
+    auto addArea = juce::Rectangle<int> (inner.getX(), addY, inner.getWidth(), kInsertAddButtonHeight);
+
+    bool canAdd = numSlots < kMaxInsertSlots;
+    g.setColour (canAdd ? selCol.withAlpha (0.3f) : bgCol);
+    g.fillRect (addArea);
+
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setColour (canAdd ? selCol : textCol.withAlpha (0.2f));
+    g.drawText ("+", addArea, juce::Justification::centred);
 }
 
 //==============================================================================
@@ -700,6 +788,62 @@ MixerComponent::HitResult MixerComponent::hitTestStrip (juce::Point<int> pos) co
         return result;
     }
 
+    // Inserts label + section (dynamic height)
+    {
+        int physTrack = trackLayout.visualToPhysical (vi);
+        int insertHeight = getInsertsSectionHeight (physTrack);
+        if (insertHeight > 0)
+        {
+            y += kSectionLabelHeight; // "INSERTS" label
+            int insertsStart = y;
+            y += insertHeight;
+            if (relY < y)
+            {
+                result.section = Section::Inserts;
+                int relInsertY = relY - insertsStart;
+                auto& slots = mixerState.insertSlots[static_cast<size_t> (physTrack)];
+                int numSlots = static_cast<int> (slots.size());
+
+                // Check if hitting an insert row
+                int slotIdx = relInsertY / kInsertRowHeight;
+                if (slotIdx < numSlots)
+                {
+                    result.hitInsertSlot = slotIdx;
+                    result.param = slotIdx;
+
+                    // Check sub-areas within the row
+                    int relX = pos.x - bounds.getX();
+                    int innerLeft = bounds.getX() + 2;
+                    int innerRight = bounds.getRight() - 2;
+                    juce::ignoreUnused (innerLeft);
+
+                    if (relX < 16)
+                    {
+                        // Bypass dot area
+                        result.hitInsertBypass = true;
+                    }
+                    else if (relX > innerRight - bounds.getX() - 18)
+                    {
+                        // Remove (x) area
+                        result.hitInsertRemove = true;
+                    }
+                    else
+                    {
+                        // Name area -> open editor
+                        result.hitInsertOpen = true;
+                    }
+                }
+                else
+                {
+                    // + button
+                    result.hitInsertAdd = true;
+                    result.param = -1;
+                }
+                return result;
+            }
+        }
+    }
+
     // Sends label + section
     y += kSectionLabelHeight;
     int sendsStart = y;
@@ -770,6 +914,8 @@ double MixerComponent::getParamValue (int physTrack, Section section, int param)
                 case 3: return state.compRelease;
                 default: return 0.0;
             }
+        case Section::Inserts:
+            return 0.0;  // Inserts don't have traditional params
         case Section::Sends:
             switch (param)
             {
@@ -811,6 +957,8 @@ void MixerComponent::setParamValue (int physTrack, Section section, int param, d
                 default: break;
             }
             break;
+        case Section::Inserts:
+            break;  // Inserts don't have traditional params
         case Section::Sends:
             switch (param)
             {
@@ -845,6 +993,7 @@ double MixerComponent::getParamMin (Section section, int param) const
                 case 3: return 10.0;
                 default: return 0.0;
             }
+        case Section::Inserts: return 0.0;
         case Section::Sends:   return -100.0;
         case Section::Pan:     return -50.0;
         case Section::Volume:  return -100.0;
@@ -866,6 +1015,7 @@ double MixerComponent::getParamMax (Section section, int param) const
                 case 3: return 1000.0;
                 default: return 1.0;
             }
+        case Section::Inserts: return 1.0;
         case Section::Sends:   return 0.0;
         case Section::Pan:     return 50.0;
         case Section::Volume:  return 12.0;
@@ -887,6 +1037,7 @@ double MixerComponent::getParamStep (Section section, int param) const
                 case 3: return 10.0;
                 default: return 0.1;
             }
+        case Section::Inserts: return 1.0;
         case Section::Sends:   return 2.0;
         case Section::Pan:     return 1.0;
         case Section::Volume:  return 0.5;
@@ -900,6 +1051,12 @@ int MixerComponent::getParamCountForSection (Section section) const
     {
         case Section::EQ:      return 4;  // Low, Mid, High, MidFreq
         case Section::Comp:    return 4;  // Threshold, Ratio, Attack, Release
+        case Section::Inserts:
+        {
+            int physTrack = trackLayout.visualToPhysical (selectedTrack);
+            auto& slots = mixerState.insertSlots[static_cast<size_t> (physTrack)];
+            return juce::jmax (1, static_cast<int> (slots.size()));
+        }
         case Section::Sends:   return 2;  // Reverb, Delay
         case Section::Pan:     return 1;
         case Section::Volume:  return 1;
@@ -1027,11 +1184,66 @@ void MixerComponent::mouseDown (const juce::MouseEvent& event)
         return;
     }
 
+    // Handle insert-specific clicks
+    if (hit.section == Section::Inserts)
+    {
+        int physTrack = trackLayout.visualToPhysical (hit.visualTrack);
+
+        if (hit.hitInsertAdd)
+        {
+            if (onAddInsertClicked)
+                onAddInsertClicked (physTrack);
+            repaint();
+            return;
+        }
+        if (hit.hitInsertRemove && hit.hitInsertSlot >= 0)
+        {
+            if (onRemoveInsertClicked)
+                onRemoveInsertClicked (physTrack, hit.hitInsertSlot);
+            repaint();
+            return;
+        }
+        if (hit.hitInsertBypass && hit.hitInsertSlot >= 0)
+        {
+            auto& slots = mixerState.insertSlots[static_cast<size_t> (physTrack)];
+            if (hit.hitInsertSlot < static_cast<int> (slots.size()))
+            {
+                bool newState = ! slots[static_cast<size_t> (hit.hitInsertSlot)].bypassed;
+                if (onInsertBypassToggled)
+                    onInsertBypassToggled (physTrack, hit.hitInsertSlot, newState);
+            }
+            repaint();
+            return;
+        }
+        if (hit.hitInsertOpen && hit.hitInsertSlot >= 0)
+        {
+            if (onOpenInsertEditor)
+                onOpenInsertEditor (physTrack, hit.hitInsertSlot);
+            repaint();
+            return;
+        }
+
+        // Fallthrough: select insert section
+        selectedTrack = hit.visualTrack;
+        currentSection = Section::Inserts;
+        if (hit.param >= 0)
+            currentParam = hit.param;
+        repaint();
+        return;
+    }
+
     // Select track and param
     selectedTrack = hit.visualTrack;
     currentSection = hit.section;
     if (hit.param >= 0)
         currentParam = hit.param;
+
+    // Don't start drag for Inserts section
+    if (hit.section == Section::Inserts)
+    {
+        repaint();
+        return;
+    }
 
     // Start drag
     dragging = true;
@@ -1125,7 +1337,8 @@ void MixerComponent::nextSection()
     switch (currentSection)
     {
         case Section::EQ:      currentSection = Section::Comp;    break;
-        case Section::Comp:    currentSection = Section::Sends;   break;
+        case Section::Comp:    currentSection = Section::Inserts; break;
+        case Section::Inserts: currentSection = Section::Sends;   break;
         case Section::Sends:   currentSection = Section::Pan;     break;
         case Section::Pan:     currentSection = Section::Volume;  break;
         case Section::Volume:  currentSection = Section::EQ;      break;
@@ -1139,7 +1352,8 @@ void MixerComponent::prevSection()
     {
         case Section::EQ:      currentSection = Section::Volume;  break;
         case Section::Comp:    currentSection = Section::EQ;      break;
-        case Section::Sends:   currentSection = Section::Comp;    break;
+        case Section::Inserts: currentSection = Section::Comp;    break;
+        case Section::Sends:   currentSection = Section::Inserts; break;
         case Section::Pan:     currentSection = Section::Sends;   break;
         case Section::Volume:  currentSection = Section::Pan;     break;
     }

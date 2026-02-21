@@ -300,6 +300,52 @@ MainComponent::MainComponent()
         if (activeTab == Tab::InstrumentEdit || activeTab == Tab::InstrumentType)
             updateSampleEditorForCurrentInstrument();
     };
+    instrumentPanel->onSetPluginInstrumentRequested = [this] (int inst)
+    {
+        // Show plugin picker from scanned instruments list
+        auto instruments = trackerEngine.getPluginCatalog().getInstruments();
+        if (instruments.isEmpty())
+        {
+            setTemporaryStatus ("No plugin instruments found. Scan for plugins first.", true, 3000);
+            return;
+        }
+
+        juce::PopupMenu menu;
+        for (int i = 0; i < instruments.size(); ++i)
+        {
+            auto& desc = instruments.getReference (i);
+            menu.addItem (i + 1, desc.name + " (" + desc.pluginFormatName + ")");
+        }
+
+        int cursorTrack = trackerGrid->getCursorTrack();
+        if (cursorTrack >= kNumTracks)
+            cursorTrack = 0;
+
+        menu.showMenuAsync (juce::PopupMenu::Options(),
+                            [this, inst, cursorTrack, instruments] (int result)
+                            {
+                                if (result > 0 && result <= instruments.size())
+                                {
+                                    auto& desc = instruments.getReference (result - 1);
+                                    trackerEngine.setPluginInstrument (inst, desc, cursorTrack);
+                                    updateInstrumentPanel();
+                                    markDirty();
+                                    setTemporaryStatus ("Plugin instrument set: " + desc.name
+                                                        + " on track " + juce::String (cursorTrack + 1),
+                                                        false, 3000);
+                                }
+                            });
+    };
+    instrumentPanel->onClearPluginInstrumentRequested = [this] (int inst)
+    {
+        trackerEngine.clearPluginInstrument (inst);
+        updateInstrumentPanel();
+        markDirty();
+    };
+    instrumentPanel->onOpenPluginEditorRequested = [this] (int inst)
+    {
+        trackerEngine.openPluginInstrumentEditor (inst);
+    };
 
     // Create sample editor (always present, shown in edit/type tabs)
     sampleEditor = std::make_unique<SampleEditorComponent> (trackerLookAndFeel);
@@ -354,6 +400,10 @@ MainComponent::MainComponent()
     {
         return trackerEngine.getPreviewPlaybackPosition();
     };
+    sampleEditor->onOpenPluginEditorRequested = [this] (int inst)
+    {
+        trackerEngine.openPluginInstrumentEditor (inst);
+    };
 
     // Create mixer component (hidden by default)
     mixerComponent = std::make_unique<MixerComponent> (trackerLookAndFeel, mixerState, trackLayout);
@@ -383,6 +433,61 @@ MainComponent::MainComponent()
     {
         trackerEngine.refreshMixerPlugins();
         markDirty();
+    };
+
+    // Insert plugin callbacks
+    mixerComponent->onAddInsertClicked = [this] (int track)
+    {
+        auto effects = trackerEngine.getPluginCatalog().getEffects();
+        if (effects.isEmpty())
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::InfoIcon,
+                "No Plugins", "No effect plugins found. Scan for plugins in Audio Plugin Settings first.");
+            return;
+        }
+
+        juce::PopupMenu menu;
+        for (int i = 0; i < effects.size(); ++i)
+            menu.addItem (i + 1, effects[i].name + " (" + effects[i].pluginFormatName + ")");
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (mixerComponent.get()),
+            [this, track, effects] (int result)
+            {
+                if (result > 0)
+                {
+                    auto desc = effects[result - 1];
+                    if (trackerEngine.addInsertPlugin (track, desc))
+                    {
+                        mixerComponent->repaint();
+                        markDirty();
+                    }
+                }
+            });
+    };
+
+    mixerComponent->onRemoveInsertClicked = [this] (int track, int slotIndex)
+    {
+        trackerEngine.removeInsertPlugin (track, slotIndex);
+        mixerComponent->repaint();
+        markDirty();
+    };
+
+    mixerComponent->onInsertBypassToggled = [this] (int track, int slotIndex, bool bypassed)
+    {
+        trackerEngine.setInsertBypassed (track, slotIndex, bypassed);
+        mixerComponent->repaint();
+        markDirty();
+    };
+
+    mixerComponent->onOpenInsertEditor = [this] (int track, int slotIndex)
+    {
+        trackerEngine.openPluginEditor (track, slotIndex);
+    };
+
+    // Callback from engine when insert state changes (e.g. after addInsertPlugin modifies the state model)
+    trackerEngine.onInsertStateChanged = [this]
+    {
+        mixerComponent->repaint();
     };
 
     // Wire peak level metering from engine to mixer UI
@@ -466,11 +571,45 @@ MainComponent::MainComponent()
         markDirty();
     };
 
+    // Create automation panel (bottom panel in tracker tab)
+    automationPanel = std::make_unique<PluginAutomationComponent> (trackerLookAndFeel);
+    addChildComponent (*automationPanel);
+    automationPanel->onAutomationChanged = [this]
+    {
+        if (trackerEngine.isPlaying())
+        {
+            if (songMode)
+                syncArrangementToEdit();
+            else
+                trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
+        }
+        markDirty();
+    };
+    automationPanel->onPluginSelected = [] (const juce::String& /*pluginId*/)
+    {
+        // Selection should not trigger plugin-list repopulation.
+    };
+    automationPanel->onParameterSelected = [] (const juce::String& pluginId, int paramIndex)
+    {
+        // Update baseline from current parameter value
+        juce::ignoreUnused (pluginId, paramIndex);
+        // Baseline is set when parameters are populated
+    };
+
     // Create the grid
     trackerGrid = std::make_unique<TrackerGrid> (patternData, trackerLookAndFeel, trackLayout);
     trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     trackerGrid->setUndoManager (&undoManager);
     addAndMakeVisible (*trackerGrid);
+
+    // Note entry validation callback (ownership/track mode check)
+    trackerGrid->onValidateNoteEntry = [this] (int instrumentIndex, int trackIndex) -> juce::String
+    {
+        auto error = trackerEngine.validateNoteEntry (instrumentIndex, trackIndex);
+        if (error.isNotEmpty())
+            setTemporaryStatus (error, true, 3000);
+        return error;
+    };
 
     // Note preview callback
     trackerGrid->onNoteEntered = [this] (int note, int instrument)
@@ -486,6 +625,8 @@ MainComponent::MainComponent()
         updateStatusBar();
         updateToolbar();
         instrumentPanel->setSelectedInstrument (trackerGrid->getCurrentInstrument());
+        if (automationPanelVisible)
+            refreshAutomationPanel();
     };
 
     // Pattern data changed — re-sync during playback
@@ -573,6 +714,12 @@ MainComponent::MainComponent()
         updateToolbar();
     };
 
+    // Status message callback (for ownership violations etc.)
+    trackerEngine.onStatusMessage = [this] (const juce::String& message, bool isError, int timeoutMs)
+    {
+        setTemporaryStatus (message, isError, timeoutMs);
+    };
+
     // Status bar
     addAndMakeVisible (statusLabel);
     statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
@@ -614,6 +761,7 @@ MainComponent::MainComponent()
     sendEffectsComponent->addKeyListener (this);
     sendEffectsComponent->addKeyListener (commandManager.getKeyMappings());
     instrumentPanel->addKeyListener (commandManager.getKeyMappings());
+    automationPanel->addKeyListener (commandManager.getKeyMappings());
     arrangementComponent->addKeyListener (commandManager.getKeyMappings());
 
     setSize (1280, 720);
@@ -627,6 +775,7 @@ MainComponent::~MainComponent()
     juce::MenuBarModel::setMacMainMenu (nullptr);
    #endif
     arrangementComponent->removeKeyListener (commandManager.getKeyMappings());
+    automationPanel->removeKeyListener (commandManager.getKeyMappings());
     instrumentPanel->removeKeyListener (commandManager.getKeyMappings());
     sendEffectsComponent->removeKeyListener (commandManager.getKeyMappings());
     mixerComponent->removeKeyListener (this);
@@ -677,6 +826,7 @@ void MainComponent::resized()
     trackerGrid->setVisible (false);
     sampleEditor->setVisible (false);
     fileBrowser->setVisible (false);
+    automationPanel->setVisible (false);
     mixerComponent->setVisible (false);
     sendEffectsComponent->setVisible (false);
 
@@ -696,6 +846,13 @@ void MainComponent::resized()
             {
                 instrumentPanel->setBounds (r.removeFromRight (InstrumentPanel::kPanelWidth));
                 instrumentPanel->setVisible (true);
+            }
+
+            // Automation panel (bottom, above status bar)
+            if (automationPanelVisible)
+            {
+                automationPanel->setBounds (r.removeFromBottom (PluginAutomationComponent::kPanelHeight));
+                automationPanel->setVisible (true);
             }
 
             // Grid fills the rest
@@ -970,6 +1127,16 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         return true;
     }
 
+    // Cmd+Shift+B: toggle automation panel
+    if (cmd && shift && textChar == 'B')
+    {
+        automationPanelVisible = ! automationPanelVisible;
+        if (automationPanelVisible)
+            refreshAutomationPanel();
+        resized();
+        return true;
+    }
+
     // F-key alternatives (still work if user holds Fn)
     if (keyCode == juce::KeyPress::F7Key)  { toggleArrangementPanel(); return true; }
     if (keyCode == juce::KeyPress::F8Key)  { toggleSongMode(); return true; }
@@ -1030,6 +1197,7 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
     commands.add (cmdToggleSongMode);
     commands.add (cmdToggleInstrumentPanel);
     commands.add (cmdToggleMetronome);
+    commands.add (cmdAudioPluginSettings);
 }
 
 void MainComponent::getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result)
@@ -1115,6 +1283,10 @@ void MainComponent::getCommandInfo (juce::CommandID commandID, juce::Application
         case cmdToggleMetronome:
             result.setInfo ("Toggle Metronome", "Toggle the metronome on/off", "View", 0);
             result.addDefaultKeypress ('K', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+            break;
+        case cmdAudioPluginSettings:
+            result.setInfo ("Audio & Plugin Settings...", "Configure audio output and plugin scan paths", "File", 0);
+            result.addDefaultKeypress (',', juce::ModifierKeys::commandModifier);
             break;
         default: break;
     }
@@ -1216,6 +1388,9 @@ bool MainComponent::perform (const InvocationInfo& info)
             toolbar->setMetronomeEnabled (enabled);
             return true;
         }
+        case cmdAudioPluginSettings:
+            showAudioPluginSettings();
+            return true;
         default: return false;
     }
 }
@@ -1241,6 +1416,8 @@ juce::PopupMenu MainComponent::getMenuForIndex (int menuIndex, const juce::Strin
         menu.addCommandItem (&commandManager, cmdSaveAs);
         menu.addSeparator();
         menu.addCommandItem (&commandManager, loadSample);
+        menu.addSeparator();
+        menu.addCommandItem (&commandManager, cmdAudioPluginSettings);
     }
     else if (menuIndex == 1)
     {
@@ -1276,6 +1453,7 @@ void MainComponent::timerCallback()
     if (trackerEngine.isPlaying())
     {
         int playRow = -1;
+        int playPatternIndex = -1;
 
         if (songMode && arrangement.getNumEntries() > 0)
         {
@@ -1294,12 +1472,20 @@ void MainComponent::timerCallback()
                     arrangementComponent->setPlayingEntry (info.entryIndex);
 
                 playRow = info.rowInPattern;
+                playPatternIndex = info.patternIndex;
             }
         }
         else
         {
             // Pattern mode: simple row from beat position
             playRow = trackerEngine.getPlaybackRow (patternData.getCurrentPattern().numRows);
+            playPatternIndex = patternData.getCurrentPatternIndex();
+        }
+
+        if (playPatternIndex >= 0 && playPatternIndex < patternData.getNumPatterns() && playRow >= 0)
+        {
+            const auto& automationData = patternData.getPattern (playPatternIndex).automationData;
+            trackerEngine.applyAutomationForPlaybackRow (automationData, playRow);
         }
 
         trackerGrid->setPlaybackRow (playRow);
@@ -1374,6 +1560,27 @@ MainComponent::ArrangementPlaybackInfo MainComponent::getArrangementPlaybackPosi
 
 void MainComponent::updateStatusBar()
 {
+    // Check if a temporary status message is active
+    if (temporaryStatusMessage.isNotEmpty())
+    {
+        auto now = juce::Time::getMillisecondCounter();
+        if (now < temporaryStatusExpiry)
+        {
+            statusLabel.setText (temporaryStatusMessage, juce::dontSendNotification);
+            statusLabel.setColour (juce::Label::textColourId,
+                                   temporaryStatusIsError ? juce::Colour (0xffff4444)
+                                                          : juce::Colour (0xffffcc44));
+            octaveLabel.setText ("Oct:" + juce::String (trackerGrid->getOctave()),
+                                 juce::dontSendNotification);
+            bpmLabel.setText ("BPM:" + juce::String (trackerEngine.getBpm(), 1),
+                              juce::dontSendNotification);
+            return;
+        }
+        // Expired -- clear it
+        temporaryStatusMessage.clear();
+        statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
+    }
+
     auto playState = trackerEngine.isPlaying() ? "PLAYING" : "STOPPED";
     auto row = juce::String::formatted ("%02X", trackerGrid->getCursorRow());
     auto track = trackerGrid->isCursorInMasterLane()
@@ -1393,6 +1600,14 @@ void MainComponent::updateStatusBar()
 
     bpmLabel.setText ("BPM:" + juce::String (trackerEngine.getBpm(), 1),
                       juce::dontSendNotification);
+}
+
+void MainComponent::setTemporaryStatus (const juce::String& message, bool isError, int timeoutMs)
+{
+    temporaryStatusMessage = message;
+    temporaryStatusIsError = isError;
+    temporaryStatusExpiry = juce::Time::getMillisecondCounter() + static_cast<juce::uint32> (timeoutMs);
+    updateStatusBar();
 }
 
 void MainComponent::updateToolbar()
@@ -1473,6 +1688,8 @@ void MainComponent::switchToPattern (int index)
     updateTrackSampleMarkers();
     updateStatusBar();
     updateToolbar();
+    if (automationPanelVisible)
+        refreshAutomationPanel();
 }
 
 void MainComponent::showPatternLengthEditor()
@@ -1578,6 +1795,12 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
         if (minTrack != maxTrack)
             menu.addItem (12, "Group Selected Tracks...");
     }
+
+    // Note lanes
+    menu.addSeparator();
+    int noteLanes = trackLayout.getTrackNoteLaneCount (track);
+    menu.addItem (22, "Add Note Lane (" + juce::String (noteLanes) + " -> " + juce::String (noteLanes + 1) + ")", noteLanes < 8);
+    menu.addItem (23, "Remove Note Lane (" + juce::String (noteLanes) + " -> " + juce::String (noteLanes - 1) + ")", noteLanes > 1);
 
     // FX lanes
     menu.addSeparator();
@@ -1692,6 +1915,20 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                                     trackLayout.removeFxLane (track);
                                 });
                             }
+                            else if (result == 22)
+                            {
+                                performUndoableTrackLayoutChange ([this, track]
+                                {
+                                    trackLayout.addNoteLane (track);
+                                });
+                            }
+                            else if (result == 23)
+                            {
+                                performUndoableTrackLayoutChange ([this, track]
+                                {
+                                    trackLayout.removeNoteLane (track);
+                                });
+                            }
                         });
 }
 
@@ -1788,7 +2025,9 @@ void MainComponent::newProject()
     trackerEngine.setRowsPerBeat (4);
     trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     trackerEngine.invalidateTrackInstruments();
+    trackerEngine.setInstrumentSlotInfos ({});
     mixerState.reset();
+    trackerEngine.refreshMixerPlugins();
     undoManager.clearUndoHistory();
     currentProjectFile = juce::File();
     isDirty = false;
@@ -1798,6 +2037,8 @@ void MainComponent::newProject()
     updateInstrumentPanel();
     fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
     trackerGrid->repaint();
+    if (automationPanelVisible)
+        refreshAutomationPanel();
 }
 
 void MainComponent::openProject()
@@ -1827,7 +2068,8 @@ void MainComponent::openProject()
                               ReverbParams loadedReverb;
                               int loadedFollowMode = 0;
                               juce::String browserDir;
-                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams, arrangement, trackLayout, mixerState, loadedDelay, loadedReverb, &loadedFollowMode, &browserDir);
+                              std::map<int, InstrumentSlotInfo> loadedPluginSlots;
+                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams, arrangement, trackLayout, mixerState, loadedDelay, loadedReverb, &loadedFollowMode, &browserDir, &loadedPluginSlots);
                               if (error.isNotEmpty())
                               {
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
@@ -1848,6 +2090,9 @@ void MainComponent::openProject()
                               // Restore instrument params
                               for (auto& [index, params] : instParams)
                                   trackerEngine.getSampler().setParams (index, params);
+
+                              // Restore plugin instrument slots
+                              trackerEngine.setInstrumentSlotInfos (loadedPluginSlots);
 
                               // Restore send effects params
                               trackerEngine.setDelayParams (loadedDelay);
@@ -1886,6 +2131,8 @@ void MainComponent::openProject()
                               updateToolbar();
                               updateInstrumentPanel();
                               fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
+                              if (automationPanelVisible)
+                                  refreshAutomationPanel();
 
                               // Restore browser directory from project
                               if (browserDir.isNotEmpty())
@@ -1903,6 +2150,8 @@ void MainComponent::saveProject()
 {
     if (currentProjectFile.existsAsFile())
     {
+        trackerEngine.snapshotInsertPluginStates();
+        auto& slotInfos = trackerEngine.getAllInstrumentSlotInfos();
         auto error = ProjectSerializer::saveToFile (currentProjectFile, patternData,
                                                      trackerEngine.getBpm(),
                                                      trackerEngine.getRowsPerBeat(),
@@ -1914,7 +2163,8 @@ void MainComponent::saveProject()
                                                      trackerEngine.getDelayParams(),
                                                      trackerEngine.getReverbParams(),
                                                      static_cast<int> (followMode),
-                                                     fileBrowser->getCurrentDirectory().getFullPathName());
+                                                     fileBrowser->getCurrentDirectory().getFullPathName(),
+                                                     &slotInfos);
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Save Error", error);
         else
@@ -1944,6 +2194,8 @@ void MainComponent::saveProjectAs()
                               if (file == juce::File()) return;
 
                               auto f = file.withFileExtension ("tkadj");
+                              trackerEngine.snapshotInsertPluginStates();
+                              auto& slotInfos = trackerEngine.getAllInstrumentSlotInfos();
                               auto error = ProjectSerializer::saveToFile (f, patternData,
                                                                           trackerEngine.getBpm(),
                                                                           trackerEngine.getRowsPerBeat(),
@@ -1955,7 +2207,8 @@ void MainComponent::saveProjectAs()
                                                                           trackerEngine.getDelayParams(),
                                                                           trackerEngine.getReverbParams(),
                                                                           static_cast<int> (followMode),
-                                                                          fileBrowser->getCurrentDirectory().getFullPathName());
+                                                                          fileBrowser->getCurrentDirectory().getFullPathName(),
+                                                                          &slotInfos);
                               if (error.isNotEmpty())
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                                           "Save Error", error);
@@ -2402,6 +2655,7 @@ void MainComponent::updateInstrumentPanel()
 {
     auto loadedSamples = trackerEngine.getSampler().getLoadedSamples();
     instrumentPanel->updateSampleInfo (loadedSamples);
+    instrumentPanel->updatePluginInfo (trackerEngine.getAllInstrumentSlotInfos());
     instrumentPanel->setSelectedInstrument (trackerGrid->getCurrentInstrument());
 
     updateTrackSampleMarkers();
@@ -2485,6 +2739,15 @@ void MainComponent::clearSampleForInstrument (int instrument)
 void MainComponent::updateSampleEditorForCurrentInstrument()
 {
     int inst = trackerGrid->getCurrentInstrument();
+
+    // Check if this is a plugin instrument
+    if (trackerEngine.isPluginInstrument (inst))
+    {
+        auto& info = trackerEngine.getInstrumentSlotInfo (inst);
+        sampleEditor->setPluginInstrument (inst, info.pluginDescription.name, info.ownerTrack);
+        return;
+    }
+
     auto sampleFile = trackerEngine.getSampler().getSampleFile (inst);
     auto params = trackerEngine.getSampler().getParams (inst);
 
@@ -2567,6 +2830,10 @@ void MainComponent::switchToTab (Tab tab)
         sendEffectsComponent->setReverbParams (trackerEngine.getReverbParams());
     }
 
+    // Refresh automation panel when returning to tracker tab
+    if (tab == Tab::Tracker && automationPanelVisible)
+        refreshAutomationPanel();
+
     // Focus the right component
     switch (tab)
     {
@@ -2609,4 +2876,139 @@ void MainComponent::updateMuteSoloState()
     trackerGrid->repaint();
     if (activeTab == Tab::Mixer)
         mixerComponent->repaint();
+}
+
+void MainComponent::showAudioPluginSettings()
+{
+    auto* content = new AudioPluginSettingsComponent (trackerEngine.getEngine(),
+                                                      trackerEngine.getPluginCatalog(),
+                                                      trackerLookAndFeel);
+
+    // Load persisted scan paths, or use defaults if none saved
+    auto savedPaths = ProjectSerializer::loadGlobalPluginScanPaths();
+    if (savedPaths.isEmpty())
+        savedPaths = PluginCatalogService::getDefaultScanPaths();
+
+    content->setScanPaths (savedPaths);
+
+    // Persist scan paths when they change
+    content->onScanPathsChanged = [] (const juce::StringArray& paths)
+    {
+        ProjectSerializer::saveGlobalPluginScanPaths (paths);
+    };
+
+    content->setSize (AudioPluginSettingsComponent::kPreferredWidth,
+                      AudioPluginSettingsComponent::kPreferredHeight);
+
+    juce::DialogWindow::LaunchOptions opts;
+    opts.content.setOwned (content);
+    opts.dialogTitle = "Audio & Plugin Settings";
+    opts.dialogBackgroundColour = juce::Colour (0xff1e1e2e);
+    opts.escapeKeyTriggersCloseButton = true;
+    opts.useNativeTitleBar = false;
+    opts.resizable = true;
+    opts.launchAsync();
+}
+
+void MainComponent::refreshAutomationPanel()
+{
+    if (automationPanel == nullptr)
+        return;
+
+    auto& pat = patternData.getCurrentPattern();
+    automationPanel->setAutomationData (&pat.automationData);
+    automationPanel->setPatternLength (pat.numRows);
+    automationPanel->setCurrentTrack (trackerGrid->getCursorTrack());
+    populateAutomationPlugins();
+}
+
+void MainComponent::populateAutomationPlugins()
+{
+    if (automationPanel == nullptr)
+        return;
+
+    int cursorTrack = trackerGrid->getCursorTrack();
+    if (cursorTrack >= kNumTracks)
+        cursorTrack = 0;
+
+    std::vector<AutomatablePluginInfo> plugins;
+
+    // 1. Add instrument plugins owned by the current track
+    for (const auto& [instIdx, info] : trackerEngine.getAllInstrumentSlotInfos())
+    {
+        if (info.isPlugin() && info.ownerTrack == cursorTrack)
+        {
+            AutomatablePluginInfo pluginInfo;
+            pluginInfo.pluginId = "inst:" + juce::String (instIdx);
+            pluginInfo.displayName = info.pluginDescription.name + " (Inst " + juce::String (instIdx) + ")";
+            pluginInfo.owningTrack = cursorTrack;
+            pluginInfo.isInstrument = true;
+
+            // Get parameters from the loaded plugin instance
+            if (auto* pluginInstance = trackerEngine.getPluginInstrumentInstance (instIdx))
+            {
+                if (auto* external = dynamic_cast<te::ExternalPlugin*> (pluginInstance))
+                {
+                    auto audioPlugin = external->getAudioPluginInstance();
+                    if (audioPlugin != nullptr)
+                    {
+                        auto& params = audioPlugin->getParameters();
+                        for (int pi = 0; pi < params.size(); ++pi)
+                        {
+                            AutomatablePluginInfo::ParamInfo paramInfo;
+                            paramInfo.index = pi;
+                            paramInfo.name = params[pi]->getName (40);
+                            pluginInfo.parameters.push_back (paramInfo);
+                        }
+                    }
+                }
+            }
+
+            if (! pluginInfo.parameters.empty())
+                plugins.push_back (std::move (pluginInfo));
+        }
+    }
+
+    // 2. Add insert plugins on the current track
+    if (trackerEngine.getTrack (cursorTrack) != nullptr)
+    {
+        auto& insertSlots = mixerState.insertSlots[static_cast<size_t> (cursorTrack)];
+        for (int si = 0; si < static_cast<int> (insertSlots.size()); ++si)
+        {
+            auto& slot = insertSlots[static_cast<size_t> (si)];
+            if (slot.isEmpty())
+                continue;
+
+            AutomatablePluginInfo pluginInfo;
+            pluginInfo.pluginId = "insert:" + juce::String (cursorTrack) + ":" + juce::String (si);
+            pluginInfo.displayName = slot.pluginName + " (Insert " + juce::String (si + 1) + ")";
+            pluginInfo.owningTrack = cursorTrack;
+            pluginInfo.isInstrument = false;
+
+            // Get parameters from the loaded plugin instance
+            if (auto* plugin = trackerEngine.getInsertPlugin (cursorTrack, si))
+            {
+                if (auto* external = dynamic_cast<te::ExternalPlugin*> (plugin))
+                {
+                    auto audioPlugin = external->getAudioPluginInstance();
+                    if (audioPlugin != nullptr)
+                    {
+                        auto& params = audioPlugin->getParameters();
+                        for (int pi = 0; pi < params.size(); ++pi)
+                        {
+                            AutomatablePluginInfo::ParamInfo paramInfo;
+                            paramInfo.index = pi;
+                            paramInfo.name = params[pi]->getName (40);
+                            pluginInfo.parameters.push_back (paramInfo);
+                        }
+                    }
+                }
+            }
+
+            if (! pluginInfo.parameters.empty())
+                plugins.push_back (std::move (pluginInfo));
+        }
+    }
+
+    automationPanel->setAvailablePlugins (plugins);
 }

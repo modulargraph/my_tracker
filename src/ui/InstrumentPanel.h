@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "TrackerLookAndFeel.h"
 #include "SimpleSampler.h"
+#include "InstrumentSlotInfo.h"
 
 class InstrumentPanel : public juce::Component
 {
@@ -21,11 +22,17 @@ public:
     // Call to update the sample info shown
     void updateSampleInfo (const std::map<int, juce::File>& loadedSamples);
 
+    // Call to update plugin instrument info
+    void updatePluginInfo (const std::map<int, InstrumentSlotInfo>& slotInfos);
+
     // Callbacks
     std::function<void (int instrument)> onInstrumentSelected;
     std::function<void (int instrument)> onLoadSampleRequested;
     std::function<void (int instrument)> onEditSampleRequested;
     std::function<void (int instrument)> onClearSampleRequested;
+    std::function<void (int instrument)> onSetPluginInstrumentRequested;
+    std::function<void (int instrument)> onClearPluginInstrumentRequested;
+    std::function<void (int instrument)> onOpenPluginEditorRequested;
 
     static constexpr int kPanelWidth = 180;
 
@@ -38,6 +45,9 @@ private:
     {
         juce::String sampleName;
         bool hasData = false;
+        bool isPlugin = false;
+        juce::String pluginName;
+        int ownerTrack = -1;
     };
     std::array<InstrumentSlot, 256> slots {};
 

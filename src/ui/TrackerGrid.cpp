@@ -10,10 +10,22 @@ bool sameFxSlot (const FxSlot& a, const FxSlot& b)
     return a.fx == b.fx && a.fxParam == b.fxParam && a.fxCommand == b.fxCommand;
 }
 
+bool sameNoteSlot (const NoteSlot& a, const NoteSlot& b)
+{
+    return a.note == b.note && a.instrument == b.instrument && a.volume == b.volume;
+}
+
 bool sameCell (const Cell& a, const Cell& b)
 {
     if (a.note != b.note || a.instrument != b.instrument || a.volume != b.volume)
         return false;
+    if (a.extraNoteLanes.size() != b.extraNoteLanes.size())
+        return false;
+    for (size_t i = 0; i < a.extraNoteLanes.size(); ++i)
+    {
+        if (! sameNoteSlot (a.extraNoteLanes[i], b.extraNoteLanes[i]))
+            return false;
+    }
     if (a.fxSlots.size() != b.fxSlots.size())
         return false;
     for (size_t i = 0; i < a.fxSlots.size(); ++i)
@@ -98,14 +110,15 @@ int TrackerGrid::getTrackXOffset (int visualIndex) const
 int TrackerGrid::getTrackWidth (int visualIndex) const
 {
     if (visualIndex < 0 || visualIndex >= getTotalVisualColumns())
-        return getCellWidth (1);
+        return getCellWidth (1, 1);
     if (isMasterVisualColumn (visualIndex))
     {
         int fxLanes = trackLayout.getMasterFxLaneCount();
         return kCellPadding + fxLanes * kFxWidth + (fxLanes - 1) * kSubColSpace;
     }
     int phys = trackLayout.visualToPhysical (visualIndex);
-    return getCellWidth (trackLayout.getTrackFxLaneCount (phys));
+    return getCellWidth (trackLayout.getTrackFxLaneCount (phys),
+                         trackLayout.getTrackNoteLaneCount (phys));
 }
 
 int TrackerGrid::visualTrackAtPixel (int pixelX) const
@@ -401,8 +414,10 @@ void TrackerGrid::drawCells (juce::Graphics& g)
 }
 
 void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, int width,
-                            bool isCursor, bool isCurrentRow, bool isPlaybackRow, int /*track*/, int fxLaneCount)
+                            bool isCursor, bool isCurrentRow, bool isPlaybackRow, int track, int fxLaneCount)
 {
+    int noteLaneCount = trackLayout.getTrackNoteLaneCount (track);
+
     // Background
     if (isCursor)
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::cursorCellColourId));
@@ -421,43 +436,48 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
 
     int textX = x + kCellPadding;
 
-    // Note sub-column
-    juce::String noteStr = cell.hasNote() ? noteToString (cell.note) : "---";
-    auto noteColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId);
-
-    // Highlight active sub-column on cursor cell
-    if (isCursor && cursorSubColumn == SubColumn::Note)
+    // Note lane sub-columns (repeated per note lane)
+    for (int nl = 0; nl < noteLaneCount; ++nl)
     {
-        g.setColour (juce::Colour (0xff3a5a7a));
-        g.fillRect (textX - 1, y, kNoteWidth + 2, kRowHeight);
-    }
-    g.setColour (noteColour);
-    g.drawText (noteStr, textX, y, kNoteWidth, kRowHeight, juce::Justification::centredLeft);
-    textX += kNoteWidth + kSubColSpace;
+        auto noteSlot = cell.getNoteLane (nl);
 
-    // Instrument sub-column
-    juce::String instStr = cell.instrument >= 0 ? juce::String::formatted ("%02X", cell.instrument) : "..";
-    auto instColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
-    if (isCursor && cursorSubColumn == SubColumn::Instrument)
-    {
-        g.setColour (juce::Colour (0xff3a5a7a));
-        g.fillRect (textX - 1, y, kInstWidth + 2, kRowHeight);
-    }
-    g.setColour (instColour);
-    g.drawText (instStr, textX, y, kInstWidth, kRowHeight, juce::Justification::centredLeft);
-    textX += kInstWidth + kSubColSpace;
+        // Note sub-column
+        juce::String noteStr = noteSlot.hasNote() ? noteToString (noteSlot.note) : "---";
+        auto noteColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId);
 
-    // Volume sub-column
-    juce::String volStr = cell.volume >= 0 ? juce::String::formatted ("%02X", cell.volume) : "..";
-    auto volColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
-    if (isCursor && cursorSubColumn == SubColumn::Volume)
-    {
-        g.setColour (juce::Colour (0xff3a5a7a));
-        g.fillRect (textX - 1, y, kVolWidth + 2, kRowHeight);
+        if (isCursor && cursorSubColumn == SubColumn::Note && cursorNoteLane == nl)
+        {
+            g.setColour (juce::Colour (0xff3a5a7a));
+            g.fillRect (textX - 1, y, kNoteWidth + 2, kRowHeight);
+        }
+        g.setColour (noteColour);
+        g.drawText (noteStr, textX, y, kNoteWidth, kRowHeight, juce::Justification::centredLeft);
+        textX += kNoteWidth + kSubColSpace;
+
+        // Instrument sub-column
+        juce::String instStr = noteSlot.instrument >= 0 ? juce::String::formatted ("%02X", noteSlot.instrument) : "..";
+        auto instColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
+        if (isCursor && cursorSubColumn == SubColumn::Instrument && cursorNoteLane == nl)
+        {
+            g.setColour (juce::Colour (0xff3a5a7a));
+            g.fillRect (textX - 1, y, kInstWidth + 2, kRowHeight);
+        }
+        g.setColour (instColour);
+        g.drawText (instStr, textX, y, kInstWidth, kRowHeight, juce::Justification::centredLeft);
+        textX += kInstWidth + kSubColSpace;
+
+        // Volume sub-column
+        juce::String volStr = noteSlot.volume >= 0 ? juce::String::formatted ("%02X", noteSlot.volume) : "..";
+        auto volColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
+        if (isCursor && cursorSubColumn == SubColumn::Volume && cursorNoteLane == nl)
+        {
+            g.setColour (juce::Colour (0xff3a5a7a));
+            g.fillRect (textX - 1, y, kVolWidth + 2, kRowHeight);
+        }
+        g.setColour (volColour);
+        g.drawText (volStr, textX, y, kVolWidth, kRowHeight, juce::Justification::centredLeft);
+        textX += kVolWidth + kSubColSpace;
     }
-    g.setColour (volColour);
-    g.drawText (volStr, textX, y, kVolWidth, kRowHeight, juce::Justification::centredLeft);
-    textX += kVolWidth + kSubColSpace;
 
     // FX sub-columns (one or more lanes)
     auto fxColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
@@ -685,7 +705,10 @@ void TrackerGrid::showFxCommandPopup()
     int xOff = getTrackXOffset (cursorVisual);
     int popupX = kRowNumberWidth + xOff + kCellPadding;
     if (! isMasterTrack (cursorTrack))
-        popupX += kNoteWidth + kSubColSpace + kInstWidth + kSubColSpace + kVolWidth + kSubColSpace;
+    {
+        int noteLanes = trackLayout.getTrackNoteLaneCount (cursorTrack);
+        popupX += noteLanes * kNoteLaneWidth;
+    }
     popupX += cursorFxLane * (kFxWidth + kSubColSpace);
     int popupY = effectiveHeaderH + (cursorRow - scrollOffset) * kRowHeight + kRowHeight;
 
@@ -822,6 +845,12 @@ bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubCo
 
 bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubColumn& outSubCol, int& outFxLane) const
 {
+    int noteLane = 0;
+    return hitTestGrid (mx, my, outRow, outTrack, outSubCol, outFxLane, noteLane);
+}
+
+bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubColumn& outSubCol, int& outFxLane, int& outNoteLane) const
+{
     int effectiveHeaderH = getEffectiveHeaderHeight();
     if (my < effectiveHeaderH || mx < kRowNumberWidth)
         return false;
@@ -839,12 +868,14 @@ bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubCo
     outRow = row;
     outTrack = visualToTrackIndex (visualIndex);
     outFxLane = 0;
+    outNoteLane = 0;
 
     // Determine sub-column within cell
     int cellStartX = getTrackXOffset (visualIndex);
     int cellOffset = trackPixel - cellStartX - kCellPadding;
     int fxLanes = isMasterTrack (outTrack) ? trackLayout.getMasterFxLaneCount()
                                            : trackLayout.getTrackFxLaneCount (outTrack);
+    int noteLanes = isMasterTrack (outTrack) ? 0 : trackLayout.getTrackNoteLaneCount (outTrack);
 
     if (isMasterTrack (outTrack))
     {
@@ -854,18 +885,27 @@ bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubCo
         return true;
     }
 
-    if (cellOffset < kNoteWidth)
-        outSubCol = SubColumn::Note;
-    else if (cellOffset < kNoteWidth + kSubColSpace + kInstWidth)
-        outSubCol = SubColumn::Instrument;
-    else if (cellOffset < kNoteWidth + kSubColSpace + kInstWidth + kSubColSpace + kVolWidth)
-        outSubCol = SubColumn::Volume;
+    // Total width of all note lanes
+    int totalNoteLaneWidth = noteLanes * kNoteLaneWidth;
+
+    if (cellOffset < totalNoteLaneWidth)
+    {
+        // Inside a note lane
+        int noteLane = cellOffset / kNoteLaneWidth;
+        outNoteLane = juce::jlimit (0, noteLanes - 1, noteLane);
+        int withinLane = cellOffset - outNoteLane * kNoteLaneWidth;
+
+        if (withinLane < kNoteWidth)
+            outSubCol = SubColumn::Note;
+        else if (withinLane < kNoteWidth + kSubColSpace + kInstWidth)
+            outSubCol = SubColumn::Instrument;
+        else
+            outSubCol = SubColumn::Volume;
+    }
     else
     {
         outSubCol = SubColumn::FX;
-        // Determine which FX lane
-        int fxStart = kNoteWidth + kSubColSpace + kInstWidth + kSubColSpace + kVolWidth + kSubColSpace;
-        int fxOffset = cellOffset - fxStart;
+        int fxOffset = cellOffset - totalNoteLaneWidth;
         int lane = fxOffset / (kFxWidth + kSubColSpace);
         outFxLane = juce::jlimit (0, fxLanes - 1, lane);
     }
@@ -1091,9 +1131,9 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
         return;
     }
 
-    int row, track, fxLane;
+    int row, track, fxLane, noteLane;
     SubColumn subCol;
-    if (hitTestGrid (event.x, event.y, row, track, subCol, fxLane))
+    if (hitTestGrid (event.x, event.y, row, track, subCol, fxLane, noteLane))
     {
         int viTrack = trackToVisualIndex (track);
 
@@ -1151,6 +1191,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
         cursorTrack = track;
         cursorSubColumn = subCol;
         cursorFxLane = fxLane;
+        cursorNoteLane = noteLane;
         hexDigitCount = 0;
         hexAccumulator = 0;
         ensureCursorVisible();
@@ -1674,6 +1715,11 @@ void TrackerGrid::setCursorPosition (int row, int track)
     cursorTrack = juce::jlimit (0, kMasterLaneTrack, track);
     cursorFxLane = juce::jmax (0, cursorFxLane);
     if (cursorTrack == kMasterLaneTrack)
+        cursorNoteLane = 0;
+    else
+        cursorNoteLane = juce::jlimit (0, juce::jmax (0, trackLayout.getTrackNoteLaneCount (cursorTrack) - 1), cursorNoteLane);
+
+    if (cursorTrack == kMasterLaneTrack)
     {
         cursorSubColumn = SubColumn::FX;
         cursorFxLane = juce::jlimit (0, trackLayout.getMasterFxLaneCount() - 1, cursorFxLane);
@@ -1748,18 +1794,21 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     {
         auto& pat = pattern.getCurrentPattern();
         auto oldCell = pat.getCell (cursorRow, cursorTrack);
+        auto laneSlot = oldCell.getNoteLane (cursorNoteLane);
 
-        if (oldCell.hasNote() && oldCell.note <= 127)
+        if (laneSlot.hasNote() && laneSlot.note <= 127)
         {
             bool isSemitone = (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey);
             bool isUp = (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::rightKey);
             int delta = isUp ? (isSemitone ? 1 : 12) : (isSemitone ? -1 : -12);
-            int newNote = juce::jlimit (0, 127, oldCell.note + delta);
+            int newNote = juce::jlimit (0, 127, laneSlot.note + delta);
 
-            if (newNote != oldCell.note)
+            if (newNote != laneSlot.note)
             {
                 auto newCell = oldCell;
-                newCell.note = newNote;
+                auto newSlot = laneSlot;
+                newSlot.note = newNote;
+                newCell.setNoteLane (cursorNoteLane, newSlot);
 
                 std::vector<MultiCellEditAction::CellRecord> cellRecords;
                 cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
@@ -1769,7 +1818,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 if (changed)
                 {
                     if (onNoteEntered)
-                        onNoteEntered (newNote, newCell.instrument >= 0 ? newCell.instrument : currentInstrument);
+                        onNoteEntered (newNote, newSlot.instrument >= 0 ? newSlot.instrument : currentInstrument);
                     if (onPatternDataChanged) onPatternDataChanged();
                     repaint();
                 }
@@ -1856,13 +1905,14 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Tab: cycle through sub-columns (including multiple FX lanes), then to next track
+    // Tab: cycle through sub-columns (note lanes then FX lanes), then to next track
     if (keyCode == juce::KeyPress::tabKey)
     {
         hexDigitCount = 0;
         hexAccumulator = 0;
         int fxLanes = isMasterTrack (cursorTrack) ? trackLayout.getMasterFxLaneCount()
                                                   : trackLayout.getTrackFxLaneCount (cursorTrack);
+        int noteLanes = isMasterTrack (cursorTrack) ? 0 : trackLayout.getTrackNoteLaneCount (cursorTrack);
 
         if (shift)
         {
@@ -1886,15 +1936,24 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 return true;
             }
 
-            // Reverse: FX(last lane) -> ... -> FX(0) -> Vol -> Inst -> Note -> prev track's FX(last)
+            // Reverse: FX(last) -> FX(0) -> Vol(lastNL) -> Inst(lastNL) -> Note(lastNL) -> ... -> Note(0) -> prev track
             if (cursorSubColumn == SubColumn::Note)
             {
-                // Move to previous track's last FX lane
-                moveCursor (0, -1);
-                int prevFxLanes = isMasterTrack (cursorTrack) ? trackLayout.getMasterFxLaneCount()
-                                                              : trackLayout.getTrackFxLaneCount (cursorTrack);
-                cursorSubColumn = SubColumn::FX;
-                cursorFxLane = prevFxLanes - 1;
+                if (cursorNoteLane > 0)
+                {
+                    cursorNoteLane--;
+                    cursorSubColumn = SubColumn::Volume;
+                }
+                else
+                {
+                    // Move to previous track's last FX lane
+                    moveCursor (0, -1);
+                    int prevFxLanes = isMasterTrack (cursorTrack) ? trackLayout.getMasterFxLaneCount()
+                                                                  : trackLayout.getTrackFxLaneCount (cursorTrack);
+                    cursorSubColumn = SubColumn::FX;
+                    cursorFxLane = prevFxLanes - 1;
+                    cursorNoteLane = 0;
+                }
             }
             else if (cursorSubColumn == SubColumn::Instrument)
                 cursorSubColumn = SubColumn::Note;
@@ -1905,7 +1964,10 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 if (cursorFxLane > 0)
                     cursorFxLane--;
                 else
+                {
                     cursorSubColumn = SubColumn::Volume;
+                    cursorNoteLane = noteLanes - 1;
+                }
             }
         }
         else
@@ -1919,21 +1981,30 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 {
                     moveCursor (0, 1);
                     cursorFxLane = 0;
+                    cursorNoteLane = 0;
                 }
                 repaint();
                 if (onCursorMoved) onCursorMoved();
                 return true;
             }
 
-            // Forward: Note -> Inst -> Vol -> FX(0) -> FX(1) -> ... -> FX(last) -> next track's Note
+            // Forward: Note(0) -> Inst(0) -> Vol(0) -> Note(1) -> ... -> Vol(lastNL) -> FX(0) -> ... -> FX(last) -> next track
             if (cursorSubColumn == SubColumn::Note)
                 cursorSubColumn = SubColumn::Instrument;
             else if (cursorSubColumn == SubColumn::Instrument)
                 cursorSubColumn = SubColumn::Volume;
             else if (cursorSubColumn == SubColumn::Volume)
             {
-                cursorSubColumn = SubColumn::FX;
-                cursorFxLane = 0;
+                if (cursorNoteLane < noteLanes - 1)
+                {
+                    cursorNoteLane++;
+                    cursorSubColumn = SubColumn::Note;
+                }
+                else
+                {
+                    cursorSubColumn = SubColumn::FX;
+                    cursorFxLane = 0;
+                }
             }
             else if (cursorSubColumn == SubColumn::FX)
             {
@@ -1943,6 +2014,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 {
                     cursorSubColumn = SubColumn::Note;
                     cursorFxLane = 0;
+                    cursorNoteLane = 0;
                     moveCursor (0, 1);
                 }
             }
@@ -2018,9 +2090,28 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
 
                 switch (cursorSubColumn)
                 {
-                    case SubColumn::Note:       newCell.clear(); break;
-                    case SubColumn::Instrument: newCell.instrument = -1; break;
-                    case SubColumn::Volume:     newCell.volume = -1; break;
+                    case SubColumn::Note:
+                    {
+                        // Clear the current note lane
+                        NoteSlot slot = newCell.getNoteLane (cursorNoteLane);
+                        slot.clear();
+                        newCell.setNoteLane (cursorNoteLane, slot);
+                        break;
+                    }
+                    case SubColumn::Instrument:
+                    {
+                        NoteSlot slot = newCell.getNoteLane (cursorNoteLane);
+                        slot.instrument = -1;
+                        newCell.setNoteLane (cursorNoteLane, slot);
+                        break;
+                    }
+                    case SubColumn::Volume:
+                    {
+                        NoteSlot slot = newCell.getNoteLane (cursorNoteLane);
+                        slot.volume = -1;
+                        newCell.setNoteLane (cursorNoteLane, slot);
+                        break;
+                    }
                     case SubColumn::FX:
                     {
                         newCell.ensureFxSlots (cursorFxLane + 1);
@@ -2052,8 +2143,10 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     {
         auto oldCell = pattern.getCell (cursorRow, cursorTrack);
         auto newCell = oldCell;
-        newCell.note = 255; // note-off marker (OFF ===)
-        newCell.instrument = currentInstrument;
+        NoteSlot slot = oldCell.getNoteLane (cursorNoteLane);
+        slot.note = 255; // note-off marker (OFF ===)
+        slot.instrument = currentInstrument;
+        newCell.setNoteLane (cursorNoteLane, slot);
         std::vector<MultiCellEditAction::CellRecord> cellRecords;
         if (! sameCell (oldCell, newCell))
             cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
@@ -2070,8 +2163,10 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     {
         auto oldCell = pattern.getCell (cursorRow, cursorTrack);
         auto newCell = oldCell;
-        newCell.note = 254; // note-kill marker (KILL ^^^)
-        newCell.instrument = currentInstrument;
+        NoteSlot slot = oldCell.getNoteLane (cursorNoteLane);
+        slot.note = 254; // note-kill marker (KILL ^^^)
+        slot.instrument = currentInstrument;
+        newCell.setNoteLane (cursorNoteLane, slot);
         std::vector<MultiCellEditAction::CellRecord> cellRecords;
         if (! sameCell (oldCell, newCell))
             cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
@@ -2091,19 +2186,29 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Sub-column specific editing
+    // Sub-column specific editing (note-lane aware)
     if (cursorSubColumn == SubColumn::Note && ! isMasterTrack (cursorTrack))
     {
         // Note entry
         int note = keyToNote (key);
         if (note >= 0 && note <= 127)
         {
+            // Validate note entry (ownership/track mode check)
+            if (onValidateNoteEntry)
+            {
+                auto error = onValidateNoteEntry (currentInstrument, cursorTrack);
+                if (error.isNotEmpty())
+                    return true; // Block the note entry (status message shown by callback)
+            }
+
             auto oldCell = pattern.getCell (cursorRow, cursorTrack);
             auto newCell = oldCell;
-            newCell.note = note;
-            newCell.instrument = currentInstrument;
-            if (newCell.volume < 0)
-                newCell.volume = 127;
+            NoteSlot slot = oldCell.getNoteLane (cursorNoteLane);
+            slot.note = note;
+            slot.instrument = currentInstrument;
+            if (slot.volume < 0)
+                slot.volume = 127;
+            newCell.setNoteLane (cursorNoteLane, slot);
 
             if (onNoteEntered)
                 onNoteEntered (note, currentInstrument);
@@ -2127,20 +2232,22 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         {
             auto oldCell = pattern.getCell (cursorRow, cursorTrack);
             auto newCell = oldCell;
+            NoteSlot slot = oldCell.getNoteLane (cursorNoteLane);
             if (hexDigitCount == 0)
             {
                 hexAccumulator = hexVal;
                 hexDigitCount = 1;
-                newCell.instrument = hexAccumulator;
+                slot.instrument = hexAccumulator;
             }
             else
             {
                 hexAccumulator = (hexAccumulator << 4) | hexVal;
-                newCell.instrument = hexAccumulator & 0xFF;
+                slot.instrument = hexAccumulator & 0xFF;
                 hexDigitCount = 0;
                 hexAccumulator = 0;
                 moveCursor (editStep, 0);
             }
+            newCell.setNoteLane (cursorNoteLane, slot);
 
             std::vector<MultiCellEditAction::CellRecord> cellRecords;
             if (! sameCell (oldCell, newCell))
@@ -2159,20 +2266,22 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         {
             auto oldCell = pattern.getCell (cursorRow, cursorTrack);
             auto newCell = oldCell;
+            NoteSlot slot = oldCell.getNoteLane (cursorNoteLane);
             if (hexDigitCount == 0)
             {
                 hexAccumulator = hexVal;
                 hexDigitCount = 1;
-                newCell.volume = hexAccumulator;
+                slot.volume = hexAccumulator;
             }
             else
             {
                 hexAccumulator = (hexAccumulator << 4) | hexVal;
-                newCell.volume = juce::jlimit (0, 127, hexAccumulator);
+                slot.volume = juce::jlimit (0, 127, hexAccumulator);
                 hexDigitCount = 0;
                 hexAccumulator = 0;
                 moveCursor (editStep, 0);
             }
+            newCell.setNoteLane (cursorNoteLane, slot);
 
             std::vector<MultiCellEditAction::CellRecord> cellRecords;
             if (! sameCell (oldCell, newCell))

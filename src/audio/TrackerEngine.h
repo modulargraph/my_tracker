@@ -9,7 +9,12 @@
 #include "SendEffectsPlugin.h"
 #include "SendEffectsParams.h"
 #include "MixerPlugin.h"
+#include "ChannelStripPlugin.h"
+#include "TrackOutputPlugin.h"
 #include "MixerState.h"
+#include "PluginCatalogService.h"
+#include "InstrumentSlotInfo.h"
+#include "PluginAutomationData.h"
 
 namespace te = tracktion;
 
@@ -107,6 +112,7 @@ public:
 
     te::Engine& getEngine() { return *engine; }
     SimpleSampler& getSampler() { return sampler; }
+    PluginCatalogService& getPluginCatalog() { return *pluginCatalog; }
 
     // Send effects access
     SendEffectsPlugin* getSendEffectsPlugin() { return sendEffectsPlugin; }
@@ -116,17 +122,95 @@ public:
     ReverbParams getReverbParams() const;
 
     // Mixer DSP: set a pointer to the MixerState for per-track processing
-    void setMixerState (const MixerState* state);
+    void setMixerState (MixerState* state);
     void refreshMixerPlugins();
+
+    // Insert plugin management
+    bool addInsertPlugin (int trackIndex, const juce::PluginDescription& desc);
+    void removeInsertPlugin (int trackIndex, int slotIndex);
+    void setInsertBypassed (int trackIndex, int slotIndex, bool bypassed);
+    te::Plugin* getInsertPlugin (int trackIndex, int slotIndex);
+    void rebuildInsertChain (int trackIndex);
+    void snapshotInsertPluginStates();
+
+    // Plugin editor window management
+    void openPluginEditor (int trackIndex, int slotIndex);
+    void closePluginEditor (int trackIndex, int slotIndex);
+
+    // Callback when inserts change (for UI refresh)
+    std::function<void()> onInsertStateChanged;
 
     // Peak level metering (read from audio thread, consumed by UI)
     float getTrackPeakLevel (int trackIndex) const;
     void decayTrackPeaks();
 
+    //==============================================================================
+    // Plugin instrument slot management (Phase 4)
+    //==============================================================================
+
+    /** Get the instrument slot info for a given instrument index. */
+    const InstrumentSlotInfo& getInstrumentSlotInfo (int instrumentIndex) const;
+
+    /** Set a plugin instrument for a slot: assigns the plugin description and owner track. */
+    bool setPluginInstrument (int instrumentIndex, const juce::PluginDescription& desc, int ownerTrack);
+
+    /** Clear a plugin instrument slot (reverts to sample mode). */
+    void clearPluginInstrument (int instrumentIndex);
+
+    /** Check if a given instrument index is a plugin instrument. */
+    bool isPluginInstrument (int instrumentIndex) const;
+
+    /** Get the owner track for a plugin instrument (-1 if sample or unassigned). */
+    int getPluginInstrumentOwnerTrack (int instrumentIndex) const;
+
+    /** Get all instrument slot infos (for serialization). */
+    const std::map<int, InstrumentSlotInfo>& getAllInstrumentSlotInfos() const { return instrumentSlotInfos; }
+
+    /** Set instrument slot infos (for deserialization). */
+    void setInstrumentSlotInfos (const std::map<int, InstrumentSlotInfo>& infos);
+
+    /** Determine the content mode of a track based on assigned instruments. */
+    TrackContentMode getTrackContentMode (int trackIndex) const;
+
+    /**
+     * Validate whether a note entry is allowed for the given instrument on the given track.
+     * Returns empty string if allowed, or an error message if blocked.
+     */
+    juce::String validateNoteEntry (int instrumentIndex, int trackIndex) const;
+
+    /** Get the Tracktion plugin instance for a plugin instrument (nullptr if not loaded). */
+    te::Plugin* getPluginInstrumentInstance (int instrumentIndex);
+
+    /** Open the editor window for a plugin instrument. */
+    void openPluginInstrumentEditor (int instrumentIndex);
+
+    /** Close the editor window for a plugin instrument. */
+    void closePluginInstrumentEditor (int instrumentIndex);
+
+    /** Callback for status messages (set by MainComponent). */
+    std::function<void (const juce::String& message, bool isError, int timeoutMs)> onStatusMessage;
+
+    //==============================================================================
+    // Plugin automation (Phase 5)
+    //==============================================================================
+
+    /** Apply automation data from a pattern to plugin parameter automation curves.
+     *  This is called during syncPatternToEdit to map modulation points to plugin parameters. */
+    void applyPatternAutomation (const PatternAutomationData& automationData,
+                                 int patternLength, int rowsPerBeat);
+
+    /** Apply automation values for a specific playback row (used by live playback updates). */
+    void applyAutomationForPlaybackRow (const PatternAutomationData& automationData, int row);
+
+    /** Reset all plugin parameters modified by automation to their baseline values.
+     *  Called when switching patterns or stopping playback. */
+    void resetAutomationParameters();
+
 private:
     std::unique_ptr<te::Engine> engine;
     std::unique_ptr<te::Edit> edit;
     SimpleSampler sampler;
+    std::unique_ptr<PluginCatalogService> pluginCatalog;
     int rowsPerBeat = 4;
     std::array<int, kNumTracks + 3> currentTrackInstrument {};
 
@@ -135,9 +219,13 @@ private:
     static constexpr int kMetronomeTrack = kNumTracks + 1;
     static constexpr int kSendEffectsTrack = kNumTracks + 2;
     SendEffectsPlugin* sendEffectsPlugin = nullptr;
-    const MixerState* mixerStatePtr = nullptr;
+    MixerState* mixerStatePtr = nullptr;
     void setupSendEffectsTrack();
     void setupMixerPlugins();
+    void setupChannelStripAndOutput (int trackIndex);
+
+    // Plugin editor windows (keyed by "track:slot")
+    std::map<juce::String, std::unique_ptr<juce::DocumentWindow>> pluginEditorWindows;
     void refreshTransportLoopRangeFromClip();
     static constexpr int kPreviewDurationMs = 30000;
     int activePreviewTrack = -1;
@@ -146,6 +234,31 @@ private:
 
     void prepareTracksForInstrumentUsage (const std::array<std::vector<int>, kNumTracks>& instrumentsByTrack);
     void rebuildTempoSequenceFromPatternMasterLane (const Pattern& pattern);
+
+    // Plugin instrument slot state
+    std::map<int, InstrumentSlotInfo> instrumentSlotInfos;
+    // Loaded plugin instrument instances (keyed by instrument index)
+    std::map<int, te::Plugin::Ptr> pluginInstrumentInstances;
+    // Plugin instrument editor windows (keyed by instrument index)
+    std::map<int, std::unique_ptr<juce::DocumentWindow>> pluginInstrumentEditorWindows;
+
+    // Automation state tracking
+    struct AutomatedParam
+    {
+        juce::String pluginId;
+        int paramIndex = -1;
+        float baselineValue = 0.0f;
+    };
+    std::vector<AutomatedParam> lastAutomatedParams;
+    AutomatedParam* findAutomatedParam (const juce::String& pluginId, int paramIndex);
+    const AutomatedParam* findAutomatedParam (const juce::String& pluginId, int paramIndex) const;
+
+    // Resolve a plugin ID string to an AudioPluginInstance
+    juce::AudioPluginInstance* resolvePluginInstance (const juce::String& pluginId);
+
+    // Ensure the plugin instrument is loaded on its owner track
+    void ensurePluginInstrumentLoaded (int instrumentIndex);
+    void removePluginInstrumentFromTrack (int instrumentIndex);
     void rebuildTempoSequenceFromArrangementMasterLane (const std::vector<std::pair<const Pattern*, int>>& sequence, int rpb);
 
     void timerCallback() override;
