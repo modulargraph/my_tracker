@@ -75,6 +75,10 @@ int SendEffectsPlugin::getDelayTimeSamples() const
         // Sync division: 1=whole, 2=half, 4=quarter, 8=eighth, 16=sixteenth, 32=thirty-second
         double divisionSeconds = beatSeconds * (4.0 / static_cast<double> (juce::jmax (1, activeDelayParams.syncDivision)));
 
+        // Dotted note: multiply by 1.5 (e.g., dotted quarter = quarter + eighth)
+        if (activeDelayParams.dotted)
+            divisionSeconds *= 1.5;
+
         int samples = static_cast<int> (divisionSeconds * sampleRate);
         return juce::jlimit (1, kMaxDelaySamples - 1, samples);
     }
@@ -101,8 +105,8 @@ void SendEffectsPlugin::processDelay (const juce::AudioBuffer<float>& input,
     float feedback = static_cast<float> (activeDelayParams.feedback) / 100.0f;
     int delaySamples = getDelayTimeSamples();
 
-    // Stereo width: 0% = mono, 100% = full stereo (ping-pong)
-    float width = static_cast<float> (activeDelayParams.stereoWidth) / 100.0f;
+    // Ping-pong amount: 0% = normal stereo delay, 100% = full ping-pong
+    float pingPong = static_cast<float> (activeDelayParams.stereoWidth) / 100.0f;
 
     // Setup filter if applicable
     if (delayFilterInitialized && activeDelayParams.filterType > 0)
@@ -132,11 +136,10 @@ void SendEffectsPlugin::processDelay (const juce::AudioBuffer<float>& input,
         // Apply filter to feedback signal
         if (delayFilterInitialized && activeDelayParams.filterType > 0)
         {
-            // Process mono (average of L+R for filter) then re-spread
             float mono = (delayedL + delayedR) * 0.5f;
             float filtered = delayFilter.processSample (0, mono);
-            delayedL = filtered + (delayedL - mono) * width;
-            delayedR = filtered + (delayedR - mono) * width;
+            delayedL = filtered + (delayedL - mono);
+            delayedR = filtered + (delayedR - mono);
         }
 
         // Get input from captured send slice
@@ -145,14 +148,17 @@ void SendEffectsPlugin::processDelay (const juce::AudioBuffer<float>& input,
                             ? input.getSample (1, juce::jmin (i, input.getNumSamples() - 1))
                             : inputL;
 
-        // Write input + feedback into delay line (with stereo cross-feed for width)
-        float writeL = inputL + delayedL * feedback;
-        float writeR = inputR + delayedR * feedback;
+        // Standard stereo delay: each channel feeds back into itself
+        float stdWriteL = inputL + delayedL * feedback;
+        float stdWriteR = inputR + delayedR * feedback;
 
-        // Stereo width: cross-feed between channels
-        float crossFeed = width * 0.3f;
-        float finalWriteL = writeL + writeR * crossFeed;
-        float finalWriteR = writeR + writeL * crossFeed;
+        // Ping-pong delay: cross-feed (L output feeds R input and vice versa)
+        float ppWriteL = inputL + delayedR * feedback;
+        float ppWriteR = inputR + delayedL * feedback;
+
+        // Blend between standard and ping-pong based on pingPong amount
+        float finalWriteL = stdWriteL + (ppWriteL - stdWriteL) * pingPong;
+        float finalWriteR = stdWriteR + (ppWriteR - stdWriteR) * pingPong;
 
         // Soft clip feedback to prevent runaway
         finalWriteL = std::tanh (finalWriteL);

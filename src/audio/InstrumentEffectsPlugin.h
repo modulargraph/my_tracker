@@ -62,6 +62,7 @@ private:
         int volumeOverride = -1;   // -1 = no override, 0-127 from Cxx
         int delaySendOverride = -1;   // 0-255 (mapped to -100..0 dB)
         int reverbSendOverride = -1;  // 0-255 (mapped to -100..0 dB)
+        int volumeFxRaw = -1;         // -1 = no override, 0-255 from Vxx
         std::array<int, InstrumentParams::kNumModDests> modModeOverride;  // -1 = use default
 
         TrackOverrides() { modModeOverride.fill (-1); }

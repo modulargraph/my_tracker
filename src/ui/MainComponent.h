@@ -156,6 +156,7 @@ private:
     void clearSampleForInstrument (int instrument);
     void updateSampleEditorForCurrentInstrument();
     void updateTrackSampleMarkers();
+    void cycleTab (int direction);
     void switchToTab (Tab tab);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)

@@ -104,6 +104,10 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
             modTree.setProperty ("type", static_cast<int> (mod.type), nullptr);
             modTree.setProperty ("lfoShape", static_cast<int> (mod.lfoShape), nullptr);
             modTree.setProperty ("lfoSpeed", mod.lfoSpeed, nullptr);
+            if (mod.lfoSpeedMode != InstrumentParams::Modulation::LFOSpeedMode::Steps)
+                modTree.setProperty ("lfoSpeedMode", static_cast<int> (mod.lfoSpeedMode), nullptr);
+            if (mod.lfoSpeedMs != 500)
+                modTree.setProperty ("lfoSpeedMs", mod.lfoSpeedMs, nullptr);
             modTree.setProperty ("amount", mod.amount, nullptr);
             modTree.setProperty ("attackS", mod.attackS, nullptr);
             modTree.setProperty ("decayS", mod.decayS, nullptr);
@@ -267,6 +271,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         delayTree.setProperty ("time", delayParams.time, nullptr);
         delayTree.setProperty ("syncDiv", delayParams.syncDivision, nullptr);
         delayTree.setProperty ("bpmSync", delayParams.bpmSync, nullptr);
+        delayTree.setProperty ("dotted", delayParams.dotted, nullptr);
         delayTree.setProperty ("feedback", delayParams.feedback, nullptr);
         delayTree.setProperty ("filterType", delayParams.filterType, nullptr);
         delayTree.setProperty ("filterCutoff", delayParams.filterCutoff, nullptr);
@@ -440,6 +445,9 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                     mod.lfoShape = static_cast<InstrumentParams::Modulation::LFOShape> (
                         static_cast<int> (modTree.getProperty ("lfoShape", 2)));
                     mod.lfoSpeed = modTree.getProperty ("lfoSpeed", 24);
+                    mod.lfoSpeedMode = static_cast<InstrumentParams::Modulation::LFOSpeedMode> (
+                        static_cast<int> (modTree.getProperty ("lfoSpeedMode", 0)));
+                    mod.lfoSpeedMs = modTree.getProperty ("lfoSpeedMs", 500);
                     mod.amount   = modTree.getProperty ("amount", 100);
                     mod.attackS  = modTree.getProperty ("attackS", 0.020);
                     mod.decayS   = modTree.getProperty ("decayS", 0.030);
@@ -633,6 +641,7 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             delayParams.time         = delayTree.getProperty ("time", 250.0);
             delayParams.syncDivision = delayTree.getProperty ("syncDiv", 4);
             delayParams.bpmSync      = delayTree.getProperty ("bpmSync", true);
+            delayParams.dotted       = delayTree.getProperty ("dotted", false);
             delayParams.feedback     = delayTree.getProperty ("feedback", 40.0);
             delayParams.filterType   = delayTree.getProperty ("filterType", 0);
             delayParams.filterCutoff = delayTree.getProperty ("filterCutoff", 80.0);

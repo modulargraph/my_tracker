@@ -1734,6 +1734,41 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
 {
     auto keyCode = key.getKeyCode();
     bool shift = key.getModifiers().isShiftDown();
+    bool ctrl = key.getModifiers().isCtrlDown();
+
+    // Ctrl+Up/Down: semitone transpose with preview (Note sub-column only)
+    if (ctrl && ! shift && cursorSubColumn == SubColumn::Note && ! isMasterTrack (cursorTrack)
+        && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey))
+    {
+        auto& pat = pattern.getCurrentPattern();
+        auto oldCell = pat.getCell (cursorRow, cursorTrack);
+
+        if (oldCell.hasNote() && oldCell.note <= 127)
+        {
+            int delta = (keyCode == juce::KeyPress::upKey) ? 1 : -1;
+            int newNote = juce::jlimit (0, 127, oldCell.note + delta);
+
+            if (newNote != oldCell.note)
+            {
+                auto newCell = oldCell;
+                newCell.note = newNote;
+
+                std::vector<MultiCellEditAction::CellRecord> cellRecords;
+                cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
+                bool changed = applyPatternEdit (pattern, undoManager, pattern.getCurrentPatternIndex(),
+                                                 std::move (cellRecords), {});
+
+                if (changed)
+                {
+                    if (onNoteEntered)
+                        onNoteEntered (newNote, newCell.instrument >= 0 ? newCell.instrument : currentInstrument);
+                    if (onPatternDataChanged) onPatternDataChanged();
+                    repaint();
+                }
+            }
+        }
+        return true;
+    }
 
     // Navigation
     if (keyCode == juce::KeyPress::upKey)

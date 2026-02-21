@@ -92,10 +92,19 @@ float InstrumentEffectsPlugin::computeLFO (LFOState& state, const InstrumentPara
     if (mod.type != InstrumentParams::Modulation::Type::LFO || mod.amount == 0)
         return 0.0f;
 
-    // LFO Hz = bpm / 60.0 * rowsPerBeat / speedInSteps
-    double stepsPerBeat = static_cast<double> (juce::jmax (1, rowsPerBeat));
-    double speedInSteps = static_cast<double> (juce::jmax (1, mod.lfoSpeed));
-    double lfoHz = (bpm / 60.0) * stepsPerBeat / speedInSteps;
+    double lfoHz;
+    if (mod.lfoSpeedMode == InstrumentParams::Modulation::LFOSpeedMode::MS)
+    {
+        // BPM-independent: period in milliseconds
+        lfoHz = 1000.0 / static_cast<double> (juce::jmax (1, mod.lfoSpeedMs));
+    }
+    else
+    {
+        // LFO Hz = bpm / 60.0 * rowsPerBeat / speedInSteps
+        double stepsPerBeat = static_cast<double> (juce::jmax (1, rowsPerBeat));
+        double speedInSteps = static_cast<double> (juce::jmax (1, mod.lfoSpeed));
+        lfoHz = (bpm / 60.0) * stepsPerBeat / speedInSteps;
+    }
 
     double phaseInc = lfoHz / sampleRate * static_cast<double> (numSamples);
     state.phase += phaseInc;
@@ -243,10 +252,23 @@ float InstrumentEffectsPlugin::computeGlobalLFO (const InstrumentParams::Modulat
     if (mod.type != InstrumentParams::Modulation::Type::LFO || mod.amount == 0)
         return 0.0f;
 
-    // Deterministic from transport beat position
+    double phase;
     double speedInSteps = static_cast<double> (juce::jmax (1, mod.lfoSpeed));
-    double stepsPerBeat = static_cast<double> (rowsPerBeat);
-    double phase = std::fmod (currentTransportBeat * stepsPerBeat / speedInSteps, 1.0);
+
+    if (mod.lfoSpeedMode == InstrumentParams::Modulation::LFOSpeedMode::MS)
+    {
+        // BPM-independent: derive phase from transport time in seconds
+        double bpm = edit.tempoSequence.getTempos()[0]->getBpm();
+        double transportSeconds = currentTransportBeat * 60.0 / bpm;
+        double periodSeconds = static_cast<double> (juce::jmax (1, mod.lfoSpeedMs)) / 1000.0;
+        phase = std::fmod (transportSeconds / periodSeconds, 1.0);
+    }
+    else
+    {
+        // Deterministic from transport beat position
+        double stepsPerBeat = static_cast<double> (rowsPerBeat);
+        phase = std::fmod (currentTransportBeat * stepsPerBeat / speedInSteps, 1.0);
+    }
     if (phase < 0.0) phase += 1.0;
 
     float p = static_cast<float> (phase);
@@ -268,9 +290,20 @@ float InstrumentEffectsPlugin::computeGlobalLFO (const InstrumentParams::Modulat
             break;
         case InstrumentParams::Modulation::LFOShape::Random:
         {
-            // Deterministic random: seed from quantized step index
-            double stepsPerBeat2 = static_cast<double> (rowsPerBeat);
-            int stepIndex = static_cast<int> (std::floor (currentTransportBeat * stepsPerBeat2 / speedInSteps));
+            int stepIndex;
+            if (mod.lfoSpeedMode == InstrumentParams::Modulation::LFOSpeedMode::MS)
+            {
+                double bpm = edit.tempoSequence.getTempos()[0]->getBpm();
+                double transportSeconds = currentTransportBeat * 60.0 / bpm;
+                double periodSeconds = static_cast<double> (juce::jmax (1, mod.lfoSpeedMs)) / 1000.0;
+                stepIndex = static_cast<int> (std::floor (transportSeconds / periodSeconds));
+            }
+            else
+            {
+                // Deterministic random: seed from quantized step index
+                double stepsPerBeat2 = static_cast<double> (rowsPerBeat);
+                stepIndex = static_cast<int> (std::floor (currentTransportBeat * stepsPerBeat2 / speedInSteps));
+            }
             juce::Random rng (static_cast<juce::int64> (stepIndex * 12345 + 67890));
             value = rng.nextFloat() * 2.0f - 1.0f;
             break;
@@ -630,6 +663,18 @@ void InstrumentEffectsPlugin::processFxCommands (int numSamples, float& pitchMod
 
     if (overrides.volumeOverride >= 0)
         fxVolumeMod *= static_cast<float> (overrides.volumeOverride) / 127.0f;
+
+    // Vxx volume FX: 00=silence, 7F=unity, FF=+10dB (~3.16 linear)
+    if (overrides.volumeFxRaw >= 0)
+    {
+        const int v = juce::jlimit (0, 255, overrides.volumeFxRaw);
+        float vGain;
+        if (v <= 0x7F)
+            vGain = static_cast<float> (v) / 127.0f;
+        else
+            vGain = 1.0f + static_cast<float> (v - 0x80) * (std::pow (10.0f, 10.0f / 20.0f) - 1.0f) / 127.0f;
+        fxVolumeMod *= vGain;
+    }
 }
 
 //==============================================================================
@@ -804,6 +849,10 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 else if (ccNum == 36) // Rxx reverb send override
                 {
                     overrides.reverbSendOverride = decodeFxParam (ccVal);
+                }
+                else if (ccNum == 40) // Vxx volume FX override
+                {
+                    overrides.volumeFxRaw = decodeFxParam (ccVal);
                 }
                 else if (ccNum == 85) // Mod mode override (from Exy effect, encoded as dest*2+mode)
                 {
@@ -986,7 +1035,7 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     processBitDepth (buffer, startSample, numSamples, params.bitDepth);
 
     // Safety limiter: hard clip to protect ears against any unexpected spikes
-    static constexpr float kSafetyLimit = 1.5f; // ~3.5dB headroom max
+    static constexpr float kSafetyLimit = 4.0f; // ~12dB headroom (accommodates Vxx +10dB boost)
     for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
     {
         auto* data = buffer.getWritePointer (ch, startSample);

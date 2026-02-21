@@ -426,8 +426,13 @@ MainComponent::MainComponent()
                     trackerEngine.refreshTracksForInstrument (instrument, patternData.getCurrentPattern());
             }
 
+            // Auto-select the loaded instrument in the tracker and instrument panel
+            trackerGrid->setCurrentInstrument (instrument);
+            instrumentPanel->setSelectedInstrument (instrument);
+
             trackerGrid->repaint();
             updateToolbar();
+            updateStatusBar();
             updateInstrumentPanel();
             fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
             fileBrowser->advanceToNextEmptySlot();
@@ -754,6 +759,18 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     bool shift = key.getModifiers().isShiftDown();
     auto textChar = key.getTextCharacter();
     bool alt = key.getModifiers().isAltDown();
+
+    // Option+Left/Right: cycle through top-level tabs
+    if (alt && ! cmd && keyCode == juce::KeyPress::rightKey)
+    {
+        cycleTab (1);
+        return true;
+    }
+    if (alt && ! cmd && keyCode == juce::KeyPress::leftKey)
+    {
+        cycleTab (-1);
+        return true;
+    }
 
     // F1-F6: switch tabs — but on the Tracker tab with no modifiers, let F-keys
     // pass through to TrackerGrid (which uses F1-F8 for octave setting)
@@ -2458,6 +2475,22 @@ std::array<bool, kNumTracks> MainComponent::getReleaseModes() const
     for (int i = 0; i < kNumTracks; ++i)
         modes[static_cast<size_t> (i)] = (trackLayout.getTrackNoteMode (i) == NoteMode::Release);
     return modes;
+}
+
+void MainComponent::cycleTab (int direction)
+{
+    static constexpr Tab allTabs[] = {
+        Tab::Tracker, Tab::InstrumentEdit, Tab::InstrumentType,
+        Tab::Mixer, Tab::Effects, Tab::Browser
+    };
+    static constexpr int numTabs = 6;
+
+    int current = 0;
+    for (int i = 0; i < numTabs; ++i)
+        if (allTabs[i] == activeTab) { current = i; break; }
+
+    int next = ((current + direction) % numTabs + numTabs) % numTabs;
+    switchToTab (allTabs[next]);
 }
 
 void MainComponent::switchToTab (Tab tab)

@@ -246,44 +246,54 @@ void SendEffectsComponent::drawDelaySection (juce::Graphics& g, juce::Rectangle<
         drawBarMeter (g, colRect (0), time01, sf && delayColumn == 0, blueCol);
     }
 
-    // Col 1: Sync Division list
-    juce::StringArray syncItems = { "1 (Whole)", "2 (Half)", "4 (Quarter)", "8 (8th)", "16 (16th)", "32 (32nd)" };
-    int syncIdx = 0;
-    if (delay.syncDivision <= 1) syncIdx = 0;
-    else if (delay.syncDivision <= 2) syncIdx = 1;
-    else if (delay.syncDivision <= 4) syncIdx = 2;
-    else if (delay.syncDivision <= 8) syncIdx = 3;
-    else if (delay.syncDivision <= 16) syncIdx = 4;
-    else syncIdx = 5;
-    drawListColumn (g, colRect (1), syncItems, syncIdx, sf && delayColumn == 1, blueCol);
+    // Col 1: Sync Division list (with dotted suffix when enabled)
+    {
+        juce::String dot = delay.dotted ? "." : "";
+        juce::StringArray syncItems = {
+            "1 (Whole)" + dot, "2 (Half)" + dot, "4 (Quarter)" + dot,
+            "8 (8th)" + dot, "16 (16th)" + dot, "32 (32nd)" + dot
+        };
+        int syncIdx = 0;
+        if (delay.syncDivision <= 1) syncIdx = 0;
+        else if (delay.syncDivision <= 2) syncIdx = 1;
+        else if (delay.syncDivision <= 4) syncIdx = 2;
+        else if (delay.syncDivision <= 8) syncIdx = 3;
+        else if (delay.syncDivision <= 16) syncIdx = 4;
+        else syncIdx = 5;
+        drawListColumn (g, colRect (1), syncItems, syncIdx, sf && delayColumn == 1, blueCol);
+    }
 
     // Col 2: BPM Sync toggle
     juce::StringArray syncToggle = { "Free", "Sync" };
     drawListColumn (g, colRect (2), syncToggle, delay.bpmSync ? 1 : 0, sf && delayColumn == 2, blueCol);
 
-    // Col 3: Feedback bar
+    // Col 3: Dotted toggle
+    juce::StringArray dottedToggle = { "Off", "On" };
+    drawListColumn (g, colRect (3), dottedToggle, delay.dotted ? 1 : 0, sf && delayColumn == 3, blueCol);
+
+    // Col 4: Feedback bar
     float fb01 = static_cast<float> (delay.feedback) / 100.0f;
-    drawBarMeter (g, colRect (3), fb01, sf && delayColumn == 3, blueCol);
+    drawBarMeter (g, colRect (4), fb01, sf && delayColumn == 4, blueCol);
 
-    // Col 4: Filter type list
+    // Col 5: Filter type list
     juce::StringArray filterItems = { "Off", "LowPass", "HighPass" };
-    drawListColumn (g, colRect (4), filterItems, delay.filterType, sf && delayColumn == 4, blueCol);
+    drawListColumn (g, colRect (5), filterItems, delay.filterType, sf && delayColumn == 5, blueCol);
 
-    // Col 5: Filter cutoff bar
+    // Col 6: Filter cutoff bar
     float cutoff01 = static_cast<float> (delay.filterCutoff) / 100.0f;
-    drawBarMeter (g, colRect (5), cutoff01, sf && delayColumn == 5, blueCol);
+    drawBarMeter (g, colRect (6), cutoff01, sf && delayColumn == 6, blueCol);
 
-    // Col 6: Wet bar
+    // Col 7: Wet bar
     float wet01 = static_cast<float> (delay.wet) / 100.0f;
-    drawBarMeter (g, colRect (6), wet01, sf && delayColumn == 6, blueCol);
+    drawBarMeter (g, colRect (7), wet01, sf && delayColumn == 7, blueCol);
 
-    // Col 7: Stereo Width bar
+    // Col 8: Ping Pong bar
     float width01 = static_cast<float> (delay.stereoWidth) / 100.0f;
-    drawBarMeter (g, colRect (7), width01, sf && delayColumn == 7, blueCol);
+    drawBarMeter (g, colRect (8), width01, sf && delayColumn == 8, blueCol);
 
     // Column labels at the top of each bar
     g.setFont (lookAndFeel.getMonoFont (9.0f));
-    const char* labels[] = { "TIME", "DIV", "SYNC", "FDBK", "FILT", "FREQ", "WET", "WIDTH" };
+    const char* labels[] = { "TIME", "DIV", "SYNC", "DOT", "FDBK", "FILT", "FREQ", "WET", "P.PONG" };
     for (int c = 0; c < kDelayColumns; ++c)
     {
         auto r = colRect (c);
@@ -360,8 +370,8 @@ juce::String SendEffectsComponent::getColumnName() const
 {
     if (section == 0)
     {
-        const char* names[] = { "Time", "Sync Division", "BPM Sync", "Feedback",
-                                "Filter", "Filter Cutoff", "Wet Level", "Stereo Width" };
+        const char* names[] = { "Time", "Sync Division", "BPM Sync", "Dotted",
+                                "Feedback", "Filter", "Filter Cutoff", "Wet Level", "Ping Pong" };
         if (delayColumn >= 0 && delayColumn < kDelayColumns)
             return juce::String ("DELAY: ") + names[delayColumn];
     }
@@ -383,32 +393,35 @@ juce::String SendEffectsComponent::getColumnValue() const
             case 0:
                 if (delay.bpmSync)
                 {
-                    if (delay.syncDivision <= 1) return "1/1 (Whole)";
-                    if (delay.syncDivision <= 2) return "1/2 (Half)";
-                    if (delay.syncDivision <= 4) return "1/4 (Quarter)";
-                    if (delay.syncDivision <= 8) return "1/8 (8th)";
-                    if (delay.syncDivision <= 16) return "1/16 (16th)";
-                    return "1/32 (32nd)";
+                    juce::String dot = delay.dotted ? "." : "";
+                    if (delay.syncDivision <= 1) return "1/1" + dot + " (Whole)";
+                    if (delay.syncDivision <= 2) return "1/2" + dot + " (Half)";
+                    if (delay.syncDivision <= 4) return "1/4" + dot + " (Quarter)";
+                    if (delay.syncDivision <= 8) return "1/8" + dot + " (8th)";
+                    if (delay.syncDivision <= 16) return "1/16" + dot + " (16th)";
+                    return "1/32" + dot + " (32nd)";
                 }
                 return juce::String (delay.time, 1) + " ms";
             case 1:
             {
-                if (delay.syncDivision <= 1) return "1/1 (Whole)";
-                if (delay.syncDivision <= 2) return "1/2 (Half)";
-                if (delay.syncDivision <= 4) return "1/4 (Quarter)";
-                if (delay.syncDivision <= 8) return "1/8 (8th)";
-                if (delay.syncDivision <= 16) return "1/16 (16th)";
-                return "1/32 (32nd)";
+                juce::String dot = delay.dotted ? "." : "";
+                if (delay.syncDivision <= 1) return "1/1" + dot + " (Whole)";
+                if (delay.syncDivision <= 2) return "1/2" + dot + " (Half)";
+                if (delay.syncDivision <= 4) return "1/4" + dot + " (Quarter)";
+                if (delay.syncDivision <= 8) return "1/8" + dot + " (8th)";
+                if (delay.syncDivision <= 16) return "1/16" + dot + " (16th)";
+                return "1/32" + dot + " (32nd)";
             }
             case 2: return delay.bpmSync ? "Sync" : "Free";
-            case 3: return juce::String (delay.feedback, 0) + "%";
-            case 4:
+            case 3: return delay.dotted ? "On" : "Off";
+            case 4: return juce::String (delay.feedback, 0) + "%";
+            case 5:
                 if (delay.filterType == 0) return "Off";
                 if (delay.filterType == 1) return "LowPass";
                 return "HighPass";
-            case 5: return juce::String (delay.filterCutoff, 0) + "%";
-            case 6: return juce::String (delay.wet, 0) + "%";
-            case 7: return juce::String (delay.stereoWidth, 0) + "%";
+            case 6: return juce::String (delay.filterCutoff, 0) + "%";
+            case 7: return juce::String (delay.wet, 0) + "%";
+            case 8: return juce::String (delay.stereoWidth, 0) + "%";
         }
     }
     else
@@ -442,16 +455,36 @@ bool SendEffectsComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Left/Right: move between columns
+    // Left/Right: move between columns (seamless across sections)
     if (keyCode == juce::KeyPress::leftKey)
     {
-        currentColumn() = juce::jmax (0, currentColumn() - 1);
+        if (currentColumn() > 0)
+        {
+            currentColumn() -= 1;
+        }
+        else if (section == 1 && reverbColumn == 0)
+        {
+            // At reverb col 0 — jump to last delay column
+            section = 0;
+            delayColumn = kDelayColumns - 1;
+        }
+        // At delay col 0 — stop (boundary)
         repaint();
         return true;
     }
     if (keyCode == juce::KeyPress::rightKey)
     {
-        currentColumn() = juce::jmin (currentColumnCount() - 1, currentColumn() + 1);
+        if (currentColumn() < currentColumnCount() - 1)
+        {
+            currentColumn() += 1;
+        }
+        else if (section == 0 && delayColumn == kDelayColumns - 1)
+        {
+            // At last delay column — jump to reverb col 0
+            section = 1;
+            reverbColumn = 0;
+        }
+        // At last reverb column — stop (boundary)
         repaint();
         return true;
     }
@@ -523,19 +556,22 @@ void SendEffectsComponent::adjustCurrentValue (int direction, bool fine, bool la
             case 2: // BPM Sync toggle
                 delay.bpmSync = ! delay.bpmSync;
                 break;
-            case 3: // Feedback
+            case 3: // Dotted toggle
+                delay.dotted = ! delay.dotted;
+                break;
+            case 4: // Feedback
                 delay.feedback = juce::jlimit (0.0, 100.0, delay.feedback + delta);
                 break;
-            case 4: // Filter type
+            case 5: // Filter type
                 delay.filterType = juce::jlimit (0, 2, delay.filterType + direction);
                 break;
-            case 5: // Filter cutoff
+            case 6: // Filter cutoff
                 delay.filterCutoff = juce::jlimit (0.0, 100.0, delay.filterCutoff + delta);
                 break;
-            case 6: // Wet
+            case 7: // Wet
                 delay.wet = juce::jlimit (0.0, 100.0, delay.wet + delta);
                 break;
-            case 7: // Stereo width
+            case 8: // Ping Pong
                 delay.stereoWidth = juce::jlimit (0.0, 100.0, delay.stereoWidth + delta);
                 break;
         }
@@ -579,7 +615,7 @@ void SendEffectsComponent::notifyChanged()
 bool SendEffectsComponent::isBarColumn() const
 {
     if (section == 0)
-        return delayColumn != 1 && delayColumn != 2 && delayColumn != 4;
+        return delayColumn != 1 && delayColumn != 2 && delayColumn != 3 && delayColumn != 5;
     return true; // All reverb columns are bars
 }
 
@@ -604,10 +640,10 @@ void SendEffectsComponent::setCurrentValueFromNorm (float norm)
                     else delay.syncDivision = 32;
                 }
                 break;
-            case 3: delay.feedback = static_cast<double> (norm) * 100.0; break;
-            case 5: delay.filterCutoff = static_cast<double> (norm) * 100.0; break;
-            case 6: delay.wet = static_cast<double> (norm) * 100.0; break;
-            case 7: delay.stereoWidth = static_cast<double> (norm) * 100.0; break;
+            case 4: delay.feedback = static_cast<double> (norm) * 100.0; break;
+            case 6: delay.filterCutoff = static_cast<double> (norm) * 100.0; break;
+            case 7: delay.wet = static_cast<double> (norm) * 100.0; break;
+            case 8: delay.stereoWidth = static_cast<double> (norm) * 100.0; break;
             default: break;
         }
     }
@@ -700,7 +736,12 @@ void SendEffectsComponent::mouseDown (const juce::MouseEvent& event)
             numItems = 2;
             selectedIdx = delay.bpmSync ? 1 : 0;
         }
-        else if (section == 0 && delayColumn == 4) // Filter type
+        else if (section == 0 && delayColumn == 3) // Dotted
+        {
+            numItems = 2;
+            selectedIdx = delay.dotted ? 1 : 0;
+        }
+        else if (section == 0 && delayColumn == 5) // Filter type
         {
             numItems = 3;
             selectedIdx = delay.filterType;
@@ -725,7 +766,11 @@ void SendEffectsComponent::mouseDown (const juce::MouseEvent& event)
             {
                 delay.bpmSync = (clickedItem == 1);
             }
-            else if (section == 0 && delayColumn == 4)
+            else if (section == 0 && delayColumn == 3)
+            {
+                delay.dotted = (clickedItem == 1);
+            }
+            else if (section == 0 && delayColumn == 5)
             {
                 delay.filterType = clickedItem;
             }

@@ -60,6 +60,9 @@ struct InstrumentParams
         enum class LFOShape { RevSaw, Saw, Triangle, Square, Random };
         LFOShape lfoShape = LFOShape::Triangle;
         int lfoSpeed      = 24;   // step-based speed value
+        enum class LFOSpeedMode { Steps, MS };
+        LFOSpeedMode lfoSpeedMode = LFOSpeedMode::Steps;
+        int lfoSpeedMs    = 500;  // milliseconds (1-5000), used when lfoSpeedMode == MS
         int amount        = 0;    // 0-100 (starts at 0 for safety)
 
         // Envelope
@@ -77,6 +80,8 @@ struct InstrumentParams
             return type == Type::Off
                 && lfoShape == LFOShape::Triangle
                 && lfoSpeed == 24
+                && lfoSpeedMode == LFOSpeedMode::Steps
+                && lfoSpeedMs == 500
                 && amount == 0
                 && attackS == 0.020
                 && decayS == 0.030

@@ -418,8 +418,12 @@ juce::String SampleEditorComponent::getColumnName (int col) const
             auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
             if (mod.type == InstrumentParams::Modulation::Type::LFO)
             {
-                const char* names[] = { "", "", "", "Shape", "Speed", "Amount" };
-                if (col >= 3 && col < 6) return names[col];
+                if (col == 3) return "Shape";
+                if (col == 4)
+                    return mod.lfoSpeedMode == InstrumentParams::Modulation::LFOSpeedMode::MS
+                               ? "Speed (ms)" : "Speed";
+                if (col == 5) return "Amount";
+                if (col == 6) return "Speed Mode";
             }
             else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
             {
@@ -510,8 +514,14 @@ juce::String SampleEditorComponent::getColumnValue (int col) const
                 switch (col)
                 {
                     case 3: return getLfoShapeName (mod.lfoShape);
-                    case 4: return formatLfoSpeed (mod.lfoSpeed);
+                    case 4:
+                        if (mod.lfoSpeedMode == InstrumentParams::Modulation::LFOSpeedMode::MS)
+                            return juce::String (mod.lfoSpeedMs) + " ms";
+                        return formatLfoSpeed (mod.lfoSpeed);
                     case 5: return juce::String (mod.amount);
+                    case 6:
+                        return mod.lfoSpeedMode == InstrumentParams::Modulation::LFOSpeedMode::MS
+                                   ? "MS" : "Steps";
                 }
             }
             else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
@@ -1029,31 +1039,45 @@ void SampleEditorComponent::drawModulationPage (juce::Graphics& g, juce::Rectang
         drawListColumn (g, { area.getX() + 3 * colW, area.getY(), colW, area.getHeight() },
                         shapeItems, shapeIdx, modColumn == 3, orangeCol);
 
-        // Col 4: Speed list
-        juce::StringArray speedItems;
-        int speedSelectedIdx = -1;
-        for (int i = 0; i < kNumLfoSpeeds; ++i)
+        // Col 4: Speed (list of presets in Steps mode, bar meter in MS mode)
+        if (mod.lfoSpeedMode == InstrumentParams::Modulation::LFOSpeedMode::MS)
         {
-            speedItems.add (formatLfoSpeed (kLfoSpeeds[i]));
-            if (kLfoSpeeds[i] == mod.lfoSpeed)
-                speedSelectedIdx = i;
+            float ms01 = static_cast<float> (mod.lfoSpeedMs) / 5000.0f;
+            drawBarMeter (g, { area.getX() + 4 * colW, area.getY(), colW, area.getHeight() },
+                          ms01, modColumn == 4, orangeCol);
         }
-        if (speedSelectedIdx < 0)
+        else
         {
-            speedItems.add (formatLfoSpeed (mod.lfoSpeed));
-            speedSelectedIdx = speedItems.size() - 1;
+            juce::StringArray speedItems;
+            int speedSelectedIdx = -1;
+            for (int i = 0; i < kNumLfoSpeeds; ++i)
+            {
+                speedItems.add (formatLfoSpeed (kLfoSpeeds[i]));
+                if (kLfoSpeeds[i] == mod.lfoSpeed)
+                    speedSelectedIdx = i;
+            }
+            if (speedSelectedIdx < 0)
+            {
+                speedItems.add (formatLfoSpeed (mod.lfoSpeed));
+                speedSelectedIdx = speedItems.size() - 1;
+            }
+            drawListColumn (g, { area.getX() + 4 * colW, area.getY(), colW, area.getHeight() },
+                            speedItems, speedSelectedIdx, modColumn == 4, orangeCol);
         }
-        drawListColumn (g, { area.getX() + 4 * colW, area.getY(), colW, area.getHeight() },
-                        speedItems, speedSelectedIdx, modColumn == 4, orangeCol);
 
         // Col 5: Amount bar
         float amt01 = static_cast<float> (mod.amount) / 100.0f;
         drawBarMeter (g, { area.getX() + 5 * colW, area.getY(), colW, area.getHeight() },
                       amt01, modColumn == 5, orangeCol);
 
-        // Cols 6-7: Empty
-        for (int c = 6; c < numCols; ++c)
-            drawEmptyCol (c);
+        // Col 6: Speed Mode toggle list
+        juce::StringArray speedModeItems = { "Steps", "MS" };
+        int speedModeIdx = static_cast<int> (mod.lfoSpeedMode);
+        drawListColumn (g, { area.getX() + 6 * colW, area.getY(), colW, area.getHeight() },
+                        speedModeItems, speedModeIdx, modColumn == 6, orangeCol);
+
+        // Col 7: Empty
+        drawEmptyCol (7);
     }
     else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
     {
@@ -1413,26 +1437,35 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                 {
                     if (mod.type == InstrumentParams::Modulation::Type::LFO)
                     {
-                        // Jump between speed presets
-                        int curIdx = -1;
-                        for (int i = 0; i < kNumLfoSpeeds; ++i)
+                        if (mod.lfoSpeedMode == InstrumentParams::Modulation::LFOSpeedMode::MS)
                         {
-                            if (kLfoSpeeds[i] == mod.lfoSpeed)
+                            int step = fine ? 1 : (large ? 100 : 10);
+                            mod.lfoSpeedMs = juce::jlimit (1, 5000,
+                                mod.lfoSpeedMs + direction * step);
+                        }
+                        else
+                        {
+                            // Jump between speed presets
+                            int curIdx = -1;
+                            for (int i = 0; i < kNumLfoSpeeds; ++i)
                             {
-                                curIdx = i;
-                                break;
-                            }
-                        }
-                        if (curIdx < 0)
-                        {
-                            // Find nearest preset
-                            curIdx = 0;
-                            for (int i = 1; i < kNumLfoSpeeds; ++i)
-                                if (std::abs (kLfoSpeeds[i] - mod.lfoSpeed) < std::abs (kLfoSpeeds[curIdx] - mod.lfoSpeed))
+                                if (kLfoSpeeds[i] == mod.lfoSpeed)
+                                {
                                     curIdx = i;
+                                    break;
+                                }
+                            }
+                            if (curIdx < 0)
+                            {
+                                // Find nearest preset
+                                curIdx = 0;
+                                for (int i = 1; i < kNumLfoSpeeds; ++i)
+                                    if (std::abs (kLfoSpeeds[i] - mod.lfoSpeed) < std::abs (kLfoSpeeds[curIdx] - mod.lfoSpeed))
+                                        curIdx = i;
+                            }
+                            curIdx = juce::jlimit (0, kNumLfoSpeeds - 1, curIdx + direction);
+                            mod.lfoSpeed = kLfoSpeeds[curIdx];
                         }
-                        curIdx = juce::jlimit (0, kNumLfoSpeeds - 1, curIdx + direction);
-                        mod.lfoSpeed = kLfoSpeeds[curIdx];
                     }
                     else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
                     {
@@ -1457,9 +1490,15 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     break;
                 }
 
-                case 6: // Release (Envelope only)
+                case 6: // Speed Mode (LFO) or Release (Envelope)
                 {
-                    if (mod.type == InstrumentParams::Modulation::Type::Envelope)
+                    if (mod.type == InstrumentParams::Modulation::Type::LFO)
+                    {
+                        int v = static_cast<int> (mod.lfoSpeedMode);
+                        v = (v + direction + 2) % 2;
+                        mod.lfoSpeedMode = static_cast<InstrumentParams::Modulation::LFOSpeedMode> (v);
+                    }
+                    else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
                     {
                         double step = fine ? 0.001 : (large ? 0.5 : 0.01);
                         mod.releaseS = juce::jlimit (0.0, 10.0, mod.releaseS + direction * step);
@@ -1785,16 +1824,24 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                         mod.attackS = juce::jlimit (0.0, 10.0, mod.attackS + normDelta * 10.0);
                     break;
                 }
-                case 4: // Speed (LFO list) or Decay (Env bar 0-10)
+                case 4: // Speed (LFO list/bar) or Decay (Env bar 0-10)
                 {
                     if (mod.type == InstrumentParams::Modulation::Type::LFO)
                     {
-                        int curIdx = 0;
-                        for (int i = 0; i < kNumLfoSpeeds; ++i)
-                            if (kLfoSpeeds[i] == mod.lfoSpeed) curIdx = i;
-                        int newIdx = curIdx - juce::roundToInt (
-                            normDelta * static_cast<double> (kNumLfoSpeeds));
-                        mod.lfoSpeed = kLfoSpeeds[juce::jlimit (0, kNumLfoSpeeds - 1, newIdx)];
+                        if (mod.lfoSpeedMode == InstrumentParams::Modulation::LFOSpeedMode::MS)
+                        {
+                            mod.lfoSpeedMs = juce::jlimit (1, 5000,
+                                mod.lfoSpeedMs + juce::roundToInt (normDelta * 5000.0));
+                        }
+                        else
+                        {
+                            int curIdx = 0;
+                            for (int i = 0; i < kNumLfoSpeeds; ++i)
+                                if (kLfoSpeeds[i] == mod.lfoSpeed) curIdx = i;
+                            int newIdx = curIdx - juce::roundToInt (
+                                normDelta * static_cast<double> (kNumLfoSpeeds));
+                            mod.lfoSpeed = kLfoSpeeds[juce::jlimit (0, kNumLfoSpeeds - 1, newIdx)];
+                        }
                     }
                     else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
                         mod.decayS = juce::jlimit (0.0, 10.0, mod.decayS + normDelta * 10.0);
@@ -1810,8 +1857,15 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                             mod.sustain + juce::roundToInt (normDelta * 100.0));
                     break;
                 }
-                case 6: // Release (Env 0-10)
-                    if (mod.type == InstrumentParams::Modulation::Type::Envelope)
+                case 6: // Speed Mode (LFO list) or Release (Env 0-10)
+                    if (mod.type == InstrumentParams::Modulation::Type::LFO)
+                    {
+                        int v = static_cast<int> (mod.lfoSpeedMode)
+                                - juce::roundToInt (normDelta * 2.0);
+                        mod.lfoSpeedMode = static_cast<InstrumentParams::Modulation::LFOSpeedMode> (
+                            juce::jlimit (0, 1, v));
+                    }
+                    else if (mod.type == InstrumentParams::Modulation::Type::Envelope)
                         mod.releaseS = juce::jlimit (0.0, 10.0, mod.releaseS + normDelta * 10.0);
                     break;
                 case 7: // Amount (Env 0-100)
@@ -1993,7 +2047,13 @@ bool SampleEditorComponent::isCurrentColumnDiscrete() const
         if (modColumn <= 2) return true; // Destination, Type, Mode are always lists
         auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
         if (mod.type == InstrumentParams::Modulation::Type::LFO)
-            return modColumn == 3 || modColumn == 4; // Shape, Speed lists
+        {
+            if (modColumn == 3) return true; // Shape list
+            if (modColumn == 4)
+                return mod.lfoSpeedMode != InstrumentParams::Modulation::LFOSpeedMode::MS; // Steps=list, MS=bar
+            if (modColumn == 6) return true; // Speed Mode list
+            return false;
+        }
         if (mod.type == InstrumentParams::Modulation::Type::Off)
             return true; // Empty columns
         return false;
@@ -2249,7 +2309,7 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Left: move to previous column (stop at boundary)
+    // Left: move to previous column (seamless across sub-tabs in InstrumentEdit)
     if (keyCode == juce::KeyPress::leftKey)
     {
         int col = getFocusedColumn();
@@ -2258,10 +2318,25 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
             setFocusedColumn (col - 1);
             repaint();
         }
+        else if (displayMode == DisplayMode::InstrumentEdit && col == 0)
+        {
+            // Wrap to the other sub-tab's last column
+            if (editSubTab == EditSubTab::Parameters)
+            {
+                setEditSubTab (EditSubTab::Modulation);
+                modColumn = 7; // last modulation column (8 cols, 0-7)
+            }
+            else
+            {
+                setEditSubTab (EditSubTab::Parameters);
+                parametersColumn = 10; // last parameters column (11 cols, 0-10)
+            }
+            repaint();
+        }
         return true;
     }
 
-    // Right: move to next column (stop at boundary)
+    // Right: move to next column (seamless across sub-tabs in InstrumentEdit)
     if (keyCode == juce::KeyPress::rightKey)
     {
         int col = getFocusedColumn();
@@ -2269,6 +2344,21 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
         if (col < count - 1)
         {
             setFocusedColumn (col + 1);
+            repaint();
+        }
+        else if (displayMode == DisplayMode::InstrumentEdit && col == count - 1)
+        {
+            // Wrap to the other sub-tab's first column
+            if (editSubTab == EditSubTab::Parameters)
+            {
+                setEditSubTab (EditSubTab::Modulation);
+                modColumn = 0;
+            }
+            else
+            {
+                setEditSubTab (EditSubTab::Parameters);
+                parametersColumn = 0;
+            }
             repaint();
         }
         return true;
@@ -2624,7 +2714,9 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                     handledAsList = true;
                 }
                 else if (col == 4 && currentParams.modulations[static_cast<size_t> (modDestIndex)].type
-                                      == InstrumentParams::Modulation::Type::LFO)
+                                      == InstrumentParams::Modulation::Type::LFO
+                                  && currentParams.modulations[static_cast<size_t> (modDestIndex)].lfoSpeedMode
+                                      == InstrumentParams::Modulation::LFOSpeedMode::Steps)
                 {
                     int numVisible = contentH / kListItemHeight;
                     auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
@@ -2637,6 +2729,17 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                     int clickedItem = scrollOff + relY / juce::jmax (1, kListItemHeight);
                     if (clickedItem >= 0 && clickedItem < kNumLfoSpeeds)
                         mod.lfoSpeed = kLfoSpeeds[clickedItem];
+                    handledAsList = true;
+                }
+                else if (col == 6 && currentParams.modulations[static_cast<size_t> (modDestIndex)].type
+                                      == InstrumentParams::Modulation::Type::LFO)
+                {
+                    int itemIdx = relY / juce::jmax (1, kListItemHeight);
+                    if (itemIdx >= 0 && itemIdx < 2)
+                    {
+                        auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
+                        mod.lfoSpeedMode = static_cast<InstrumentParams::Modulation::LFOSpeedMode> (itemIdx);
+                    }
                     handledAsList = true;
                 }
 
@@ -2701,7 +2804,9 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                     auto& mod = currentParams.modulations[static_cast<size_t> (modDestIndex)];
                     if (mod.type == InstrumentParams::Modulation::Type::LFO)
                     {
-                        if (modColumn == 5) // Amount
+                        if (modColumn == 4 && mod.lfoSpeedMode == InstrumentParams::Modulation::LFOSpeedMode::MS)
+                            mod.lfoSpeedMs = juce::jlimit (1, 5000, static_cast<int> (norm * 5000.0));
+                        else if (modColumn == 5) // Amount
                             mod.amount = static_cast<int> (norm * 100.0);
                     }
                     else if (mod.type == InstrumentParams::Modulation::Type::Envelope)

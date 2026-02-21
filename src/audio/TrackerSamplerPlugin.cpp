@@ -277,6 +277,13 @@ void TrackerSamplerPlugin::renderForwardLoop (Voice& v, juce::AudioBuffer<float>
     double loopEndPos = regionStart + params.loopEnd * regionLen;
     if (loopEndPos <= loopStartPos) loopEndPos = loopStartPos + 1.0;
     double loopLen = loopEndPos - loopStartPos;
+    auto wrapLoopPosition = [loopStartPos, loopLen] (double pos)
+    {
+        double wrapped = std::fmod (pos - loopStartPos, loopLen);
+        if (wrapped < 0.0)
+            wrapped += loopLen;
+        return loopStartPos + wrapped;
+    };
 
     int numCh = buffer.getNumChannels();
 
@@ -288,16 +295,34 @@ void TrackerSamplerPlugin::renderForwardLoop (Voice& v, juce::AudioBuffer<float>
             buffer.addSample (ch, startSample + i,
                               interpolateSample (bank, ch, v.playbackPos) * v.velocity);
 
-        v.playbackPos += pitchRatio;
+        bool advancedInAttack = false;
+        if (! v.inLoopPhase)
+        {
+            // Forward attack before loop start.
+            if (v.playingForward)
+            {
+                v.playbackPos += pitchRatio;
+                advancedInAttack = true;
+                if (v.playbackPos >= loopStartPos)
+                {
+                    v.inLoopPhase = true;
+                    v.playbackPos = wrapLoopPosition (v.playbackPos);
+                }
+            }
+            else
+            {
+                // Reverse command while in pre-loop attack: enter loop phase immediately.
+                v.inLoopPhase = true;
+                if (v.playbackPos < loopStartPos)
+                    v.playbackPos = loopStartPos;
+            }
+        }
 
-        if (! v.inLoopPhase && v.playbackPos >= loopStartPos)
-            v.inLoopPhase = true;
-
-        if (v.inLoopPhase && v.playbackPos >= loopEndPos)
-            v.playbackPos = loopStartPos + std::fmod (v.playbackPos - loopStartPos, loopLen);
-
-        if (v.playbackPos >= regionEnd)
-            v.playbackPos = loopStartPos;
+        if (v.inLoopPhase && ! advancedInAttack)
+        {
+            v.playbackPos += v.playingForward ? pitchRatio : -pitchRatio;
+            v.playbackPos = wrapLoopPosition (v.playbackPos);
+        }
     }
 }
 
@@ -314,6 +339,14 @@ void TrackerSamplerPlugin::renderBackwardLoop (Voice& v, juce::AudioBuffer<float
     double loopStartPos = regionStart + params.loopStart * regionLen;
     double loopEndPos = regionStart + params.loopEnd * regionLen;
     if (loopEndPos <= loopStartPos) loopEndPos = loopStartPos + 1.0;
+    double loopLen = loopEndPos - loopStartPos;
+    auto wrapLoopPosition = [loopStartPos, loopLen] (double pos)
+    {
+        double wrapped = std::fmod (pos - loopStartPos, loopLen);
+        if (wrapped < 0.0)
+            wrapped += loopLen;
+        return loopStartPos + wrapped;
+    };
 
     int numCh = buffer.getNumChannels();
 
@@ -332,15 +365,13 @@ void TrackerSamplerPlugin::renderBackwardLoop (Voice& v, juce::AudioBuffer<float
             if (v.playbackPos >= loopStartPos)
             {
                 v.inLoopPhase = true;
-                v.playbackPos = loopEndPos - 1.0;
+                v.playbackPos = v.playingForward ? loopStartPos : (loopEndPos - 1.0);
             }
         }
         else
         {
-            // Loop: play backward, wrapping at loop boundaries
-            v.playbackPos -= pitchRatio;
-            if (v.playbackPos < loopStartPos)
-                v.playbackPos = loopEndPos - 1.0;
+            v.playbackPos += v.playingForward ? pitchRatio : -pitchRatio;
+            v.playbackPos = wrapLoopPosition (v.playbackPos);
         }
     }
 }
@@ -420,10 +451,17 @@ void TrackerSamplerPlugin::renderSlice (Voice& v, juce::AudioBuffer<float>& buff
             buffer.addSample (ch, startSample + i,
                               interpolateSample (bank, ch, v.playbackPos) * v.velocity);
 
-        v.playbackPos += pitchRatio;
+        v.playbackPos += v.playingForward ? pitchRatio : -pitchRatio;
 
-        if (v.playbackPos >= v.sliceEnd)
+        if (v.playingForward)
+        {
+            if (v.playbackPos >= v.sliceEnd)
+                v.state = Voice::State::Idle;
+        }
+        else if (v.playbackPos < v.sliceStart)
+        {
             v.state = Voice::State::Idle;
+        }
     }
 }
 
@@ -674,6 +712,14 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     pendingSampleOffsetHighBit = m.getControllerValue() & 0x1;
                     hasPendingSampleOffsetHighBit = true;
                 }
+                // B (direction) and P (position) modify independent voice state:
+                // B sets voice.playingForward, P sets voice.playbackPos via
+                // applyPositionCommandToVoice() which computes an absolute position
+                // (regionStart + frac * regionLen) without referencing direction.
+                // This means slot order does not affect the final result when both
+                // B and P appear in the same tracker step.  On a note-trigger row
+                // both CCs arrive before the note-on, so triggerNote() sees the
+                // directionOverride and pendingSampleOffset is applied afterwards.
                 else if (m.getControllerNumber() == 37) // Bxx direction
                 {
                     const int value = decodeControllerByte (m.getControllerValue());

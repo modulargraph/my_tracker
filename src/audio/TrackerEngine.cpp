@@ -19,6 +19,7 @@ constexpr int kCcFxReverbSend = 36;
 constexpr int kCcSamplerDirection = 37;
 constexpr int kCcSamplerPosition = 38;
 constexpr int kCcFxNoteReset = 39;
+constexpr int kCcFxVolume = 40;
 
 char getSlotCommandLetter (const FxSlot& slot)
 {
@@ -72,6 +73,9 @@ void appendSymbolicTrackFx (juce::MidiMessageSequence& midiSeq, const FxSlot& sl
             break;
         case 'D':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxSlideDown, slot.fxParam, ccTime);
+            break;
+        case 'V':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxVolume, slot.fxParam, ccTime);
             break;
         case 'F':
             // Tempo is handled via master lane tempo points.
@@ -286,7 +290,11 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, kCcFxNoteReset, 0), resetTime);
             }
 
-            // Process all FX slots before note handling.
+            // Process all FX slots before note handling.  Slots are emitted
+            // in lane order at the same ccTime; the sampler processes them
+            // sequentially.  B (direction) and P (position) operate on
+            // independent voice state so their relative slot order does not
+            // matter — see the matching comment in TrackerSamplerPlugin.
             for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
             {
                 const auto& slot = cell.getFxSlot (fxSlotIdx);
@@ -494,6 +502,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, kCcFxNoteReset, 0), resetTime);
                     }
 
+                    // See syncPatternToEdit() — B and P are order-independent.
                     for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
                     {
                         const auto& slot = cell.getFxSlot (fxSlotIdx);

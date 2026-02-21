@@ -12,8 +12,8 @@ constexpr int kNumTracks = 16;
 
 struct FxCommandInfo
 {
-    int command;            // 1-9
-    char letter;            // B, P, T, G, Y, R, S, D, F
+    int command;            // 1-10
+    char letter;            // B, P, T, G, Y, R, S, D, F, V
     juce::String format;    // "Bxx", "Pxx", etc.
     juce::String name;
     juce::String description;
@@ -31,6 +31,7 @@ inline const std::vector<FxCommandInfo>& getFxCommandList()
         { 7, 'S', "Sxy", "Slide Up",        "x semitones in y steps" },
         { 8, 'D', "Dxy", "Slide Down",      "x semitones in y steps" },
         { 9, 'F', "Fxx", "Tempo",           "BPM (master lane only)" },
+        { 10, 'V', "Vxx", "Volume",          "00=silence, 7F=unity, FF=+10dB" },
     };
     return commands;
 }
@@ -49,6 +50,7 @@ inline int fxLetterToCommand (char letter)
         case 'S': case 's': return 7;
         case 'D': case 'd': return 8;
         case 'F': case 'f': return 9;
+        case 'V': case 'v': return 10;
         default: return 0;
     }
 }
