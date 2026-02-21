@@ -235,6 +235,10 @@ public:
 
     const std::array<int, kNumTracks>& getTrackFxLaneCounts() const { return trackFxLaneCounts; }
 
+    // Master lane FX lane count
+    int getMasterFxLaneCount() const { return masterFxLaneCount; }
+    void setMasterFxLaneCount (int count) { masterFxLaneCount = juce::jlimit (1, 8, count); }
+
     void resetToDefault()
     {
         std::iota (visualOrder.begin(), visualOrder.end(), 0);
@@ -242,6 +246,7 @@ public:
         for (auto& n : trackNames) n.clear();
         for (auto& m : trackNoteModes) m = NoteMode::Kill;
         trackFxLaneCounts.fill (1);
+        masterFxLaneCount = 1;
     }
 
     void clear() { resetToDefault(); }
@@ -252,4 +257,5 @@ private:
     std::array<juce::String, kNumTracks> trackNames;
     std::array<NoteMode, kNumTracks> trackNoteModes {};
     std::array<int, kNumTracks> trackFxLaneCounts {};
+    int masterFxLaneCount = 1;
 };

@@ -145,6 +145,8 @@ private:
     float previewVolume = 1.0f;
 
     void prepareTracksForInstrumentUsage (const std::array<std::vector<int>, kNumTracks>& instrumentsByTrack);
+    void rebuildTempoSequenceFromPatternMasterLane (const Pattern& pattern);
+    void rebuildTempoSequenceFromArrangementMasterLane (const std::vector<std::pair<const Pattern*, int>>& sequence, int rpb);
 
     void timerCallback() override;
     void changeListenerCallback (juce::ChangeBroadcaster* source) override;

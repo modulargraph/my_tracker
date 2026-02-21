@@ -60,6 +60,8 @@ private:
     {
         int panningOverride = -1;  // -1 = no override, 0-127 = CC10 value (64=center)
         int volumeOverride = -1;   // -1 = no override, 0-127 from Cxx
+        int delaySendOverride = -1;   // 0-255 (mapped to -100..0 dB)
+        int reverbSendOverride = -1;  // 0-255 (mapped to -100..0 dB)
         std::array<int, InstrumentParams::kNumModDests> modModeOverride;  // -1 = use default
 
         TrackOverrides() { modModeOverride.fill (-1); }
@@ -82,6 +84,9 @@ private:
         int portaSpeed = 0;
         int portaTarget = -1;     // target MIDI note
         float portaPitch = 0.0f;  // current pitch offset
+        int portaSteps = 0;
+        double portaRowsProgress = 0.0;
+        float portaTargetOffset = 0.0f;
 
         // Vibrato (4xy)
         int vibratoSpeed = 0;
@@ -111,6 +116,15 @@ private:
         // Current base MIDI note for pitch effects
         int currentNote = -1;
 
+        // New symbolic command pitch state.
+        float tuneOffset = 0.0f;
+        float stepSlideOffset = 0.0f;
+        bool stepSlideActive = false;
+        float stepSlideStart = 0.0f;
+        float stepSlideTarget = 0.0f;
+        int stepSlideSteps = 0;
+        double stepSlideRowsProgress = 0.0;
+
         // Active flags for memory effects (cleared per row, re-set by CC)
         bool portaActive = false;
         bool vibratoActive = false;
@@ -130,6 +144,16 @@ private:
             trackerSpeed = 6;
             pendingParamHighBit = 0;
             currentNote = -1;
+            tuneOffset = 0.0f;
+            stepSlideOffset = 0.0f;
+            stepSlideActive = false;
+            stepSlideStart = 0.0f;
+            stepSlideTarget = 0.0f;
+            stepSlideSteps = 0;
+            stepSlideRowsProgress = 0.0;
+            portaSteps = 0;
+            portaRowsProgress = 0.0;
+            portaTargetOffset = 0.0f;
         }
     };
     FxState fxState;

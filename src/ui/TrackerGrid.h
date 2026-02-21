@@ -11,6 +11,8 @@ class TrackerGrid : public juce::Component,
                     public juce::FileDragAndDropTarget
 {
 public:
+    static constexpr int kMasterLaneTrack = kNumTracks;
+
     TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf, TrackLayout& layout);
 
     void paint (juce::Graphics& g) override;
@@ -29,6 +31,7 @@ public:
     // Cursor control
     int getCursorRow() const { return cursorRow; }
     int getCursorTrack() const { return cursorTrack; }
+    bool isCursorInMasterLane() const { return cursorTrack == kMasterLaneTrack; }
     SubColumn getCursorSubColumn() const { return cursorSubColumn; }
     void setCursorPosition (int row, int track);
 
@@ -164,6 +167,11 @@ private:
     int scrollOffset = 0;
     int horizontalScrollOffset = 0;
     int getVisibleTrackCount() const;
+    int getTotalVisualColumns() const { return kNumTracks + 1; }
+    bool isMasterVisualColumn (int visualIndex) const { return visualIndex == kNumTracks; }
+    int visualToTrackIndex (int visualIndex) const;
+    int trackToVisualIndex (int trackIndex) const;
+    bool isMasterTrack (int trackIndex) const { return trackIndex == kMasterLaneTrack; }
     void ensureCursorVisible();
 
     // Rendering helpers
@@ -172,6 +180,8 @@ private:
     void drawCells (juce::Graphics& g);
     void drawCell (juce::Graphics& g, const Cell& cell, int x, int y, int width,
                    bool isCursor, bool isCurrentRow, bool isPlaybackRow, int track, int fxLaneCount);
+    void drawMasterCell (juce::Graphics& g, const Pattern& pat, int row, int x, int y, int width,
+                         bool isCursor, bool isCurrentRow, bool isPlaybackRow);
     void drawSelection (juce::Graphics& g);
     void drawGroupHeaders (juce::Graphics& g);
     int getEffectiveHeaderHeight() const;

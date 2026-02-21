@@ -333,7 +333,8 @@ MainComponent::MainComponent()
     sampleEditor->onPreviewRequested = [this] (int inst, int note)
     {
         // Preview through dedicated preview track (no auto-stop; key release stops it).
-        trackerEngine.previewNote (trackerGrid->getCursorTrack(), inst, note, false);
+        int previewTrack = trackerGrid->isCursorInMasterLane() ? 0 : trackerGrid->getCursorTrack();
+        trackerEngine.previewNote (previewTrack, inst, note, false);
     };
     sampleEditor->onPreviewStopped = [this]()
     {
@@ -459,7 +460,8 @@ MainComponent::MainComponent()
     // Note preview callback
     trackerGrid->onNoteEntered = [this] (int note, int instrument)
     {
-        trackerEngine.previewNote (trackerGrid->getCursorTrack(), instrument, note);
+        int previewTrack = trackerGrid->isCursorInMasterLane() ? 0 : trackerGrid->getCursorTrack();
+        trackerEngine.previewNote (previewTrack, instrument, note);
         markDirty();
     };
 
@@ -814,6 +816,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     if (cmd && ! shift && textChar == 'm')
     {
         int track = trackerGrid->getCursorTrack();
+        if (track >= kNumTracks)
+            return true;
         auto* t = trackerEngine.getTrack (track);
         if (t != nullptr)
         {
@@ -828,6 +832,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     if (cmd && shift && textChar == 'M')
     {
         int track = trackerGrid->getCursorTrack();
+        if (track >= kNumTracks)
+            return true;
         auto* t = trackerEngine.getTrack (track);
         if (t != nullptr)
         {
@@ -1068,6 +1074,8 @@ bool MainComponent::perform (const InvocationInfo& info)
         case muteTrack:
         {
             int track = trackerGrid->getCursorTrack();
+            if (track >= kNumTracks)
+                return true;
             auto* t = trackerEngine.getTrack (track);
             if (t) { t->setMute (! t->isMuted (false)); updateMuteSoloState(); markDirty(); }
             return true;
@@ -1075,6 +1083,8 @@ bool MainComponent::perform (const InvocationInfo& info)
         case soloTrack:
         {
             int track = trackerGrid->getCursorTrack();
+            if (track >= kNumTracks)
+                return true;
             auto* t = trackerEngine.getTrack (track);
             if (t) { t->setSolo (! t->isSolo (false)); updateMuteSoloState(); markDirty(); }
             return true;
@@ -1289,7 +1299,9 @@ void MainComponent::updateStatusBar()
 {
     auto playState = trackerEngine.isPlaying() ? "PLAYING" : "STOPPED";
     auto row = juce::String::formatted ("%02X", trackerGrid->getCursorRow());
-    auto track = juce::String::formatted ("%02d", trackerGrid->getCursorTrack() + 1);
+    auto track = trackerGrid->isCursorInMasterLane()
+                     ? juce::String ("MASTER")
+                     : juce::String::formatted ("%02d", trackerGrid->getCursorTrack() + 1);
 
     const char* subColNames[] = { "Note", "Inst", "Vol", "FX" };
     auto subCol = subColNames[static_cast<int> (trackerGrid->getCursorSubColumn())];
@@ -1874,7 +1886,7 @@ void MainComponent::showHelpOverlay()
                     "Cmd+1 to Cmd+8   Set octave 0-7",
                     "= (note col)     Note-off (OFF)",
                     "- (note col)     Note-kill (KILL)",
-                    "0-9, A-F          Hex entry",
+                    "FX: letter+2 hex  (e.g. T0C, P80)",
                     "/ or ? (FX col)   FX command list",
                     "Backspace         Clear cell" }},
                 { "PLAYBACK", {
@@ -2092,15 +2104,24 @@ void MainComponent::doCopy()
         // Selection bounds are in visual space — copy visual columns
         int minRow, maxRow, minViTrack, maxViTrack;
         trackerGrid->getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
+        int copyStartVi = juce::jmax (0, minViTrack);
+        int copyEndVi = juce::jmin (kNumTracks - 1, maxViTrack);
+        if (copyStartVi > copyEndVi)
+        {
+            clip.numRows = 0;
+            clip.numTracks = 0;
+            clip.cells.clear();
+            return;
+        }
         clip.numRows = maxRow - minRow + 1;
-        clip.numTracks = maxViTrack - minViTrack + 1;
+        clip.numTracks = copyEndVi - copyStartVi + 1;
         clip.cells.resize (static_cast<size_t> (clip.numRows));
         for (int r = 0; r < clip.numRows; ++r)
         {
             clip.cells[static_cast<size_t> (r)].resize (static_cast<size_t> (clip.numTracks));
             for (int t = 0; t < clip.numTracks; ++t)
             {
-                int phys = trackLayout.visualToPhysical (minViTrack + t);
+                int phys = trackLayout.visualToPhysical (copyStartVi + t);
                 clip.cells[static_cast<size_t> (r)][static_cast<size_t> (t)] =
                     pat.getCell (minRow + r, phys);
             }
@@ -2108,6 +2129,14 @@ void MainComponent::doCopy()
     }
     else
     {
+        if (trackerGrid->isCursorInMasterLane())
+        {
+            clip.numRows = 0;
+            clip.numTracks = 0;
+            clip.cells.clear();
+            return;
+        }
+
         // Copy single cell at cursor
         clip.copyFromPattern (pat, trackerGrid->getCursorRow(), trackerGrid->getCursorRow(),
                               trackerGrid->getCursorTrack(), trackerGrid->getCursorTrack());
@@ -2118,6 +2147,7 @@ void MainComponent::doPaste()
 {
     auto& clip = getClipboard();
     if (clip.isEmpty()) return;
+    if (trackerGrid->isCursorInMasterLane()) return;
 
     auto& pat = patternData.getCurrentPattern();
     int destRow = trackerGrid->getCursorRow();
@@ -2161,28 +2191,49 @@ void MainComponent::doCut()
         trackerGrid->getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
 
         std::vector<MultiCellEditAction::CellRecord> records;
+        bool changedMaster = false;
         for (int r = minRow; r <= maxRow; ++r)
         {
             for (int vi = minViTrack; vi <= maxViTrack; ++vi)
             {
-                int phys = trackLayout.visualToPhysical (vi);
-                MultiCellEditAction::CellRecord rec;
-                rec.row = r;
-                rec.track = phys;
-                rec.oldCell = pat.getCell (r, phys);
-                rec.newCell = Cell{}; // cleared
-                records.push_back (rec);
+                if (vi >= kNumTracks)
+                {
+                    for (int lane = 0; lane < trackLayout.getMasterFxLaneCount(); ++lane)
+                        pat.getMasterFxSlot (r, lane).clear();
+                    changedMaster = true;
+                }
+                else
+                {
+                    int phys = trackLayout.visualToPhysical (vi);
+                    MultiCellEditAction::CellRecord rec;
+                    rec.row = r;
+                    rec.track = phys;
+                    rec.oldCell = pat.getCell (r, phys);
+                    rec.newCell = Cell{}; // cleared
+                    records.push_back (rec);
+                }
             }
         }
-        undoManager.perform (new MultiCellEditAction (patternData, patIdx, std::move (records)));
+        if (! records.empty())
+            undoManager.perform (new MultiCellEditAction (patternData, patIdx, std::move (records)));
+        if (changedMaster)
+            markDirty();
         trackerGrid->clearSelection();
     }
     else
     {
         int r = trackerGrid->getCursorRow();
         int t = trackerGrid->getCursorTrack();
-        Cell empty;
-        undoManager.perform (new CellEditAction (patternData, patIdx, r, t, empty));
+        if (t >= kNumTracks)
+        {
+            pat.getMasterFxSlot (r, trackerGrid->getCursorFxLane()).clear();
+            markDirty();
+        }
+        else
+        {
+            Cell empty;
+            undoManager.perform (new CellEditAction (patternData, patIdx, r, t, empty));
+        }
     }
 
     trackerGrid->repaint();

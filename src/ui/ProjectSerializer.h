@@ -42,5 +42,5 @@ public:
 
 private:
     static juce::ValueTree patternToValueTree (const Pattern& pattern, int index);
-    static void valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern);
+    static void valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern, int version);
 };

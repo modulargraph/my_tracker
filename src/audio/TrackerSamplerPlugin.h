@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <memory>
 #include <JuceHeader.h>
 #include <tracktion_engine/tracktion_engine.h>
 #include "InstrumentParams.h"
@@ -84,6 +85,9 @@ private:
         enum class State { Idle, Playing, FadingOut };
         State state = State::Idle;
 
+        std::shared_ptr<const SampleBank> bank;
+        InstrumentParams params;
+
         double playbackPos = 0.0;
         int midiNote = 60;
         float velocity = 1.0f;
@@ -107,6 +111,8 @@ private:
         void reset()
         {
             state = State::Idle;
+            bank.reset();
+            params = {};
             playbackPos = 0.0;
             midiNote = 60;
             velocity = 1.0f;
@@ -146,6 +152,7 @@ private:
     int pendingSampleOffsetHighBit = 0;
     bool hasPendingSampleOffsetHighBit = false;
     int currentBankMsb = 0;
+    int directionOverride = -1; // -1 = instrument default, 0 = backward, 1 = forward
 
     // Audio thread state
     double outputSampleRate = 44100.0;
@@ -157,9 +164,8 @@ private:
 
     // Rendering
     void triggerNote (Voice& v, int note, float vel,
-                      const SampleBank& bank, const InstrumentParams& params);
-    void renderVoice (Voice& v, juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
-                      const SampleBank& bank, const InstrumentParams& params);
+                      std::shared_ptr<const SampleBank> bank, const InstrumentParams& params);
+    void renderVoice (Voice& v, juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
 
     void renderOneShot (Voice& v, juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
                         const SampleBank& bank, const InstrumentParams& params);
@@ -173,6 +179,7 @@ private:
                       const SampleBank& bank, const InstrumentParams& params);
     void renderGranular (Voice& v, juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
                          const SampleBank& bank, const InstrumentParams& params);
+    void applyPositionCommandToVoice (Voice& v, int positionByte);
 
     double getPitchRatio (int midiNote, const SampleBank& bank, const InstrumentParams& params) const;
     float interpolateSample (const SampleBank& bank, int channel, double pos) const;

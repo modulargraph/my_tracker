@@ -587,10 +587,8 @@ bool testProjectRoundTripKeepsHighInstrumentAndFxSlots()
     cell.note = 72;
     cell.instrument = 255;
     cell.volume = 127;
-    cell.getFxSlot (0).fx = 0x8;
-    cell.getFxSlot (0).fxParam = 0xFF;
-    cell.getFxSlot (1).fx = 0xF;
-    cell.getFxSlot (1).fxParam = 0x1F;
+    cell.getFxSlot (0).setSymbolicCommand ('D', 0xFF);
+    cell.getFxSlot (1).setSymbolicCommand ('F', 0x1F);
     source.getPattern (0).setCell (0, 0, cell);
 
     Arrangement arrangement;
@@ -654,8 +652,8 @@ bool testProjectRoundTripKeepsHighInstrumentAndFxSlots()
         return false;
     }
 
-    if (loadedCell.getFxSlot (0).fx != 0x8 || loadedCell.getFxSlot (0).fxParam != 0xFF
-        || loadedCell.getFxSlot (1).fx != 0xF || loadedCell.getFxSlot (1).fxParam != 0x1F)
+    if (loadedCell.getFxSlot (0).fxCommand != 'D' || loadedCell.getFxSlot (0).fxParam != 0xFF
+        || loadedCell.getFxSlot (1).fxCommand != 'F' || loadedCell.getFxSlot (1).fxParam != 0x1F)
     {
         std::cerr << "FX slot data mismatch after round-trip\n";
         return false;
@@ -1199,8 +1197,7 @@ bool testCellEdgeValuesRoundTrip()
     maxCell.note = 127;
     maxCell.instrument = 255;
     maxCell.volume = 127;
-    maxCell.getFxSlot (0).fx = 0xF;
-    maxCell.getFxSlot (0).fxParam = 0xFF;
+    maxCell.getFxSlot (0).setSymbolicCommand ('F', 0xFF);
     source.getPattern (0).setCell (1, 0, maxCell);
 
     // Row 2: note-off
@@ -1255,7 +1252,7 @@ bool testCellEdgeValuesRoundTrip()
         std::cerr << "max cell values mismatch\n";
         return false;
     }
-    if (c1.getFxSlot (0).fx != 0xF || c1.getFxSlot (0).fxParam != 0xFF)
+    if (c1.getFxSlot (0).fxCommand != 'F' || c1.getFxSlot (0).fxParam != 0xFF)
     {
         std::cerr << "max FX values mismatch\n";
         return false;
@@ -1622,10 +1619,8 @@ bool testPatternMultiFxSlotRoundTrip()
     cell.note = 60;
     cell.instrument = 0;
     // Set up to 4 FX slots if supported
-    cell.getFxSlot (0).fx = 0x0;
-    cell.getFxSlot (0).fxParam = 0x37;  // Arpeggio
-    cell.getFxSlot (1).fx = 0xF;
-    cell.getFxSlot (1).fxParam = 0x80;  // Speed/Tempo
+    cell.getFxSlot (0).setSymbolicCommand ('S', 0x37);
+    cell.getFxSlot (1).setSymbolicCommand ('F', 0x80);
     source.getPattern (0).setCell (0, 0, cell);
 
     Arrangement arrangement;
@@ -1663,8 +1658,8 @@ bool testPatternMultiFxSlotRoundTrip()
     }
 
     auto c = loaded.getPattern (0).getCell (0, 0);
-    if (c.getFxSlot (0).fx != 0x0 || c.getFxSlot (0).fxParam != 0x37
-        || c.getFxSlot (1).fx != 0xF || c.getFxSlot (1).fxParam != 0x80)
+    if (c.getFxSlot (0).fxCommand != 'S' || c.getFxSlot (0).fxParam != 0x37
+        || c.getFxSlot (1).fxCommand != 'F' || c.getFxSlot (1).fxParam != 0x80)
     {
         std::cerr << "multi FX slot data mismatch\n";
         return false;
@@ -1720,6 +1715,132 @@ bool testTrackLayoutFxLaneCountRoundTrip()
         || trackLayoutOut.getTrackFxLaneCount (2) != 8)
     {
         std::cerr << "FX lane counts mismatch after round-trip\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testSymbolicFxTokenRoundTrip()
+{
+    PatternData source;
+    source.getPattern (0).resize (8);
+
+    TrackLayout trackLayout;
+    trackLayout.setTrackFxLaneCount (0, 2);
+
+    Cell cell;
+    cell.note = 60;
+    cell.instrument = 1;
+    cell.getFxSlot (0).setSymbolicCommand ('T', 0xF8);
+    cell.getFxSlot (1).setSymbolicCommand ('G', 0x14);
+    source.getPattern (0).setCell (1, 0, cell);
+
+    Arrangement arrangement;
+    MixerState mixerState;
+    DelayParams delayParams;
+    ReverbParams reverbParams;
+    std::map<int, juce::File> loadedSamples;
+    std::map<int, InstrumentParams> instrumentParams;
+
+    PatternData loaded;
+    double loadedBpm = 0.0;
+    int loadedRpb = 0;
+    std::map<int, juce::File> loadedSamplesOut;
+    std::map<int, InstrumentParams> instrumentParamsOut;
+    Arrangement arrangementOut;
+    TrackLayout trackLayoutOut;
+    MixerState mixerStateOut;
+    DelayParams delayOut;
+    ReverbParams reverbOut;
+
+    auto err = runProjectRoundTrip ("tracker_adjust_tests_symbolic_fx",
+                                    source, 120.0, 4,
+                                    loadedSamples, instrumentParams,
+                                    arrangement, trackLayout, mixerState,
+                                    delayParams, reverbParams, 0, {},
+                                    loaded, loadedBpm, loadedRpb,
+                                    loadedSamplesOut, instrumentParamsOut,
+                                    arrangementOut, trackLayoutOut,
+                                    mixerStateOut, delayOut, reverbOut);
+    if (err.isNotEmpty())
+    {
+        std::cerr << "symbolic FX round-trip failed: " << err << "\n";
+        return false;
+    }
+
+    const auto loadedCell = loaded.getPattern (0).getCell (1, 0);
+    if (loadedCell.getNumFxSlots() < 2)
+    {
+        std::cerr << "expected 2 FX lanes after symbolic round-trip\n";
+        return false;
+    }
+
+    if (loadedCell.getFxSlot (0).fxCommand != 'T' || loadedCell.getFxSlot (0).fxParam != 0xF8
+        || loadedCell.getFxSlot (1).fxCommand != 'G' || loadedCell.getFxSlot (1).fxParam != 0x14)
+    {
+        std::cerr << "symbolic FX token mismatch after round-trip\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testMasterLaneRoundTrip()
+{
+    PatternData source;
+    source.getPattern (0).resize (16);
+    source.getPattern (0).ensureMasterFxSlots (3);
+    source.getPattern (0).getMasterFxSlot (0, 0).setSymbolicCommand ('F', 130);
+    source.getPattern (0).getMasterFxSlot (4, 2).setSymbolicCommand ('F', 176);
+
+    TrackLayout trackLayout;
+    trackLayout.setMasterFxLaneCount (3);
+
+    Arrangement arrangement;
+    MixerState mixerState;
+    DelayParams delayParams;
+    ReverbParams reverbParams;
+    std::map<int, juce::File> loadedSamples;
+    std::map<int, InstrumentParams> instrumentParams;
+
+    PatternData loaded;
+    double loadedBpm = 0.0;
+    int loadedRpb = 0;
+    std::map<int, juce::File> loadedSamplesOut;
+    std::map<int, InstrumentParams> instrumentParamsOut;
+    Arrangement arrangementOut;
+    TrackLayout trackLayoutOut;
+    MixerState mixerStateOut;
+    DelayParams delayOut;
+    ReverbParams reverbOut;
+
+    auto err = runProjectRoundTrip ("tracker_adjust_tests_master_lane",
+                                    source, 120.0, 4,
+                                    loadedSamples, instrumentParams,
+                                    arrangement, trackLayout, mixerState,
+                                    delayParams, reverbParams, 0, {},
+                                    loaded, loadedBpm, loadedRpb,
+                                    loadedSamplesOut, instrumentParamsOut,
+                                    arrangementOut, trackLayoutOut,
+                                    mixerStateOut, delayOut, reverbOut);
+    if (err.isNotEmpty())
+    {
+        std::cerr << "master lane round-trip failed: " << err << "\n";
+        return false;
+    }
+
+    if (trackLayoutOut.getMasterFxLaneCount() != 3)
+    {
+        std::cerr << "master lane count mismatch after round-trip\n";
+        return false;
+    }
+
+    const auto& pat = loaded.getPattern (0);
+    if (pat.getMasterFxSlot (0, 0).fxCommand != 'F' || pat.getMasterFxSlot (0, 0).fxParam != 130
+        || pat.getMasterFxSlot (4, 2).fxCommand != 'F' || pat.getMasterFxSlot (4, 2).fxParam != 176)
+    {
+        std::cerr << "master FX content mismatch after round-trip\n";
         return false;
     }
 
@@ -1975,6 +2096,8 @@ int main()
         { "EmptyArrangementRoundTrip", &testEmptyArrangementRoundTrip },
         { "PatternMultiFxSlotRoundTrip", &testPatternMultiFxSlotRoundTrip },
         { "TrackLayoutFxLaneCountRoundTrip", &testTrackLayoutFxLaneCountRoundTrip },
+        { "SymbolicFxTokenRoundTrip", &testSymbolicFxTokenRoundTrip },
+        { "MasterLaneRoundTrip", &testMasterLaneRoundTrip },
         { "MixerMuteSoloRoundTrip", &testMixerMuteSoloRoundTrip },
         { "ArrangementRemapPreservesRepeats", &testArrangementRemapPreservesRepeats },
         { "GranularCenterUsesAbsolutePosition", &testGranularCenterUsesAbsolutePosition },

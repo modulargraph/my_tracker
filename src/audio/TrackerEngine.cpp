@@ -8,6 +8,80 @@
 #include "InstrumentRouting.h"
 #include "FxParamTransport.h"
 
+namespace
+{
+constexpr int kCcFxTune = 31;
+constexpr int kCcFxPortaSteps = 32;
+constexpr int kCcFxSlideUp = 33;
+constexpr int kCcFxSlideDown = 34;
+constexpr int kCcFxDelaySend = 35;
+constexpr int kCcFxReverbSend = 36;
+constexpr int kCcSamplerDirection = 37;
+constexpr int kCcSamplerPosition = 38;
+constexpr int kCcFxNoteReset = 39;
+
+char getSlotCommandLetter (const FxSlot& slot)
+{
+    return slot.getCommandLetter();
+}
+
+int getRowTempoCommand (const Pattern& pattern, int row)
+{
+    if (row < 0 || row >= pattern.numRows)
+        return -1;
+
+    int bpm = -1;
+    int laneCount = row < static_cast<int> (pattern.masterFxRows.size())
+                        ? static_cast<int> (pattern.masterFxRows[static_cast<size_t> (row)].size())
+                        : 0;
+
+    for (int lane = 0; lane < laneCount; ++lane)
+    {
+        const auto& slot = pattern.getMasterFxSlot (row, lane);
+        if (getSlotCommandLetter (slot) == 'F')
+            bpm = juce::jlimit (20, 300, slot.fxParam);
+    }
+
+    return bpm;
+}
+
+void appendSymbolicTrackFx (juce::MidiMessageSequence& midiSeq, const FxSlot& slot, double ccTime)
+{
+    switch (getSlotCommandLetter (slot))
+    {
+        case 'B':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcSamplerDirection, slot.fxParam, ccTime);
+            break;
+        case 'P':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcSamplerPosition, slot.fxParam, ccTime);
+            break;
+        case 'T':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxTune, slot.fxParam, ccTime);
+            break;
+        case 'G':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxPortaSteps, slot.fxParam, ccTime);
+            break;
+        case 'Y':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxDelaySend, slot.fxParam, ccTime);
+            break;
+        case 'R':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxReverbSend, slot.fxParam, ccTime);
+            break;
+        case 'S':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxSlideUp, slot.fxParam, ccTime);
+            break;
+        case 'D':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxSlideDown, slot.fxParam, ccTime);
+            break;
+        case 'F':
+            // Tempo is handled via master lane tempo points.
+            break;
+        default:
+            break;
+    }
+}
+} // namespace
+
 TrackerEngine::TrackerEngine()
 {
     currentTrackInstrument.fill (-1);
@@ -74,11 +148,94 @@ void TrackerEngine::initialise()
     edit->getTransport().ensureContextAllocated();
 }
 
+void TrackerEngine::rebuildTempoSequenceFromPatternMasterLane (const Pattern& pattern)
+{
+    if (edit == nullptr)
+        return;
+
+    auto& tempoSequence = edit->tempoSequence;
+    const double baseBpm = tempoSequence.getTempos()[0]->getBpm();
+
+    while (tempoSequence.getNumTempos() > 1)
+        tempoSequence.removeTempo (tempoSequence.getNumTempos() - 1, false);
+
+    tempoSequence.getTempos()[0]->setBpm (baseBpm);
+
+    std::map<double, int> tempoPoints;
+    for (int row = 0; row < pattern.numRows; ++row)
+    {
+        int bpm = getRowTempoCommand (pattern, row);
+        if (bpm <= 0)
+            continue;
+
+        double beat = static_cast<double> (row) / static_cast<double> (rowsPerBeat);
+        tempoPoints[beat] = bpm;
+    }
+
+    for (const auto& [beat, bpm] : tempoPoints)
+    {
+        if (beat <= 0.0)
+            tempoSequence.getTempos()[0]->setBpm (bpm);
+        else
+            tempoSequence.insertTempo (te::BeatPosition::fromBeats (beat), bpm, 0.0f);
+    }
+}
+
+void TrackerEngine::rebuildTempoSequenceFromArrangementMasterLane (const std::vector<std::pair<const Pattern*, int>>& sequence, int rpb)
+{
+    if (edit == nullptr)
+        return;
+
+    auto& tempoSequence = edit->tempoSequence;
+    const double baseBpm = tempoSequence.getTempos()[0]->getBpm();
+
+    while (tempoSequence.getNumTempos() > 1)
+        tempoSequence.removeTempo (tempoSequence.getNumTempos() - 1, false);
+
+    tempoSequence.getTempos()[0]->setBpm (baseBpm);
+
+    std::map<double, int> tempoPoints;
+    double beatOffset = 0.0;
+
+    for (const auto& [pattern, repeats] : sequence)
+    {
+        if (pattern == nullptr)
+            continue;
+
+        const double patternLengthBeats = static_cast<double> (pattern->numRows) / static_cast<double> (rpb);
+
+        for (int rep = 0; rep < repeats; ++rep)
+        {
+            for (int row = 0; row < pattern->numRows; ++row)
+            {
+                int bpm = getRowTempoCommand (*pattern, row);
+                if (bpm <= 0)
+                    continue;
+
+                double beat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
+                tempoPoints[beat] = bpm;
+            }
+
+            beatOffset += patternLengthBeats;
+        }
+    }
+
+    for (const auto& [beat, bpm] : tempoPoints)
+    {
+        if (beat <= 0.0)
+            tempoSequence.getTempos()[0]->setBpm (bpm);
+        else
+            tempoSequence.insertTempo (te::BeatPosition::fromBeats (beat), bpm, 0.0f);
+    }
+}
+
 void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                                        const std::array<bool, kNumTracks>& releaseMode)
 {
     if (edit == nullptr)
         return;
+
+    rebuildTempoSequenceFromPatternMasterLane (pattern);
 
     // Ensure correct instruments are loaded on each track
     prepareTracksForPattern (pattern);
@@ -113,6 +270,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
         bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
         int lastPlayingNote = -1;
         int currentInst = -1;
+        int activePortaSteps = 0;
 
         for (int row = 0; row < pattern.numRows; ++row)
         {
@@ -122,84 +280,31 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
             double startBeat = static_cast<double> (row) / static_cast<double> (rowsPerBeat);
             auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
 
-            // Send row boundary CC to clear per-row continuous effects
-            double boundaryTime = juce::jmax (0.0, rowTime.inSeconds() - 0.0002);
-            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 119, 0), boundaryTime);
-
-            // Scan FX slots to check if portamento is active on this row
-            bool rowHasPorta = false;
-            for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
+            if (cell.note >= 0)
             {
-                int fx = cell.getFxSlot (fxSlotIdx).fx;
-                if (fx == 0x3 || fx == 0x5) // Portamento or Vol Slide+Porta
-                    rowHasPorta = true;
+                const double resetTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00008);
+                midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, kCcFxNoteReset, 0), resetTime);
             }
 
-            // Process ALL FX slots (before note check -- effects work independently)
+            // Process all FX slots before note handling.
             for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
             {
                 const auto& slot = cell.getFxSlot (fxSlotIdx);
-                if (slot.fx > 0 || (slot.fx == 0 && slot.fxParam > 0))
-                {
-                    double ccTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00005);
+                if (slot.isEmpty())
+                    continue;
 
-                    switch (slot.fx)
-                    {
-                        case 0x0: // Arpeggio: 0xy -> CC#20
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 20, slot.fxParam, ccTime);
-                            break;
-                        case 0x1: // Slide Up: 1xx -> CC#21
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 21, slot.fxParam, ccTime);
-                            break;
-                        case 0x2: // Slide Down: 2xx -> CC#22
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 22, slot.fxParam, ccTime);
-                            break;
-                        case 0x3: // Tone Portamento: 3xx -> CC#23
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 23, slot.fxParam, ccTime);
-                            break;
-                        case 0x4: // Vibrato: 4xy -> CC#24
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 24, slot.fxParam, ccTime);
-                            break;
-                        case 0x5: // Vol Slide+Porta: 5xy -> CC#25
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 25, slot.fxParam, ccTime);
-                            break;
-                        case 0x6: // Vol Slide+Vibrato: 6xy -> CC#26
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 26, slot.fxParam, ccTime);
-                            break;
-                        case 0x7: // Tremolo: 7xy -> CC#27
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 27, slot.fxParam, ccTime);
-                            break;
-                        case 0x8: // Panning: 8xx -> CC#10
-                        {
-                            int ccVal = juce::jlimit (0, 127, slot.fxParam / 2);
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 10, ccVal), ccTime);
-                            break;
-                        }
-                        case 0x9: // Sample Offset: 9xx -> CC#9
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 9, slot.fxParam, ccTime);
-                            break;
-                        case 0xA: // Volume Slide: Axy -> CC#30
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 30, slot.fxParam, ccTime);
-                            break;
-                        case 0xC: // Set Volume: Cxx -> CC#7
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, juce::jlimit (0, 127, slot.fxParam)), ccTime);
-                            break;
-                        case 0xE: // Mod mode: Exy -> CC#85 (re-encode for 7-bit: dest*2+mode)
-                        {
-                            int dest = (slot.fxParam >> 4) & 0xF;
-                            int mode = slot.fxParam & 0x1;
-                            int ccVal = dest * 2 + mode;
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 85, ccVal), ccTime);
-                            break;
-                        }
-                        case 0xF: // Set Speed/Tempo: Fxx -> CC#110
-                            FxParamTransport::appendByteAsControllers (midiSeq, 1, 110, slot.fxParam, ccTime);
-                            break;
-                        default:
-                            break;
-                    }
-                }
+                const auto letter = getSlotCommandLetter (slot);
+                if (letter == '\0')
+                    continue;
+
+                if (letter == 'G' && slot.fxParam > 0)
+                    activePortaSteps = slot.fxParam;
+
+                const double ccTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00005);
+                appendSymbolicTrackFx (midiSeq, slot, ccTime);
             }
+
+            const bool rowHasPorta = (activePortaSteps > 0);
 
             // Skip note-less rows for note processing
             if (cell.note < 0)
@@ -213,6 +318,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 else
                     midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), rowTime.inSeconds());
                 lastPlayingNote = -1;
+                activePortaSteps = 0;
                 continue;
             }
 
@@ -221,6 +327,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
             {
                 midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), rowTime.inSeconds());
                 lastPlayingNote = -1;
+                activePortaSteps = 0;
                 continue;
             }
 
@@ -235,6 +342,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 if (cell.volume >= 0)
                     midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, cell.volume),
                                       juce::jmax (0.0, rowTime.inSeconds() - 0.00003));
+                activePortaSteps = 0;
                 continue;
             }
 
@@ -263,8 +371,8 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                     {
                         for (int fxi = 0; fxi < nextCell.getNumFxSlots(); ++fxi)
                         {
-                            int fx = nextCell.getFxSlot (fxi).fx;
-                            if (fx == 0x3 || fx == 0x5)
+                            const auto& nextSlot = nextCell.getFxSlot (fxi);
+                            if (getSlotCommandLetter (nextSlot) == 'G' && nextSlot.fxParam > 0)
                                 nextIsPorta = true;
                         }
                     }
@@ -294,6 +402,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                               noteEnd.inSeconds());
 
             lastPlayingNote = cell.note;
+            activePortaSteps = 0;
         }
 
         midiSeq.updateMatchedPairs();
@@ -308,6 +417,8 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
 {
     if (edit == nullptr || sequence.empty())
         return;
+
+    rebuildTempoSequenceFromArrangementMasterLane (sequence, rpb);
 
     // Prepare instruments once across the full arrangement so program changes can
     // switch to any instrument used by any pattern in the sequence.
@@ -361,6 +472,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
         bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
         int lastPlayingNote = -1;
         int currentInst = -1;
+        int activePortaSteps = 0;
 
         for (auto& [pattern, repeats] : sequence)
         {
@@ -376,79 +488,30 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     double startBeat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
                     auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
 
-                    // Send row boundary CC to clear per-row continuous effects
-                    double boundaryTime = juce::jmax (0.0, rowTime.inSeconds() - 0.0002);
-                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 119, 0), boundaryTime);
-
-                    // Scan FX slots for portamento
-                    bool rowHasPorta = false;
-                    for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
+                    if (cell.note >= 0)
                     {
-                        int fx = cell.getFxSlot (fxSlotIdx).fx;
-                        if (fx == 0x3 || fx == 0x5)
-                            rowHasPorta = true;
+                        const double resetTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00008);
+                        midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, kCcFxNoteReset, 0), resetTime);
                     }
 
-                    // Process ALL FX slots (before note check)
                     for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
                     {
                         const auto& slot = cell.getFxSlot (fxSlotIdx);
-                        if (slot.fx > 0 || (slot.fx == 0 && slot.fxParam > 0))
-                        {
-                            double ccTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00005);
+                        if (slot.isEmpty())
+                            continue;
 
-                            switch (slot.fx)
-                            {
-                                case 0x0:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 20, slot.fxParam, ccTime);
-                                    break;
-                                case 0x1:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 21, slot.fxParam, ccTime);
-                                    break;
-                                case 0x2:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 22, slot.fxParam, ccTime);
-                                    break;
-                                case 0x3:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 23, slot.fxParam, ccTime);
-                                    break;
-                                case 0x4:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 24, slot.fxParam, ccTime);
-                                    break;
-                                case 0x5:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 25, slot.fxParam, ccTime);
-                                    break;
-                                case 0x6:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 26, slot.fxParam, ccTime);
-                                    break;
-                                case 0x7:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 27, slot.fxParam, ccTime);
-                                    break;
-                                case 0x8:
-                                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 10, juce::jlimit (0, 127, slot.fxParam / 2)), ccTime);
-                                    break;
-                                case 0x9:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 9, slot.fxParam, ccTime);
-                                    break;
-                                case 0xA:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 30, slot.fxParam, ccTime);
-                                    break;
-                                case 0xC:
-                                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, juce::jlimit (0, 127, slot.fxParam)), ccTime);
-                                    break;
-                                case 0xE:
-                                {
-                                    int d = (slot.fxParam >> 4) & 0xF;
-                                    int m = slot.fxParam & 0x1;
-                                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 85, d * 2 + m), ccTime);
-                                    break;
-                                }
-                                case 0xF:
-                                    FxParamTransport::appendByteAsControllers (midiSeq, 1, 110, slot.fxParam, ccTime);
-                                    break;
-                                default: break;
-                            }
-                        }
+                        const auto letter = getSlotCommandLetter (slot);
+                        if (letter == '\0')
+                            continue;
+
+                        if (letter == 'G' && slot.fxParam > 0)
+                            activePortaSteps = slot.fxParam;
+
+                        const double ccTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00005);
+                        appendSymbolicTrackFx (midiSeq, slot, ccTime);
                     }
+
+                    const bool rowHasPorta = (activePortaSteps > 0);
 
                     // Skip note-less rows for note processing
                     if (cell.note < 0)
@@ -462,6 +525,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         else
                             midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), rowTime.inSeconds());
                         lastPlayingNote = -1;
+                        activePortaSteps = 0;
                         continue;
                     }
 
@@ -470,6 +534,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     {
                         midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), rowTime.inSeconds());
                         lastPlayingNote = -1;
+                        activePortaSteps = 0;
                         continue;
                     }
 
@@ -481,6 +546,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         if (cell.volume >= 0)
                             midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, cell.volume),
                                               juce::jmax (0.0, rowTime.inSeconds() - 0.00003));
+                        activePortaSteps = 0;
                         continue;
                     }
 
@@ -509,8 +575,8 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                             {
                                 for (int fxi = 0; fxi < nextCell.getNumFxSlots(); ++fxi)
                                 {
-                                    int fx = nextCell.getFxSlot (fxi).fx;
-                                    if (fx == 0x3 || fx == 0x5)
+                                    const auto& nextSlot = nextCell.getFxSlot (fxi);
+                                    if (getSlotCommandLetter (nextSlot) == 'G' && nextSlot.fxParam > 0)
                                         nextIsPorta = true;
                                 }
                             }
@@ -539,6 +605,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                                       noteEnd.inSeconds());
 
                     lastPlayingNote = cell.note;
+                    activePortaSteps = 0;
                 }
 
                 beatOffset += patternLengthBeats;
@@ -846,14 +913,7 @@ void TrackerEngine::prepareTracksForInstrumentUsage (const std::array<std::vecto
             fxPlugin->setGlobalModState (sampler.getOrCreateGlobalModState (firstInst));
             fxPlugin->setGlobalModStates (globalStates);
             fxPlugin->setSendBuffers (&sampler.getSendBuffers());
-            fxPlugin->onTempoChange = [this] (int bpmValue)
-            {
-                juce::MessageManager::callAsync ([this, bpmValue]()
-                {
-                    if (edit != nullptr && bpmValue >= 32 && bpmValue <= 255)
-                        edit->tempoSequence.getTempos()[0]->setBpm (static_cast<double> (bpmValue));
-                });
-            };
+            fxPlugin->onTempoChange = nullptr;
         }
     }
 }

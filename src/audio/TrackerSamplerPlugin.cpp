@@ -28,6 +28,7 @@ void TrackerSamplerPlugin::deinitialise()
     pendingSampleOffset = -1;
     pendingSampleOffsetHighBit = 0;
     hasPendingSampleOffsetHighBit = false;
+    directionOverride = -1;
 }
 
 void TrackerSamplerPlugin::setSampleBank (std::shared_ptr<const SampleBank> bank)
@@ -108,20 +109,32 @@ float TrackerSamplerPlugin::getGranularEnvelope (const InstrumentParams& params,
 //==============================================================================
 
 void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
-                                         const SampleBank& bank, const InstrumentParams& params)
+                                         std::shared_ptr<const SampleBank> bank,
+                                         const InstrumentParams& params)
 {
+    if (bank == nullptr || bank->totalSamples <= 0)
+    {
+        v.reset();
+        return;
+    }
+
     v.reset();
+    v.bank = std::move (bank);
+    v.params = params;
     v.state = Voice::State::Playing;
     v.midiNote = note;
     v.velocity = vel;
     v.playingForward = true;
     v.inLoopPhase = false;
 
-    double totalSmp = static_cast<double> (bank.totalSamples);
-    double regionStart = params.startPos * totalSmp;
-    double regionEnd = params.endPos * totalSmp;
+    const auto& bankRef = *v.bank;
+    const auto& paramsRef = v.params;
 
-    auto playMode = params.playMode;
+    double totalSmp = static_cast<double> (bankRef.totalSamples);
+    double regionStart = paramsRef.startPos * totalSmp;
+    double regionEnd = paramsRef.endPos * totalSmp;
+
+    auto playMode = paramsRef.playMode;
 
     // --- Slice / BeatSlice ---
     if (playMode == InstrumentParams::PlayMode::Slice
@@ -130,9 +143,9 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
         int sliceIndex = note - 60;
         if (sliceIndex < 0) sliceIndex = 0;
 
-        if (playMode == InstrumentParams::PlayMode::Slice && ! params.slicePoints.empty())
+        if (playMode == InstrumentParams::PlayMode::Slice && ! paramsRef.slicePoints.empty())
         {
-            auto boundaries = SamplePlaybackLayout::getSliceBoundariesNorm (params);
+            auto boundaries = SamplePlaybackLayout::getSliceBoundariesNorm (paramsRef);
 
             int numSlices = static_cast<int> (boundaries.size()) - 1;
             sliceIndex = juce::jlimit (0, numSlices - 1, sliceIndex);
@@ -140,10 +153,10 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
             v.sliceStart = boundaries[static_cast<size_t> (sliceIndex)] * totalSmp;
             v.sliceEnd = boundaries[static_cast<size_t> (sliceIndex + 1)] * totalSmp;
         }
-        else if (playMode == InstrumentParams::PlayMode::Slice && params.slicePoints.empty())
+        else if (playMode == InstrumentParams::PlayMode::Slice && paramsRef.slicePoints.empty())
         {
             // No slice points: play whole region as one-shot
-            if (params.reversed)
+            if (paramsRef.reversed)
             {
                 v.playbackPos = regionEnd - 1.0;
                 v.playingForward = false;
@@ -157,7 +170,7 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
         else
         {
             // BeatSlice: equal divisions
-            int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (params);
+            int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (paramsRef);
             sliceIndex = juce::jlimit (0, numSlices - 1, sliceIndex);
 
             double regionLen = regionEnd - regionStart;
@@ -165,28 +178,42 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
             v.sliceEnd = regionStart + (static_cast<double> (sliceIndex + 1) / numSlices) * regionLen;
         }
 
-        v.playbackPos = v.sliceStart;
+        if (directionOverride == 0)
+        {
+            v.playbackPos = juce::jmax (v.sliceStart, v.sliceEnd - 1.0);
+            v.playingForward = false;
+        }
+        else
+        {
+            v.playbackPos = v.sliceStart;
+            v.playingForward = true;
+        }
         return;
     }
 
     // --- Granular ---
     if (playMode == InstrumentParams::PlayMode::Granular)
     {
-        int grainLenSamples = static_cast<int> (params.granularLength * 0.001 * bank.sampleRate);
+        int grainLenSamples = static_cast<int> (paramsRef.granularLength * 0.001 * bankRef.sampleRate);
         grainLenSamples = juce::jmax (64, grainLenSamples);
 
-        double grainCenter = SamplePlaybackLayout::getGranularCenterNorm (params) * totalSmp;
+        double grainCenter = SamplePlaybackLayout::getGranularCenterNorm (paramsRef) * totalSmp;
         v.grainStart = juce::jmax (regionStart, grainCenter - grainLenSamples / 2.0);
         v.grainEnd = juce::jmin (regionEnd, v.grainStart + grainLenSamples);
         v.grainLength = static_cast<int> (v.grainEnd - v.grainStart);
         v.grainPos = 0;
-        v.playbackPos = v.grainStart;
-        v.playingForward = (params.granularLoop != InstrumentParams::GranLoop::Reverse);
+        const bool defaultForward = (paramsRef.granularLoop != InstrumentParams::GranLoop::Reverse);
+        const bool useForward = directionOverride >= 0 ? directionOverride == 1 : defaultForward;
+        v.playbackPos = useForward ? v.grainStart : juce::jmax (v.grainStart, v.grainEnd - 1.0);
+        v.playingForward = useForward;
         return;
     }
 
     // --- Standard modes (OneShot, ForwardLoop, BackwardLoop, PingpongLoop) ---
-    if (params.reversed)
+    const bool defaultForward = ! paramsRef.reversed;
+    const bool useForward = directionOverride >= 0 ? directionOverride == 1 : defaultForward;
+
+    if (! useForward)
     {
         v.playbackPos = regionEnd - 1.0;
         v.playingForward = false;
@@ -210,7 +237,7 @@ void TrackerSamplerPlugin::renderOneShot (Voice& v, juce::AudioBuffer<float>& bu
     double totalSmp = static_cast<double> (bank.totalSamples);
     double regionStart = params.startPos * totalSmp;
     double regionEnd = params.endPos * totalSmp;
-    double advance = params.reversed ? -pitchRatio : pitchRatio;
+    double advance = v.playingForward ? pitchRatio : -pitchRatio;
     int numCh = buffer.getNumChannels();
 
     for (int i = 0; i < numSamples; ++i)
@@ -223,7 +250,7 @@ void TrackerSamplerPlugin::renderOneShot (Voice& v, juce::AudioBuffer<float>& bu
 
         v.playbackPos += advance;
 
-        if (params.reversed)
+        if (! v.playingForward)
         {
             if (v.playbackPos < regionStart)
                 v.state = Voice::State::Idle;
@@ -450,15 +477,51 @@ void TrackerSamplerPlugin::renderGranular (Voice& v, juce::AudioBuffer<float>& b
     }
 }
 
+void TrackerSamplerPlugin::applyPositionCommandToVoice (Voice& v, int positionByte)
+{
+    if (v.state != Voice::State::Playing || v.bank == nullptr || v.bank->totalSamples <= 0)
+        return;
+
+    const auto& bank = *v.bank;
+    const auto& params = v.params;
+
+    double totalSmp = static_cast<double> (bank.totalSamples);
+    double regionStart = params.startPos * totalSmp;
+    double regionEnd = params.endPos * totalSmp;
+
+    if ((params.playMode == InstrumentParams::PlayMode::Slice
+         || params.playMode == InstrumentParams::PlayMode::BeatSlice)
+        && v.sliceEnd > v.sliceStart)
+    {
+        regionStart = v.sliceStart;
+        regionEnd = v.sliceEnd;
+    }
+    else if (params.playMode == InstrumentParams::PlayMode::Granular && v.grainEnd > v.grainStart)
+    {
+        regionStart = v.grainStart;
+        regionEnd = v.grainEnd;
+    }
+
+    if (regionEnd <= regionStart)
+        return;
+
+    const double frac = static_cast<double> (juce::jlimit (0, 255, positionByte)) / 255.0;
+    const double regionLen = juce::jmax (1.0, regionEnd - regionStart - 1.0);
+    v.playbackPos = regionStart + frac * regionLen;
+}
+
 //==============================================================================
 // Voice rendering dispatcher
 //==============================================================================
 
 void TrackerSamplerPlugin::renderVoice (Voice& v, juce::AudioBuffer<float>& buffer,
-                                         int startSample, int numSamples,
-                                         const SampleBank& bank, const InstrumentParams& params)
+                                         int startSample, int numSamples)
 {
-    if (v.state != Voice::State::Playing) return;
+    if (v.state != Voice::State::Playing || v.bank == nullptr || v.bank->totalSamples <= 0)
+        return;
+
+    const auto& bank = *v.bank;
+    const auto& params = v.params;
 
     auto mode = params.playMode;
 
@@ -494,27 +557,35 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     int startSample = fc.bufferStartSample;
     int numSamples = fc.bufferNumSamples;
 
-    // Get bank (thread-safe shared_ptr copy)
-    std::shared_ptr<const SampleBank> bank;
+    // Get current selected bank (thread-safe shared_ptr copy).
+    // Active voices keep their own bank snapshots, so missing this lock doesn't
+    // break already-playing notes.
+    std::shared_ptr<const SampleBank> currentBank;
     {
         const juce::SpinLock::ScopedTryLockType lock (bankLock);
         if (lock.isLocked())
-            bank = sharedBank;
+            currentBank = sharedBank;
     }
-
-    if (! bank || bank->totalSamples <= 0)
-    {
-        buffer.clear (startSample, numSamples);
-        return;
-    }
-
-    // Get params snapshot
-    InstrumentParams params;
-    if (samplerSource != nullptr && instrumentIndex >= 0)
-        params = samplerSource->getParams (instrumentIndex);
 
     // Clear output region (synth, additive rendering)
     buffer.clear (startSample, numSamples);
+
+    auto getCurrentInstrumentParams = [this]()
+    {
+        if (samplerSource != nullptr && instrumentIndex >= 0)
+            return samplerSource->getParams (instrumentIndex);
+        return InstrumentParams {};
+    };
+
+    auto decodeControllerByte = [this] (int controllerValue)
+    {
+        const int lowBits = controllerValue & 0x7F;
+        const int decoded = hasPendingSampleOffsetHighBit
+                                ? ((pendingSampleOffsetHighBit << 7) | lowBits)
+                                : lowBits;
+        hasPendingSampleOffsetHighBit = false;
+        return decoded;
+    };
 
     // --- Handle stop request before new note (avoids stopping a just-triggered note) ---
     if (previewStop.exchange (false))
@@ -541,8 +612,12 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
         }
 
-        triggerNote (voice, pNote, pVel, *bank, params);
-        voiceTriggeredByPreview = true;
+        if (currentBank != nullptr && currentBank->totalSamples > 0)
+        {
+            auto params = getCurrentInstrumentParams();
+            triggerNote (voice, pNote, pVel, currentBank, params);
+            voiceTriggeredByPreview = true;
+        }
     }
 
     // --- Process MIDI messages ---
@@ -572,7 +647,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 if (it != preloadedBanks.end() && it->second != nullptr)
                 {
                     sharedBank = it->second;
-                    bank = sharedBank;
+                    currentBank = sharedBank;
                     instrumentIndex = instrument;
                 }
                 else
@@ -582,7 +657,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     if (legacyIt != preloadedBanks.end() && legacyIt->second != nullptr)
                     {
                         sharedBank = legacyIt->second;
-                        bank = sharedBank;
+                        currentBank = sharedBank;
                         instrumentIndex = progNum;
                     }
                 }
@@ -599,17 +674,29 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     pendingSampleOffsetHighBit = m.getControllerValue() & 0x1;
                     hasPendingSampleOffsetHighBit = true;
                 }
-                else if (m.getControllerNumber() == 9) // Sample Offset (9xx)
+                else if (m.getControllerNumber() == 37) // Bxx direction
                 {
-                    const int lowBits = m.getControllerValue() & 0x7F;
-                    pendingSampleOffset = hasPendingSampleOffsetHighBit
-                        ? ((pendingSampleOffsetHighBit << 7) | lowBits)
-                        : lowBits;
+                    const int value = decodeControllerByte (m.getControllerValue());
+                    directionOverride = (value == 0) ? 0 : 1;
+                    if (voice.state == Voice::State::Playing)
+                        voice.playingForward = (directionOverride == 1);
+                }
+                else if (m.getControllerNumber() == 38) // Pxx
+                {
+                    pendingSampleOffset = decodeControllerByte (m.getControllerValue());
+                    if (voice.state == Voice::State::Playing)
+                        applyPositionCommandToVoice (voice, pendingSampleOffset);
+                }
+                else if (m.getControllerNumber() == 39) // note-row reset
+                {
+                    directionOverride = -1;
+                    pendingSampleOffset = -1;
                     hasPendingSampleOffsetHighBit = false;
+                    if (voice.state == Voice::State::Playing)
+                        voice.playingForward = ! voice.params.reversed;
                 }
                 else
                 {
-                    // Ignore extension messages not followed by sample-offset CC.
                     hasPendingSampleOffsetHighBit = false;
                 }
             }
@@ -622,24 +709,19 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
                 }
 
-                // Re-read params for the current instrument (may have changed via program change)
-                if (samplerSource != nullptr && instrumentIndex >= 0)
-                    params = samplerSource->getParams (instrumentIndex);
-
-                triggerNote (voice, m.getNoteNumber(),
-                             m.getVelocity() / 127.0f, *bank, params);
-                voiceTriggeredByPreview = false;
-
-                // Apply 9xx sample offset: jump playback position into the sample region
-                if (pendingSampleOffset > 0)
+                if (currentBank != nullptr && currentBank->totalSamples > 0)
                 {
-                    double totalSmp = static_cast<double> (bank->totalSamples);
-                    double regionStart = params.startPos * totalSmp;
-                    double regionEnd = params.endPos * totalSmp;
-                    double offsetFrac = static_cast<double> (pendingSampleOffset) / 256.0;
-                    double offsetPos = regionStart + offsetFrac * (regionEnd - regionStart);
-                    voice.playbackPos = offsetPos;
-                    pendingSampleOffset = -1;
+                    auto params = getCurrentInstrumentParams();
+
+                    triggerNote (voice, m.getNoteNumber(),
+                                 m.getVelocity() / 127.0f, currentBank, params);
+                    voiceTriggeredByPreview = false;
+
+                    if (pendingSampleOffset >= 0)
+                    {
+                        applyPositionCommandToVoice (voice, pendingSampleOffset);
+                        pendingSampleOffset = -1;
+                    }
                 }
             }
             else if (m.isNoteOff())
@@ -690,7 +772,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             scratchBuffer.clear (0, fadeSamples);
 
             fadeOutVoice.state = Voice::State::Playing;
-            renderVoice (fadeOutVoice, scratchBuffer, 0, fadeSamples, *bank, params);
+            renderVoice (fadeOutVoice, scratchBuffer, 0, fadeSamples);
             fadeOutVoice.state = Voice::State::FadingOut;
 
             for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
@@ -714,11 +796,11 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     }
 
     // --- Render main voice ---
-    renderVoice (voice, buffer, startSample, numSamples, *bank, params);
+    renderVoice (voice, buffer, startSample, numSamples);
 
     // Publish playback position for UI cursor
-    if (voice.state == Voice::State::Playing && bank->totalSamples > 0)
-        playbackPosNorm.store (static_cast<float> (voice.playbackPos / static_cast<double> (bank->totalSamples)),
+    if (voice.state == Voice::State::Playing && voice.bank != nullptr && voice.bank->totalSamples > 0)
+        playbackPosNorm.store (static_cast<float> (voice.playbackPos / static_cast<double> (voice.bank->totalSamples)),
                                std::memory_order_relaxed);
     else
         playbackPosNorm.store (-1.0f, std::memory_order_relaxed);

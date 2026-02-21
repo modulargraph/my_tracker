@@ -12,8 +12,9 @@ constexpr int kNumTracks = 16;
 
 struct FxCommandInfo
 {
-    int command;            // 0x0 - 0xF
-    juce::String format;   // "0xy", "8xx", etc.
+    int command;            // 1-9
+    char letter;            // B, P, T, G, Y, R, S, D, F
+    juce::String format;    // "Bxx", "Pxx", etc.
     juce::String name;
     juce::String description;
 };
@@ -21,24 +22,35 @@ struct FxCommandInfo
 inline const std::vector<FxCommandInfo>& getFxCommandList()
 {
     static const std::vector<FxCommandInfo> commands = {
-        { 0x0, "0xy", "Arpeggio",         "x=semi1, y=semi2" },
-        { 0x1, "1xx", "Slide Up",         "xx=speed" },
-        { 0x2, "2xx", "Slide Down",       "xx=speed" },
-        { 0x3, "3xx", "Tone Portamento",  "xx=speed" },
-        { 0x4, "4xy", "Vibrato",          "x=speed, y=depth" },
-        { 0x5, "5xy", "Vol Slide+Porta",  "x=up, y=down" },
-        { 0x6, "6xy", "Vol Slide+Vibrato","x=up, y=down" },
-        { 0x7, "7xy", "Tremolo",          "x=speed, y=depth" },
-        { 0x8, "8xx", "Set Panning",      "00=L, 80=C, FF=R" },
-        { 0x9, "9xx", "Sample Offset",    "xx=offset" },
-        { 0xA, "Axy", "Volume Slide",     "x=up, y=down" },
-        { 0xB, "Bxx", "Position Jump (NYI)", "xx=position" },
-        { 0xC, "Cxx", "Set Volume",       "xx=volume (00-7F)" },
-        { 0xD, "Dxx", "Pattern Break (NYI)", "xx=row" },
-        { 0xE, "Exy", "Mod Mode",         "x=dest, y=mode" },
-        { 0xF, "Fxx", "Set Speed/Tempo",  "01-1F=speed, 20+=BPM" },
+        { 1, 'B', "Bxx", "Direction",       "00=backward, 01=forward" },
+        { 2, 'P', "Pxx", "Position",        "00-FF -> 0.0-1.0 of region" },
+        { 3, 'T', "Txx", "Tune",            "signed semitones (two's complement)" },
+        { 4, 'G', "Gxx", "Portamento",      "speed in steps (00=memory)" },
+        { 5, 'Y', "Yxx", "Delay Send",      "00-FF send level" },
+        { 6, 'R', "Rxx", "Reverb Send",     "00-FF send level" },
+        { 7, 'S', "Sxy", "Slide Up",        "x semitones in y steps" },
+        { 8, 'D', "Dxy", "Slide Down",      "x semitones in y steps" },
+        { 9, 'F', "Fxx", "Tempo",           "BPM (master lane only)" },
     };
     return commands;
+}
+
+// Convert FX command letter to command number (0 = invalid)
+inline int fxLetterToCommand (char letter)
+{
+    switch (letter)
+    {
+        case 'B': case 'b': return 1;
+        case 'P': case 'p': return 2;
+        case 'T': case 't': return 3;
+        case 'G': case 'g': return 4;
+        case 'Y': case 'y': return 5;
+        case 'R': case 'r': return 6;
+        case 'S': case 's': return 7;
+        case 'D': case 'd': return 8;
+        case 'F': case 'f': return 9;
+        default: return 0;
+    }
 }
 
 //==============================================================================
@@ -47,11 +59,42 @@ inline const std::vector<FxCommandInfo>& getFxCommandList()
 
 struct FxSlot
 {
-    int fx = 0;           // Effect command (0 = none)
-    int fxParam = 0;      // Effect parameter
+    int fx = 0;              // Numeric id derived from fxCommand (1..9)
+    int fxParam = 0;         // Effect parameter byte
+    char fxCommand = '\0';   // Symbolic command token ('\0' = empty)
 
-    bool isEmpty() const { return fx == 0 && fxParam == 0; }
-    void clear() { fx = 0; fxParam = 0; }
+    bool isSymbolic() const { return fxCommand != '\0'; }
+    bool isEmpty() const { return fxCommand == '\0' && fxParam == 0; }
+    int getCommand() const
+    {
+        return fxCommand != '\0' ? fxLetterToCommand (fxCommand) : 0;
+    }
+    char getCommandLetter() const
+    {
+        return fxCommand != '\0'
+                   ? static_cast<char> (juce::CharacterFunctions::toUpperCase (fxCommand))
+                   : '\0';
+    }
+    void setSymbolicCommand (char letter, int param)
+    {
+        auto upper = static_cast<char> (juce::CharacterFunctions::toUpperCase (letter));
+        const auto command = fxLetterToCommand (upper);
+        if (command <= 0)
+        {
+            clear();
+            return;
+        }
+
+        fxCommand = upper;
+        fx = command;
+        fxParam = juce::jlimit (0, 255, param);
+    }
+    void clear()
+    {
+        fx = 0;
+        fxParam = 0;
+        fxCommand = '\0';
+    }
 };
 
 struct Cell
@@ -62,16 +105,6 @@ struct Cell
     std::vector<FxSlot> fxSlots; // At least 1 slot always present
 
     Cell() { fxSlots.push_back ({}); }
-
-    // Backward compatibility: access first FX slot
-    int getFx() const { return fxSlots.empty() ? 0 : fxSlots[0].fx; }
-    int getFxParam() const { return fxSlots.empty() ? 0 : fxSlots[0].fxParam; }
-    void setFx (int fx, int param)
-    {
-        if (fxSlots.empty()) fxSlots.push_back ({});
-        fxSlots[0].fx = fx;
-        fxSlots[0].fxParam = param;
-    }
 
     // Access a specific FX lane
     FxSlot& getFxSlot (int index)
@@ -122,6 +155,9 @@ struct Pattern
     std::vector<std::array<Cell, kNumTracks>> rows;
     juce::String name;
 
+    // Master lane FX: masterFxRows[row][lane]
+    std::vector<std::vector<FxSlot>> masterFxRows;
+
     Pattern();
     explicit Pattern (int rowCount);
 
@@ -130,6 +166,11 @@ struct Pattern
     void setCell (int row, int track, const Cell& cell);
     void clear();
     void resize (int newNumRows);
+
+    // Master lane access
+    FxSlot& getMasterFxSlot (int row, int lane);
+    const FxSlot& getMasterFxSlot (int row, int lane) const;
+    void ensureMasterFxSlots (int laneCount);
 };
 
 class PatternData

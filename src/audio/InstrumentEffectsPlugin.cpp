@@ -4,6 +4,7 @@
 #include "InstrumentRouting.h"
 #include "FxParamTransport.h"
 #include "PanMapping.h"
+#include <cstdint>
 
 const char* InstrumentEffectsPlugin::xmlTypeName = "InstrumentEffects";
 
@@ -594,110 +595,41 @@ void InstrumentEffectsPlugin::processFxCommands (int numSamples, float& pitchMod
 
     double blockDuration = static_cast<double> (numSamples) / sampleRate;
     double bpm = edit.tempoSequence.getTempos()[0]->getBpm();
+    const double rowsPerSecond = static_cast<double> (juce::jmax (1, rowsPerBeat)) * bpm / 60.0;
+    const double rowsThisBlock = rowsPerSecond * blockDuration;
 
-    // Tick rate: speed (ticks per row) * rows per beat * beats per second.
-    const int speed = juce::jmax (1, fxState.trackerSpeed);
-    double ticksPerSecond = static_cast<double> (speed) * static_cast<double> (rowsPerBeat) * bpm / 60.0;
-    double ticksThisBlock = ticksPerSecond * blockDuration;
-
-    // --- Arpeggio (0xy) ---
-    if (fxState.arpParam > 0 && fxState.currentNote >= 0)
+    // Sxy/Dxy: slide in tracker steps.
+    if (fxState.stepSlideActive && fxState.stepSlideSteps > 0)
     {
-        int x = (fxState.arpParam >> 4) & 0xF;
-        int y = fxState.arpParam & 0xF;
-
-        // Cycle through 3 phases at tick rate (not per audio block)
-        fxState.arpTickAccum += ticksThisBlock;
-        while (fxState.arpTickAccum >= 1.0)
-        {
-            fxState.arpPhase = (fxState.arpPhase + 1) % 3;
-            fxState.arpTickAccum -= 1.0;
-        }
-
-        switch (fxState.arpPhase)
-        {
-            case 0: pitchMod = 0.0f; break;
-            case 1: pitchMod = static_cast<float> (x); break;
-            case 2: pitchMod = static_cast<float> (y); break;
-        }
+        fxState.stepSlideRowsProgress += rowsThisBlock;
+        const float t = juce::jlimit (0.0f, 1.0f,
+            static_cast<float> (fxState.stepSlideRowsProgress / static_cast<double> (fxState.stepSlideSteps)));
+        fxState.stepSlideOffset = juce::jmap (t, fxState.stepSlideStart, fxState.stepSlideTarget);
+        if (t >= 1.0f)
+            fxState.stepSlideActive = false;
     }
 
-    // --- Slide Up (1xx) ---
-    if (fxState.slideUpSpeed > 0)
+    // Gxx + portamento target CC28.
+    if (fxState.portaActive && fxState.portaSteps > 0 && fxState.portaTarget >= 0 && fxState.currentNote >= 0)
     {
-        float slideAmount = static_cast<float> (fxState.slideUpSpeed) / 16.0f;
-        fxState.pitchSlide += slideAmount * static_cast<float> (ticksThisBlock);
-        pitchMod += fxState.pitchSlide;
-    }
+        fxState.portaRowsProgress += rowsThisBlock;
+        const float t = juce::jlimit (0.0f, 1.0f,
+            static_cast<float> (fxState.portaRowsProgress / static_cast<double> (fxState.portaSteps)));
+        fxState.portaPitch = fxState.portaTargetOffset * t;
 
-    // --- Slide Down (2xx) ---
-    if (fxState.slideDownSpeed > 0)
-    {
-        float slideAmount = static_cast<float> (fxState.slideDownSpeed) / 16.0f;
-        fxState.pitchSlide -= slideAmount * static_cast<float> (ticksThisBlock);
-        pitchMod += fxState.pitchSlide;
-    }
-
-    // --- Tone Portamento (3xx) — only when active flag is set ---
-    if (fxState.portaActive && fxState.portaSpeed > 0
-        && fxState.portaTarget >= 0 && fxState.currentNote >= 0)
-    {
-        float target = static_cast<float> (fxState.portaTarget - fxState.currentNote);
-        float step = (static_cast<float> (fxState.portaSpeed) / 16.0f) * static_cast<float> (ticksThisBlock);
-
-        if (fxState.portaPitch < target)
-            fxState.portaPitch = juce::jmin (fxState.portaPitch + step, target);
-        else if (fxState.portaPitch > target)
-            fxState.portaPitch = juce::jmax (fxState.portaPitch - step, target);
-
-        // When target is reached, update currentNote so new targets work correctly
-        if (std::abs (fxState.portaPitch - target) < 0.01f && std::abs (target) > 0.001f)
+        if (t >= 1.0f)
         {
             fxState.currentNote = fxState.portaTarget;
             fxState.portaPitch = 0.0f;
+            fxState.portaActive = false;
+            fxState.portaRowsProgress = 0.0;
         }
-
-        pitchMod += fxState.portaPitch;
     }
 
-    // --- Vibrato (4xy) — only when active flag is set ---
-    if (fxState.vibratoActive && fxState.vibratoSpeed > 0 && fxState.vibratoDepth > 0)
-    {
-        double vibratoHz = static_cast<double> (fxState.vibratoSpeed) * ticksPerSecond / 64.0;
-        fxState.vibratoPhase += vibratoHz * blockDuration;
-        if (fxState.vibratoPhase >= 1.0) fxState.vibratoPhase -= std::floor (fxState.vibratoPhase);
+    pitchMod = fxState.tuneOffset + fxState.stepSlideOffset + fxState.portaPitch;
 
-        float depth = static_cast<float> (fxState.vibratoDepth) / 16.0f; // ~1 semitone max
-        float vibratoVal = std::sin (static_cast<float> (fxState.vibratoPhase) * juce::MathConstants<float>::twoPi);
-        pitchMod += vibratoVal * depth;
-    }
-
-    // --- Volume Slide (Axy, 5xy, 6xy) ---
-    if (fxState.volSlideUp > 0 || fxState.volSlideDown > 0)
-    {
-        float slideAmt = (static_cast<float> (fxState.volSlideUp) - static_cast<float> (fxState.volSlideDown)) / 64.0f;
-        fxState.volumeSlide += slideAmt * static_cast<float> (ticksThisBlock);
-        fxState.volumeSlide = juce::jlimit (-1.0f, 1.0f, fxState.volumeSlide);
-        fxVolumeMod = juce::jlimit (0.0f, 2.0f, 1.0f + fxState.volumeSlide);
-    }
-
-    // --- Tremolo (7xy) — only when active flag is set ---
-    if (fxState.tremoloActive && fxState.tremoloSpeed > 0 && fxState.tremoloDepth > 0)
-    {
-        double tremoloHz = static_cast<double> (fxState.tremoloSpeed) * ticksPerSecond / 64.0;
-        fxState.tremoloPhase += tremoloHz * blockDuration;
-        if (fxState.tremoloPhase >= 1.0) fxState.tremoloPhase -= std::floor (fxState.tremoloPhase);
-
-        float depth = static_cast<float> (fxState.tremoloDepth) / 16.0f;
-        float tremoloVal = std::sin (static_cast<float> (fxState.tremoloPhase) * juce::MathConstants<float>::twoPi);
-        fxVolumeMod *= (1.0f - depth * 0.5f + tremoloVal * depth * 0.5f);
-    }
-
-    // --- Volume override from Cxx ---
     if (overrides.volumeOverride >= 0)
-    {
         fxVolumeMod *= static_cast<float> (overrides.volumeOverride) / 127.0f;
-    }
 }
 
 //==============================================================================
@@ -795,90 +727,83 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 {
                     fxState.pendingParamHighBit = ccVal & 0x1;
                 }
-                else if (ccNum == 119) // Row boundary: clear per-row continuous effects
+                else if (ccNum == 39) // Row note reset
                 {
-                    fxState.slideUpSpeed = 0;
-                    fxState.slideDownSpeed = 0;
-                    fxState.arpParam = 0;
-                    fxState.arpTickAccum = 0.0;
-                    fxState.volSlideUp = 0;
-                    fxState.volSlideDown = 0;
+                    fxState.tuneOffset = 0.0f;
+                    fxState.stepSlideOffset = 0.0f;
+                    fxState.stepSlideActive = false;
+                    fxState.stepSlideStart = 0.0f;
+                    fxState.stepSlideTarget = 0.0f;
+                    fxState.stepSlideSteps = 0;
+                    fxState.stepSlideRowsProgress = 0.0;
+                    fxState.portaSteps = 0;
                     fxState.portaActive = false;
-                    fxState.vibratoActive = false;
-                    fxState.tremoloActive = false;
+                    fxState.portaTarget = -1;
+                    fxState.portaPitch = 0.0f;
+                    fxState.portaRowsProgress = 0.0;
+                    fxState.portaTargetOffset = 0.0f;
+                    overrides.delaySendOverride = -1;
+                    overrides.reverbSendOverride = -1;
                     fxState.pendingParamHighBit = 0;
                 }
                 else if (ccNum == 28) // Portamento target note (don't retrigger)
                 {
                     fxState.portaTarget = ccVal;
+                    if (fxState.portaSteps > 0 && fxState.currentNote >= 0)
+                    {
+                        fxState.portaActive = true;
+                        fxState.portaRowsProgress = 0.0;
+                        fxState.portaTargetOffset = static_cast<float> (fxState.portaTarget - fxState.currentNote);
+                        fxState.portaPitch = 0.0f;
+                    }
                 }
-                else if (ccNum == 10) // Panning override (from 8xx effect)
-                {
-                    overrides.panningOverride = ccVal;
-                }
-                else if (ccNum == 7) // Volume override (from Cxx effect)
+                else if (ccNum == 7) // Explicit volume override
                 {
                     overrides.volumeOverride = ccVal;
                 }
-                else if (ccNum == 9) // Sample offset (from 9xx effect)
+                else if (ccNum == 10) // Explicit panning override
                 {
-                    fxState.sampleOffset = decodeFxParam (ccVal);
+                    overrides.panningOverride = ccVal;
                 }
-                else if (ccNum == 20) // Arpeggio (0xy)
-                {
-                    fxState.arpParam = decodeFxParam (ccVal);
-                    fxState.arpPhase = 0;
-                    fxState.arpTickAccum = 0.0;
-                }
-                else if (ccNum == 21) // Slide Up (1xx)
-                {
-                    fxState.slideUpSpeed = decodeFxParam (ccVal);
-                    fxState.slideDownSpeed = 0;
-                }
-                else if (ccNum == 22) // Slide Down (2xx)
-                {
-                    fxState.slideDownSpeed = decodeFxParam (ccVal);
-                    fxState.slideUpSpeed = 0;
-                }
-                else if (ccNum == 23) // Tone Portamento (3xx)
+                else if (ccNum == 31) // Txx tune (signed two's complement)
                 {
                     const int fxParam = decodeFxParam (ccVal);
-                    fxState.portaActive = true;
-                    if (fxParam > 0) fxState.portaSpeed = fxParam;
+                    fxState.tuneOffset = static_cast<float> (static_cast<int8_t> (fxParam & 0xFF));
                 }
-                else if (ccNum == 24) // Vibrato (4xy)
+                else if (ccNum == 32) // Gxx portamento speed in steps
                 {
                     const int fxParam = decodeFxParam (ccVal);
-                    fxState.vibratoActive = true;
-                    if ((fxParam >> 4) > 0) fxState.vibratoSpeed = fxParam >> 4;
-                    if ((fxParam & 0xF) > 0) fxState.vibratoDepth = fxParam & 0xF;
+                    if (fxParam > 0)
+                        fxState.portaSteps = fxParam;
                 }
-                else if (ccNum == 25) // Vol Slide+Porta (5xy)
+                else if (ccNum == 33 || ccNum == 34) // Sxy/Dxy step slide
                 {
                     const int fxParam = decodeFxParam (ccVal);
-                    fxState.volSlideUp = fxParam >> 4;
-                    fxState.volSlideDown = fxParam & 0xF;
-                    fxState.portaActive = true; // Keep portamento going
+                    const float semitones = static_cast<float> ((fxParam >> 4) & 0xF);
+                    const int steps = fxParam & 0xF;
+                    const float signedDelta = (ccNum == 33) ? semitones : -semitones;
+
+                    if (steps <= 0)
+                    {
+                        fxState.stepSlideOffset += signedDelta;
+                        fxState.stepSlideActive = false;
+                    }
+                    else
+                    {
+                        fxState.stepSlideActive = true;
+                        fxState.stepSlideStart = fxState.stepSlideOffset;
+                        fxState.stepSlideTarget = fxState.stepSlideOffset + signedDelta;
+                        fxState.stepSlideSteps = steps;
+                        fxState.stepSlideRowsProgress = 0.0;
+                    }
                 }
-                else if (ccNum == 26) // Vol Slide+Vibrato (6xy)
+                else if (ccNum == 35) // Yxx delay send override
                 {
-                    const int fxParam = decodeFxParam (ccVal);
-                    fxState.volSlideUp = fxParam >> 4;
-                    fxState.volSlideDown = fxParam & 0xF;
-                    fxState.vibratoActive = true; // Keep vibrato going
+                    overrides.delaySendOverride = decodeFxParam (ccVal);
                 }
-                else if (ccNum == 27) // Tremolo (7xy)
+                else if (ccNum == 36) // Rxx reverb send override
                 {
-                    const int fxParam = decodeFxParam (ccVal);
-                    fxState.tremoloActive = true;
-                    if ((fxParam >> 4) > 0) fxState.tremoloSpeed = fxParam >> 4;
-                    if ((fxParam & 0xF) > 0) fxState.tremoloDepth = fxParam & 0xF;
-                }
-                else if (ccNum == 30) // Volume Slide (Axy)
-                {
-                    const int fxParam = decodeFxParam (ccVal);
-                    fxState.volSlideUp = fxParam >> 4;
-                    fxState.volSlideDown = fxParam & 0xF;
+                    overrides.reverbSendOverride = decodeFxParam (ccVal);
                 }
                 else if (ccNum == 85) // Mod mode override (from Exy effect, encoded as dest*2+mode)
                 {
@@ -893,22 +818,6 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     else if (dest < InstrumentParams::kNumModDests)
                     {
                         overrides.modModeOverride[static_cast<size_t> (dest)] = mode;
-                    }
-                }
-                else if (ccNum == 110) // Set Speed/Tempo (Fxx)
-                {
-                    const int fxParam = decodeFxParam (ccVal);
-                    fxState.lastSpeedTempo = fxParam;
-                    if (fxParam >= 0x20)
-                    {
-                        // Values >= 0x20 set BPM directly.
-                        if (onTempoChange)
-                            onTempoChange (fxParam);
-                    }
-                    else if (fxParam > 0x00)
-                    {
-                        // 0x01..0x1F set tracker speed (ticks per row).
-                        fxState.trackerSpeed = fxParam;
                     }
                 }
             }
@@ -1098,15 +1007,28 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     // Instrument-level sends bypass track mixer sends by design.
     if (sendBuffers != nullptr)
     {
-        if (params.reverbSend > -99.0)
+        auto sendByteToDb = [] (int value) -> float
         {
-            float reverbGain = juce::Decibels::decibelsToGain (static_cast<float> (params.reverbSend));
+            const float norm = static_cast<float> (juce::jlimit (0, 255, value)) / 255.0f;
+            return -100.0f + norm * 100.0f;
+        };
+
+        const float reverbSendDb = (overrides.reverbSendOverride >= 0)
+                                       ? sendByteToDb (overrides.reverbSendOverride)
+                                       : static_cast<float> (params.reverbSend);
+        const float delaySendDb = (overrides.delaySendOverride >= 0)
+                                      ? sendByteToDb (overrides.delaySendOverride)
+                                      : static_cast<float> (params.delaySend);
+
+        if (reverbSendDb > -99.0f)
+        {
+            float reverbGain = juce::Decibels::decibelsToGain (reverbSendDb);
             sendBuffers->addToReverb (buffer, startSample, numSamples, reverbGain);
         }
 
-        if (params.delaySend > -99.0)
+        if (delaySendDb > -99.0f)
         {
-            float delayGain = juce::Decibels::decibelsToGain (static_cast<float> (params.delaySend));
+            float delayGain = juce::Decibels::decibelsToGain (delaySendDb);
             sendBuffers->addToDelay (buffer, startSample, numSamples, delayGain);
         }
     }

@@ -14,7 +14,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
                                             const juce::String& browserDir)
 {
     juce::ValueTree root ("TrackerAdjustProject");
-    root.setProperty ("version", 4, nullptr);
+    root.setProperty ("version", 5, nullptr);
 
     // Settings
     juce::ValueTree settings ("Settings");
@@ -200,6 +200,14 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
                 fxTree.setProperty ("values", fxStr, nullptr);
                 layoutTree.addChild (fxTree, -1, nullptr);
             }
+        }
+
+        // Master FX lane count (only save if > 1)
+        if (trackLayout.getMasterFxLaneCount() > 1)
+        {
+            juce::ValueTree mfxTree ("MasterFxLanes");
+            mfxTree.setProperty ("count", trackLayout.getMasterFxLaneCount(), nullptr);
+            layoutTree.addChild (mfxTree, -1, nullptr);
         }
 
         for (int gi = 0; gi < trackLayout.getNumGroups(); ++gi)
@@ -553,6 +561,10 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             }
         }
 
+        auto mfxTree = layoutTree.getChildWithName ("MasterFxLanes");
+        if (mfxTree.isValid())
+            trackLayout.setMasterFxLaneCount (mfxTree.getProperty ("count", 1));
+
         for (int i = 0; i < layoutTree.getNumChildren(); ++i)
         {
             auto groupTree = layoutTree.getChild (i);
@@ -646,7 +658,8 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
     {
         // clearAllPatterns() keeps one default pattern at index 0, so fill it first.
         auto firstPatTree = patterns.getChild (0);
-        valueTreeToPattern (firstPatTree, patternData.getPattern (0));
+        valueTreeToPattern (firstPatTree, patternData.getPattern (0), version);
+        patternData.getPattern (0).ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
 
         for (int i = 1; i < patterns.getNumChildren(); ++i)
         {
@@ -654,7 +667,8 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             int numRows = patTree.getProperty ("numRows", 64);
             patternData.addPattern (numRows);
             auto& pat = patternData.getPattern (patternData.getNumPatterns() - 1);
-            valueTreeToPattern (patTree, pat);
+            valueTreeToPattern (patTree, pat, version);
+            pat.ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
         }
     }
 
@@ -681,6 +695,14 @@ juce::ValueTree ProjectSerializer::patternToValueTree (const Pattern& pattern, i
                 break;
             }
         }
+
+        // Check master lane too
+        if (! hasData && r < static_cast<int> (pattern.masterFxRows.size()))
+        {
+            for (auto& slot : pattern.masterFxRows[static_cast<size_t> (r)])
+                if (! slot.isEmpty()) { hasData = true; break; }
+        }
+
         if (! hasData) continue;
 
         juce::ValueTree rowTree ("Row");
@@ -697,32 +719,51 @@ juce::ValueTree ProjectSerializer::patternToValueTree (const Pattern& pattern, i
             cellTree.setProperty ("inst", cell.instrument, nullptr);
             cellTree.setProperty ("vol", cell.volume, nullptr);
 
-            // Save FX slots: first slot uses legacy fx/fxp for backward compat
+            // Save first FX slot
             if (cell.getNumFxSlots() > 0)
             {
-                cellTree.setProperty ("fx", cell.getFxSlot (0).fx, nullptr);
-                cellTree.setProperty ("fxp", cell.getFxSlot (0).fxParam, nullptr);
-            }
-            else
-            {
-                cellTree.setProperty ("fx", 0, nullptr);
-                cellTree.setProperty ("fxp", 0, nullptr);
+                const auto& slot0 = cell.getFxSlot (0);
+                auto letter = slot0.getCommandLetter();
+                if (letter != '\0')
+                {
+                    cellTree.setProperty ("fxc", juce::String::charToString (letter), nullptr);
+                    cellTree.setProperty ("fxp", slot0.fxParam, nullptr);
+                }
             }
 
             // Save additional FX slots (index 1+)
             for (int fxi = 1; fxi < cell.getNumFxSlots(); ++fxi)
             {
                 const auto& slot = cell.getFxSlot (fxi);
-                if (slot.isEmpty()) continue;
+                auto letter = slot.getCommandLetter();
+                if (letter == '\0') continue;
 
                 juce::ValueTree fxTree ("FxSlot");
                 fxTree.setProperty ("lane", fxi, nullptr);
-                fxTree.setProperty ("fx", slot.fx, nullptr);
                 fxTree.setProperty ("fxp", slot.fxParam, nullptr);
+                fxTree.setProperty ("fxc", juce::String::charToString (letter), nullptr);
                 cellTree.addChild (fxTree, -1, nullptr);
             }
 
             rowTree.addChild (cellTree, -1, nullptr);
+        }
+
+        // Save master FX slots for this row
+        if (r < static_cast<int> (pattern.masterFxRows.size()))
+        {
+            auto& mfxRow = pattern.masterFxRows[static_cast<size_t> (r)];
+            for (int lane = 0; lane < static_cast<int> (mfxRow.size()); ++lane)
+            {
+                auto& slot = mfxRow[static_cast<size_t> (lane)];
+                auto letter = slot.getCommandLetter();
+                if (letter == '\0') continue;
+
+                juce::ValueTree mfxTree ("MasterFx");
+                mfxTree.setProperty ("lane", lane, nullptr);
+                mfxTree.setProperty ("fxp", slot.fxParam, nullptr);
+                mfxTree.setProperty ("fxc", juce::String::charToString (letter), nullptr);
+                rowTree.addChild (mfxTree, -1, nullptr);
+            }
         }
 
         patTree.addChild (rowTree, -1, nullptr);
@@ -731,12 +772,13 @@ juce::ValueTree ProjectSerializer::patternToValueTree (const Pattern& pattern, i
     return patTree;
 }
 
-void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern)
+void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern, int /*version*/)
 {
     pattern.name = tree.getProperty ("name", "Pattern").toString();
     int numRows = tree.getProperty ("numRows", 64);
     pattern.resize (numRows);
     pattern.clear();
+    pattern.ensureMasterFxSlots (1);
 
     for (int i = 0; i < tree.getNumChildren(); ++i)
     {
@@ -759,10 +801,11 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
             cell.instrument = cellTree.getProperty ("inst", -1);
             cell.volume = cellTree.getProperty ("vol", -1);
 
-            // Load first FX slot from legacy properties
-            int fx0 = cellTree.getProperty ("fx", 0);
             int fxp0 = cellTree.getProperty ("fxp", 0);
-            cell.setFx (fx0, fxp0);
+            auto fxToken0 = cellTree.getProperty ("fxc", "").toString();
+            auto& firstSlot = cell.getFxSlot (0);
+            if (fxToken0.isNotEmpty())
+                firstSlot.setSymbolicCommand (static_cast<char> (fxToken0[0]), fxp0);
 
             // Load additional FX slots
             for (int fxi = 0; fxi < cellTree.getNumChildren(); ++fxi)
@@ -771,14 +814,32 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
                 if (! fxSlotTree.hasType ("FxSlot")) continue;
 
                 int lane = fxSlotTree.getProperty ("lane", -1);
-                if (lane < 1) continue;  // lane 0 is handled by legacy properties
+                if (lane < 1) continue;
 
                 auto& slot = cell.getFxSlot (lane);
-                slot.fx = fxSlotTree.getProperty ("fx", 0);
-                slot.fxParam = fxSlotTree.getProperty ("fxp", 0);
+                int fxp = fxSlotTree.getProperty ("fxp", 0);
+                auto fxToken = fxSlotTree.getProperty ("fxc", "").toString();
+                if (fxToken.isNotEmpty())
+                    slot.setSymbolicCommand (static_cast<char> (fxToken[0]), fxp);
             }
 
             pattern.setCell (row, track, cell);
+        }
+
+        for (int j = 0; j < rowTree.getNumChildren(); ++j)
+        {
+            auto mfxTree = rowTree.getChild (j);
+            if (! mfxTree.hasType ("MasterFx")) continue;
+
+            int lane = mfxTree.getProperty ("lane", -1);
+            if (lane < 0) continue;
+
+            int fxp = mfxTree.getProperty ("fxp", 0);
+            auto fxToken = mfxTree.getProperty ("fxc", "").toString();
+
+            auto& slot = pattern.getMasterFxSlot (row, lane);
+            if (fxToken.isNotEmpty())
+                slot.setSymbolicCommand (static_cast<char> (fxToken[0]), fxp);
         }
     }
 }
