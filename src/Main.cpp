@@ -100,6 +100,9 @@ private:
     std::unique_ptr<MainWindow> mainWindow;
 };
 
+// Register the JUCE application factory (normally done by START_JUCE_APPLICATION)
+JUCE_CREATE_APPLICATION_DEFINE (TrackerAdjustApplication)
+
 // Custom main() to intercept --validate-bundle before JUCE initialisation
 int main (int argc, const char* argv[])
 {
