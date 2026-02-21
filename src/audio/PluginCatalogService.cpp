@@ -83,20 +83,41 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
 
             juce::String pluginName;
 
-            try
+            // VST3 plugins may call macOS APIs (e.g. TSMGetInputSourceProperty)
+            // during DLL loading that assert they're on the main dispatch queue.
+            // Dispatch each scanNextFile call to the message thread to avoid
+            // dispatch_assert_queue_fail crashes (e.g. NI Vari Comp).
+            bool hasMore = true;
+
+            while (hasMore)
             {
-                while (scanner.scanNextFile (true, pluginName))
+                juce::WaitableEvent done;
+                bool scanResult = false;
+                juce::String stepName;
+
+                juce::MessageManager::callAsync ([&]
                 {
-                    // scanning...
-                }
-            }
-            catch (const std::exception& e)
-            {
-                DBG ("Plugin scan exception (VST3): " + juce::String (e.what()));
-            }
-            catch (...)
-            {
-                DBG ("Plugin scan unknown exception (VST3)");
+                    try
+                    {
+                        scanResult = scanner.scanNextFile (true, stepName);
+                    }
+                    catch (const std::exception& e)
+                    {
+                        DBG ("Plugin scan exception (VST3): " + juce::String (e.what()));
+                        scanResult = false;
+                    }
+                    catch (...)
+                    {
+                        DBG ("Plugin scan unknown exception (VST3)");
+                        scanResult = false;
+                    }
+
+                    done.signal();
+                });
+
+                done.wait (-1);
+                pluginName = stepName;
+                hasMore = scanResult;
             }
         }
     }
