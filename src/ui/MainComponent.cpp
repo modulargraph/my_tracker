@@ -1,3 +1,4 @@
+#include <regex>
 #include "MainComponent.h"
 
 MainComponent::MainComponent()
@@ -319,12 +320,37 @@ MainComponent::MainComponent()
             return;
         }
 
+        // Sort by manufacturer, then by name within each manufacturer
+        std::sort (instruments.begin(), instruments.end(),
+                   [] (const juce::PluginDescription& a, const juce::PluginDescription& b)
+                   {
+                       int cmp = a.manufacturerName.compareIgnoreCase (b.manufacturerName);
+                       if (cmp != 0) return cmp < 0;
+                       return a.name.compareIgnoreCase (b.name) < 0;
+                   });
+
+        // Build menu with manufacturer submenus
         juce::PopupMenu menu;
+        juce::String currentMfr;
+        juce::PopupMenu currentSubMenu;
+        std::vector<int> subMenuStartIndices;  // first index in each submenu
+
         for (int i = 0; i < instruments.size(); ++i)
         {
             auto& desc = instruments.getReference (i);
-            menu.addItem (i + 1, desc.name + " (" + desc.pluginFormatName + ")");
+            auto mfr = desc.manufacturerName.isEmpty() ? juce::String ("Unknown") : desc.manufacturerName;
+
+            if (mfr != currentMfr)
+            {
+                if (currentMfr.isNotEmpty())
+                    menu.addSubMenu (currentMfr, currentSubMenu);
+                currentSubMenu = juce::PopupMenu();
+                currentMfr = mfr;
+            }
+            currentSubMenu.addItem (i + 1, desc.name + " (" + desc.pluginFormatName + ")");
         }
+        if (currentMfr.isNotEmpty())
+            menu.addSubMenu (currentMfr, currentSubMenu);
 
         int cursorTrack = trackerGrid->getCursorTrack();
         if (cursorTrack >= kNumTracks)
@@ -455,9 +481,35 @@ MainComponent::MainComponent()
             return;
         }
 
+        // Sort by manufacturer, then by name within each manufacturer
+        std::sort (effects.begin(), effects.end(),
+                   [] (const juce::PluginDescription& a, const juce::PluginDescription& b)
+                   {
+                       int cmp = a.manufacturerName.compareIgnoreCase (b.manufacturerName);
+                       if (cmp != 0) return cmp < 0;
+                       return a.name.compareIgnoreCase (b.name) < 0;
+                   });
+
+        // Build menu with manufacturer submenus
         juce::PopupMenu menu;
+        juce::String currentMfr;
+        juce::PopupMenu currentSubMenu;
+
         for (int i = 0; i < effects.size(); ++i)
-            menu.addItem (i + 1, effects[i].name + " (" + effects[i].pluginFormatName + ")");
+        {
+            auto mfr = effects[i].manufacturerName.isEmpty() ? juce::String ("Unknown") : effects[i].manufacturerName;
+
+            if (mfr != currentMfr)
+            {
+                if (currentMfr.isNotEmpty())
+                    menu.addSubMenu (currentMfr, currentSubMenu);
+                currentSubMenu = juce::PopupMenu();
+                currentMfr = mfr;
+            }
+            currentSubMenu.addItem (i + 1, effects[i].name + " (" + effects[i].pluginFormatName + ")");
+        }
+        if (currentMfr.isNotEmpty())
+            menu.addSubMenu (currentMfr, currentSubMenu);
 
         menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (mixerComponent.get()),
             [this, track, effects] (int result)
@@ -650,6 +702,19 @@ MainComponent::MainComponent()
     // Cursor moved callback
     trackerGrid->onCursorMoved = [this]
     {
+        // Sync instrument from cell under cursor (standard tracker behaviour)
+        auto& pat = patternData.getCurrentPattern();
+        int row = trackerGrid->getCursorRow();
+        int track = trackerGrid->getCursorTrack();
+        if (! trackerGrid->isCursorInMasterLane() && row >= 0 && row < pat.numRows
+            && track >= 0 && track < kNumTracks)
+        {
+            auto cell = pat.getCell (row, track);
+            auto slot = cell.getNoteLane (trackerGrid->getCursorNoteLane());
+            if (slot.instrument >= 0)
+                trackerGrid->setCurrentInstrument (slot.instrument);
+        }
+
         updateStatusBar();
         updateToolbar();
         instrumentPanel->setSelectedInstrument (trackerGrid->getCurrentInstrument());
@@ -746,6 +811,11 @@ MainComponent::MainComponent()
     trackerEngine.onStatusMessage = [this] (const juce::String& message, bool isError, int timeoutMs)
     {
         setTemporaryStatus (message, isError, timeoutMs);
+    };
+
+    trackerEngine.onNavigateToAutomation = [this] (const juce::String& pluginId, int paramIndex)
+    {
+        navigateToAutomationParam (pluginId, paramIndex);
     };
 
     // Status bar
@@ -3062,6 +3132,66 @@ void MainComponent::populateAutomationPlugins()
             if (! pluginInfo.parameters.empty())
                 plugins.push_back (std::move (pluginInfo));
         }
+    }
+
+    // Sort parameters by relevance: common automation targets first, then alphabetical.
+    // Priority tiers (lower = higher priority):
+    //   0: Macros (most plugins expose these as top-level controls)
+    //   1: Filter cutoff / frequency
+    //   2: Filter resonance / Q
+    //   3: Volume / gain / level / amplitude
+    //   4: Mix / dry-wet / blend
+    //   5: Pan / balance / width / stereo
+    //   6: LFO rate / speed / frequency
+    //   7: Attack / decay / sustain / release (envelope)
+    //   8: Pitch / tune / detune / semitone / coarse / fine
+    //   9: Drive / distortion / saturation / overdrive
+    //  10: Delay time / feedback
+    //  11: Reverb size / decay / damping
+    //  12: Chorus / flanger / phaser rate / depth
+    //  99: Everything else (alphabetical)
+    static const std::vector<std::pair<int, std::regex>> priorityPatterns = []
+    {
+        std::vector<std::pair<int, std::regex>> p;
+        auto icase = std::regex_constants::icase;
+        p.push_back ({ 0, std::regex ("macro|mmod", icase) });
+        p.push_back ({ 1, std::regex ("cutoff|cut.?off|filter.?freq|filt.?freq|frequency|fc$|lpf|hpf|bpf", icase) });
+        p.push_back ({ 2, std::regex ("reson|\\bq\\b|emphasis", icase) });
+        p.push_back ({ 3, std::regex ("\\b(vol|volume|gain|level|amplitude|output|master.?vol|master.?gain)\\b", icase) });
+        p.push_back ({ 4, std::regex ("\\b(mix|dry.?wet|wet.?dry|blend|d/w|w/d)\\b", icase) });
+        p.push_back ({ 5, std::regex ("\\b(pan|balance|width|stereo|spread)\\b", icase) });
+        p.push_back ({ 6, std::regex ("\\blfo.*(rate|speed|freq)|\\b(rate|speed)\\b", icase) });
+        p.push_back ({ 7, std::regex ("\\b(attack|decay|sustain|release|env.*(a|d|s|r)\\b|adsr)", icase) });
+        p.push_back ({ 8, std::regex ("\\b(pitch|tune|detune|semi|coarse|fine|transpose|cent)\\b", icase) });
+        p.push_back ({ 9, std::regex ("\\b(drive|distort|saturat|overdrive|dirt|crunch)\\b", icase) });
+        p.push_back ({ 10, std::regex ("\\b(delay.*(time|feedback|tempo)|feedback|time)\\b", icase) });
+        p.push_back ({ 11, std::regex ("\\b(reverb|room|size|damping|decay.?time|pre.?delay)\\b", icase) });
+        p.push_back ({ 12, std::regex ("\\b(chorus|flanger|phaser|rate|depth|modulation)\\b", icase) });
+        return p;
+    }();
+
+    auto getParamPriority = [] (const juce::String& name) -> int
+    {
+        auto stdName = name.toStdString();
+        for (auto& [priority, pattern] : priorityPatterns)
+        {
+            if (std::regex_search (stdName, pattern))
+                return priority;
+        }
+        return 99;
+    };
+
+    for (auto& pluginInfo : plugins)
+    {
+        std::stable_sort (pluginInfo.parameters.begin(), pluginInfo.parameters.end(),
+                          [&] (const AutomatablePluginInfo::ParamInfo& a,
+                               const AutomatablePluginInfo::ParamInfo& b)
+                          {
+                              int pa = getParamPriority (a.name);
+                              int pb = getParamPriority (b.name);
+                              if (pa != pb) return pa < pb;
+                              return a.name.compareIgnoreCase (b.name) < 0;
+                          });
     }
 
     automationPanel->setAvailablePlugins (plugins);

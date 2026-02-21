@@ -190,6 +190,9 @@ public:
     /** Callback for status messages (set by MainComponent). */
     std::function<void (const juce::String& message, bool isError, int timeoutMs)> onStatusMessage;
 
+    /** Callback for click-to-automate: navigates to the automation lane for a parameter. */
+    std::function<void (const juce::String& pluginId, int paramIndex)> onNavigateToAutomation;
+
     //==============================================================================
     // Plugin automation (Phase 5)
     //==============================================================================
@@ -231,9 +234,15 @@ private:
     std::map<juce::String, std::unique_ptr<juce::DocumentWindow>> pluginEditorWindows;
     void refreshTransportLoopRangeFromClip();
     static constexpr int kPreviewDurationMs = 30000;
+    static constexpr int kPluginPreviewDurationMs = 500;
     int activePreviewTrack = -1;
     std::shared_ptr<SampleBank> previewBank;
     float previewVolume = 1.0f;
+
+    // Plugin instrument preview state
+    int previewPluginNote = -1;
+    int previewPluginInstrument = -1;
+    void stopPluginPreview();
 
     void prepareTracksForInstrumentUsage (const std::array<std::vector<int>, kNumTracks>& instrumentsByTrack);
     void rebuildTempoSequenceFromPatternMasterLane (const Pattern& pattern);
