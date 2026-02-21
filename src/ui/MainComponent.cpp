@@ -194,6 +194,15 @@ MainComponent::MainComponent()
         resized();
     };
 
+    toolbar->onToggleAutomation = [this]
+    {
+        automationPanelVisible = ! automationPanelVisible;
+        toolbar->setAutomationPanelVisible (automationPanelVisible);
+        if (automationPanelVisible)
+            refreshAutomationPanel();
+        resized();
+    };
+
     toolbar->onInstrumentDrag = [this] (int delta)
     {
         int inst = juce::jlimit (0, 255, trackerGrid->getCurrentInstrument() + delta);
@@ -1131,6 +1140,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     if (cmd && shift && textChar == 'B')
     {
         automationPanelVisible = ! automationPanelVisible;
+        toolbar->setAutomationPanelVisible (automationPanelVisible);
         if (automationPanelVisible)
             refreshAutomationPanel();
         resized();
@@ -1622,6 +1632,8 @@ void MainComponent::updateToolbar()
     toolbar->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     toolbar->setPlayState (trackerEngine.isPlaying());
     toolbar->setPlaybackMode (songMode);
+
+    toolbar->setAutomationPanelVisible (automationPanelVisible);
 
     // Show sample name for current instrument
     auto sampleFile = trackerEngine.getSampler().getSampleFile (trackerGrid->getCurrentInstrument());
