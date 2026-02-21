@@ -11,7 +11,9 @@
 enum class AutomationCurveType
 {
     Linear = 0,   // Linear interpolation between points
-    Step   = 1    // Step/hold: value jumps at the point
+    Step   = 1,   // Step/hold: value jumps at the point
+    Smooth = 2,   // Catmull-Rom spline (smooth curves through points)
+    SCurve = 3    // Smoothstep (ease-in/ease-out S-curve)
 };
 
 //==============================================================================
@@ -85,12 +87,37 @@ struct AutomationLane
                 if (a.curveType == AutomationCurveType::Step)
                     return a.value;
 
-                // Linear interpolation
                 float range = static_cast<float> (b.row - a.row);
                 if (range <= 0.0f)
                     return a.value;
 
                 float t = (rowPosition - static_cast<float> (a.row)) / range;
+
+                if (a.curveType == AutomationCurveType::SCurve)
+                {
+                    // Smoothstep: ease-in/ease-out
+                    t = t * t * (3.0f - 2.0f * t);
+                    return a.value + t * (b.value - a.value);
+                }
+
+                if (a.curveType == AutomationCurveType::Smooth)
+                {
+                    // Catmull-Rom spline interpolation
+                    float p0 = (i > 0) ? points[i - 1].value : a.value;
+                    float p1 = a.value;
+                    float p2 = b.value;
+                    float p3 = (i + 2 < points.size()) ? points[i + 2].value : b.value;
+
+                    float t2 = t * t;
+                    float t3 = t2 * t;
+                    float result = 0.5f * ((2.0f * p1)
+                                         + (-p0 + p2) * t
+                                         + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2
+                                         + (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3);
+                    return juce::jlimit (0.0f, 1.0f, result);
+                }
+
+                // Linear interpolation
                 return a.value + t * (b.value - a.value);
             }
         }
@@ -202,6 +229,25 @@ struct PatternAutomationData
 
         lanes.push_back ({ pluginId, parameterId, owningTrack, {} });
         return lanes.back();
+    }
+
+    /** Find all lanes for a given plugin (for multi-lane overlay). */
+    std::vector<AutomationLane*> findLanesForPlugin (const juce::String& pluginId)
+    {
+        std::vector<AutomationLane*> result;
+        for (auto& lane : lanes)
+            if (lane.pluginId == pluginId)
+                result.push_back (&lane);
+        return result;
+    }
+
+    std::vector<const AutomationLane*> findLanesForPlugin (const juce::String& pluginId) const
+    {
+        std::vector<const AutomationLane*> result;
+        for (auto& lane : lanes)
+            if (lane.pluginId == pluginId)
+                result.push_back (&lane);
+        return result;
     }
 
     /** Remove a lane for the given plugin parameter. Returns true if removed. */
