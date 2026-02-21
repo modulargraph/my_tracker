@@ -1,46 +1,38 @@
-#if __APPLE__
- #include <CoreFoundation/CoreFoundation.h>
+#include <JuceHeader.h>
+#include "MainComponent.h"
+
+#if JUCE_MAC
+ #include <dlfcn.h>
 #endif
 
-#include <cstring>
-
 //==============================================================================
-// Plugin bundle validation mode: launched as a child process to test-load
-// a plugin bundle. If the plugin's static initializer crashes (e.g. throws
-// a C++ exception through dyld), only this child process dies.
-static int validatePluginBundle (const char* bundlePath)
+// Plugin bundle validation: test-load a plugin bundle via CoreFoundation.
+// Used by child processes launched with --validate-bundle <path>.
+// If the plugin's static initializer crashes, only the child process dies.
+static int validatePluginBundle (const juce::String& bundlePath)
 {
-   #if __APPLE__
-    auto pathStr = CFStringCreateWithCString (nullptr, bundlePath, kCFStringEncodingUTF8);
-    if (pathStr == nullptr)
+   #if JUCE_MAC
+    // Use JUCE's ObjC helpers to load a bundle — these call through to
+    // CFBundleCreate / CFBundleLoadExecutableAndReturnError internally,
+    // matching the same code path that JUCE's DLLHandle::open() uses.
+    juce::File bundleFile (bundlePath);
+    if (! bundleFile.exists())
         return 1;
 
-    auto url = CFURLCreateWithFileSystemPath (nullptr, pathStr, kCFURLPOSIXPathStyle, true);
-    CFRelease (pathStr);
-    if (url == nullptr)
-        return 1;
+    // Try to load the bundle as a dynamic library (same as JUCE's plugin loading)
+    void* handle = dlopen (bundleFile.getFullPathName().toRawUTF8(), RTLD_LAZY | RTLD_LOCAL);
+    if (handle != nullptr)
+    {
+        dlclose (handle);
+        return 0;
+    }
 
-    auto bundle = CFBundleCreate (nullptr, url);
-    CFRelease (url);
-    if (bundle == nullptr)
-        return 1;
-
-    CFErrorRef error = nullptr;
-    Boolean loaded = CFBundleLoadExecutableAndReturnError (bundle, &error);
-
-    if (error != nullptr)
-        CFRelease (error);
-
-    CFRelease (bundle);
-    return loaded ? 0 : 1;
+    return 1;
    #else
-    (void) bundlePath;
+    juce::ignoreUnused (bundlePath);
     return 0;
    #endif
 }
-
-#include <JuceHeader.h>
-#include "MainComponent.h"
 
 class TrackerAdjustApplication : public juce::JUCEApplication
 {
@@ -51,8 +43,18 @@ public:
     const juce::String getApplicationVersion() override { return "0.1.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
 
-    void initialise (const juce::String&) override
+    void initialise (const juce::String& commandLine) override
     {
+        // Child-process mode: validate a plugin bundle and exit
+        if (commandLine.contains ("--validate-bundle"))
+        {
+            auto bundlePath = commandLine.fromFirstOccurrenceOf ("--validate-bundle", false, false).trim();
+            int result = validatePluginBundle (bundlePath);
+            setApplicationReturnValue (result);
+            quit();
+            return;
+        }
+
         mainWindow = std::make_unique<MainWindow> (getApplicationName());
     }
 
@@ -100,14 +102,4 @@ private:
     std::unique_ptr<MainWindow> mainWindow;
 };
 
-// Register the JUCE application factory (normally done by START_JUCE_APPLICATION)
-JUCE_CREATE_APPLICATION_DEFINE (TrackerAdjustApplication)
-
-// Custom main() to intercept --validate-bundle before JUCE initialisation
-int main (int argc, const char* argv[])
-{
-    if (argc >= 3 && std::strcmp (argv[1], "--validate-bundle") == 0)
-        return validatePluginBundle (argv[2]);
-
-    return juce::JUCEApplicationBase::main (argc, argv);
-}
+START_JUCE_APPLICATION (TrackerAdjustApplication)
