@@ -86,23 +86,59 @@ class MultiCellEditAction : public juce::UndoableAction
 {
 public:
     struct CellRecord { int row; int track; Cell oldCell; Cell newCell; };
+    struct MasterFxRecord { int row; int lane; FxSlot oldSlot; FxSlot newSlot; };
 
     MultiCellEditAction (PatternData& data, int patternIndex, std::vector<CellRecord> records)
         : patternData (data), patIdx (patternIndex), cells (std::move (records)) {}
 
+    MultiCellEditAction (PatternData& data, int patternIndex,
+                         std::vector<CellRecord> cellRecords,
+                         std::vector<MasterFxRecord> masterRecords)
+        : patternData (data), patIdx (patternIndex),
+          cells (std::move (cellRecords)),
+          masterFx (std::move (masterRecords)) {}
+
     bool perform() override
     {
-        if (patIdx < patternData.getNumPatterns())
+        if (patIdx >= 0 && patIdx < patternData.getNumPatterns())
+        {
+            auto& pat = patternData.getPattern (patIdx);
             for (auto& c : cells)
-                patternData.getPattern (patIdx).setCell (c.row, c.track, c.newCell);
+            {
+                if (c.row >= 0 && c.row < pat.numRows && c.track >= 0 && c.track < kNumTracks)
+                    pat.setCell (c.row, c.track, c.newCell);
+            }
+
+            for (auto& m : masterFx)
+            {
+                if (m.row < 0 || m.row >= pat.numRows || m.lane < 0)
+                    continue;
+                pat.ensureMasterFxSlots (m.lane + 1);
+                pat.getMasterFxSlot (m.row, m.lane) = m.newSlot;
+            }
+        }
         return true;
     }
 
     bool undo() override
     {
-        if (patIdx < patternData.getNumPatterns())
+        if (patIdx >= 0 && patIdx < patternData.getNumPatterns())
+        {
+            auto& pat = patternData.getPattern (patIdx);
             for (auto& c : cells)
-                patternData.getPattern (patIdx).setCell (c.row, c.track, c.oldCell);
+            {
+                if (c.row >= 0 && c.row < pat.numRows && c.track >= 0 && c.track < kNumTracks)
+                    pat.setCell (c.row, c.track, c.oldCell);
+            }
+
+            for (auto& m : masterFx)
+            {
+                if (m.row < 0 || m.row >= pat.numRows || m.lane < 0)
+                    continue;
+                pat.ensureMasterFxSlots (m.lane + 1);
+                pat.getMasterFxSlot (m.row, m.lane) = m.oldSlot;
+            }
+        }
         return true;
     }
 
@@ -110,4 +146,5 @@ private:
     PatternData& patternData;
     int patIdx;
     std::vector<CellRecord> cells;
+    std::vector<MasterFxRecord> masterFx;
 };

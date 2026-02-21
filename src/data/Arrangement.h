@@ -81,6 +81,16 @@ public:
         }
     }
 
+    // Keep arrangement indices coherent after a pattern insertion.
+    void remapAfterPatternInserted (int insertedPatternIndex)
+    {
+        for (auto& e : entries)
+        {
+            if (e.patternIndex >= insertedPatternIndex)
+                ++e.patternIndex;
+        }
+    }
+
 private:
     std::vector<ArrangementEntry> entries;
 };

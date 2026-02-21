@@ -128,6 +128,7 @@ private:
     void showPatternNameEditor();
     void showTrackHeaderMenu (int track, juce::Point<int> screenPos);
     void showRenameTrackDialog (int track);
+    void performUndoableTrackLayoutChange (const std::function<void()>& changeFn);
     void removePatternAndRepairArrangement (int index);
     int resolveInstrumentForTrackDrop (int track) const;
     void resyncPlaybackForCurrentMode();

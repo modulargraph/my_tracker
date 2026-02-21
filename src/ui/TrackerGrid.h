@@ -155,6 +155,8 @@ private:
     int dragHeaderVisualIndex = -1;
     int dragGroupIndex = -1;
     bool dragGroupRightEdge = false; // true = right edge, false = left edge
+    bool layoutDragSnapshotValid = false;
+    TrackLayout::Snapshot layoutDragStartSnapshot;
     int dragMoveRow = -1;
     int dragMoveTrack = -1;
     int dragGrabRowOffset = 0;   // offset from selection top-left to grab point

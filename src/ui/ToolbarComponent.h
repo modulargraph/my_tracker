@@ -36,6 +36,7 @@ public:
 
     // Callbacks
     std::function<void()> onAddPattern;
+    std::function<void()> onDuplicatePattern;
     std::function<void()> onRemovePattern;
     std::function<void()> onPatternLengthClick;
     std::function<void (int delta)> onLengthDrag;
@@ -79,7 +80,7 @@ private:
     int rowsPerBeatVal = 4;
 
     // Hit areas
-    juce::Rectangle<int> addPatBounds, removePatBounds;
+    juce::Rectangle<int> addPatBounds, duplicatePatBounds, removePatBounds;
     juce::Rectangle<int> lengthBounds, bpmBounds, stepBounds, octaveBounds, modeBounds, patNameBounds;
     juce::Rectangle<int> arrangementToggleBounds, instrumentToggleBounds, patSelectorBounds;
     juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, fxRefBounds, rpbBounds;

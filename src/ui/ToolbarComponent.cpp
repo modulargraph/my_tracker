@@ -40,6 +40,16 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.drawText ("+", addPatBounds, juce::Justification::centred);
     x += 28;
 
+    // [2x] duplicate button
+    duplicatePatBounds = { x, 6, 30, 24 };
+    g.setColour (juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (duplicatePatBounds.toFloat(), 3.0f);
+    g.setColour (textCol);
+    g.setFont (lookAndFeel.getMonoFont (10.0f));
+    g.drawText ("2x", duplicatePatBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
+    x += 34;
+
     // [-] button
     removePatBounds = { x, 6, 24, 24 };
     g.setColour (juce::Colour (0xff3a3a3a));
@@ -202,6 +212,11 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
     if (addPatBounds.contains (pos) && onAddPattern)
     {
         onAddPattern();
+        return;
+    }
+    if (duplicatePatBounds.contains (pos) && onDuplicatePattern)
+    {
+        onDuplicatePattern();
         return;
     }
     if (removePatBounds.contains (pos) && onRemovePattern)

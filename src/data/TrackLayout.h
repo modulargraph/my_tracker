@@ -13,11 +13,28 @@ struct TrackGroup
     juce::String name;
     juce::Colour colour { 0xff5c8abf };
     std::vector<int> trackIndices; // physical track indices, in display order
+
+    bool operator== (const TrackGroup& other) const
+    {
+        return name == other.name
+            && colour == other.colour
+            && trackIndices == other.trackIndices;
+    }
 };
 
 class TrackLayout
 {
 public:
+    struct Snapshot
+    {
+        std::array<int, kNumTracks> visualOrder {};
+        std::vector<TrackGroup> groups;
+        std::array<juce::String, kNumTracks> trackNames;
+        std::array<NoteMode, kNumTracks> trackNoteModes {};
+        std::array<int, kNumTracks> trackFxLaneCounts {};
+        int masterFxLaneCount = 1;
+    };
+
     TrackLayout() { resetToDefault(); }
 
     int visualToPhysical (int visualPos) const
@@ -251,6 +268,38 @@ public:
 
     void clear() { resetToDefault(); }
 
+    Snapshot createSnapshot() const
+    {
+        Snapshot s;
+        s.visualOrder = visualOrder;
+        s.groups = groups;
+        s.trackNames = trackNames;
+        s.trackNoteModes = trackNoteModes;
+        s.trackFxLaneCounts = trackFxLaneCounts;
+        s.masterFxLaneCount = masterFxLaneCount;
+        return s;
+    }
+
+    void applySnapshot (const Snapshot& snapshot)
+    {
+        visualOrder = snapshot.visualOrder;
+        groups = snapshot.groups;
+        trackNames = snapshot.trackNames;
+        trackNoteModes = snapshot.trackNoteModes;
+        trackFxLaneCounts = snapshot.trackFxLaneCounts;
+        masterFxLaneCount = juce::jlimit (1, 8, snapshot.masterFxLaneCount);
+    }
+
+    static bool snapshotsEqual (const Snapshot& a, const Snapshot& b)
+    {
+        return a.visualOrder == b.visualOrder
+            && a.groups == b.groups
+            && a.trackNames == b.trackNames
+            && a.trackNoteModes == b.trackNoteModes
+            && a.trackFxLaneCounts == b.trackFxLaneCounts
+            && a.masterFxLaneCount == b.masterFxLaneCount;
+    }
+
 private:
     std::array<int, kNumTracks> visualOrder {};
     std::vector<TrackGroup> groups;
@@ -258,4 +307,30 @@ private:
     std::array<NoteMode, kNumTracks> trackNoteModes {};
     std::array<int, kNumTracks> trackFxLaneCounts {};
     int masterFxLaneCount = 1;
+};
+
+class TrackLayoutEditAction : public juce::UndoableAction
+{
+public:
+    TrackLayoutEditAction (TrackLayout& target, TrackLayout::Snapshot oldSnapshot, TrackLayout::Snapshot newSnapshot)
+        : layout (target), before (std::move (oldSnapshot)), after (std::move (newSnapshot))
+    {
+    }
+
+    bool perform() override
+    {
+        layout.applySnapshot (after);
+        return true;
+    }
+
+    bool undo() override
+    {
+        layout.applySnapshot (before);
+        return true;
+    }
+
+private:
+    TrackLayout& layout;
+    TrackLayout::Snapshot before;
+    TrackLayout::Snapshot after;
 };

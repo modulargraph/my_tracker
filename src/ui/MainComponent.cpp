@@ -23,45 +23,51 @@ MainComponent::MainComponent()
         switchToPattern (patternData.getNumPatterns() - 1);
         markDirty();
     };
+    toolbar->onDuplicatePattern = [this]
+    {
+        int idx = patternData.getCurrentPatternIndex();
+        patternData.duplicatePattern (idx);
+        arrangement.remapAfterPatternInserted (idx + 1);
+        switchToPattern (idx + 1);
+        if (trackerEngine.isPlaying() && songMode)
+            syncArrangementToEdit();
+        markDirty();
+    };
     toolbar->onRemovePattern = [this]
     {
-        if (patternData.getNumPatterns() <= 1)
-            return;
-
         int idx = patternData.getCurrentPatternIndex();
         auto& pat = patternData.getCurrentPattern();
 
-        // Check if pattern has any data
+        // Only delete when the current pattern is empty.
+        // Otherwise this behaves like "previous pattern".
         bool hasData = false;
         for (int r = 0; r < pat.numRows && ! hasData; ++r)
             for (int t = 0; t < kNumTracks && ! hasData; ++t)
                 if (! pat.getCell (r, t).isEmpty())
                     hasData = true;
-
-        auto doRemove = [this, idx]
-        {
-            removePatternAndRepairArrangement (idx);
-            switchToPattern (juce::jmin (idx, patternData.getNumPatterns() - 1));
-            markDirty();
-        };
+        for (int r = 0; r < pat.numRows && ! hasData; ++r)
+            for (int lane = 0; lane < trackLayout.getMasterFxLaneCount() && ! hasData; ++lane)
+                if (! pat.getMasterFxSlot (r, lane).isEmpty())
+                    hasData = true;
 
         if (hasData)
         {
-            juce::AlertWindow::showOkCancelBox (
-                juce::AlertWindow::WarningIcon,
-                "Delete Pattern",
-                "This pattern contains data. Are you sure you want to delete it?",
-                "Delete", "Cancel", nullptr,
-                juce::ModalCallbackFunction::create ([doRemove] (int result)
-                {
-                    if (result == 1)
-                        doRemove();
-                }));
+            if (idx > 0)
+                switchToPattern (idx - 1);
+            return;
         }
+
+        if (patternData.getNumPatterns() <= 1)
+            return;
+
+        removePatternAndRepairArrangement (idx);
+        if (idx > 0)
+            switchToPattern (idx - 1);
         else
         {
-            doRemove();
+            switchToPattern (0);
         }
+        markDirty();
     };
     toolbar->onNextPattern = [this]
     {
@@ -87,6 +93,10 @@ MainComponent::MainComponent()
                 for (int r = 0; r < pat.numRows && ! hasData; ++r)
                     for (int t = 0; t < kNumTracks && ! hasData; ++t)
                         if (! pat.getCell (r, t).isEmpty())
+                            hasData = true;
+                for (int r = 0; r < pat.numRows && ! hasData; ++r)
+                    for (int lane = 0; lane < trackLayout.getMasterFxLaneCount() && ! hasData; ++lane)
+                        if (! pat.getMasterFxSlot (r, lane).isEmpty())
                             hasData = true;
                 if (! hasData)
                 {
@@ -484,6 +494,7 @@ MainComponent::MainComponent()
                 trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
         }
         markDirty();
+        commandManager.commandStatusChanged();
     };
 
     // Track header right-click
@@ -575,6 +586,7 @@ MainComponent::MainComponent()
 
     // Set up application command manager for Cmd shortcuts (macOS needs this)
     commandManager.registerAllCommandsForTarget (this);
+    commandManager.setFirstCommandTarget (this);
     addKeyListener (commandManager.getKeyMappings());
 
     // Register as mac menu bar so Cmd+O goes through the native menu system
@@ -589,9 +601,15 @@ MainComponent::MainComponent()
     trackerGrid->addKeyListener (this);
     trackerGrid->addKeyListener (commandManager.getKeyMappings());
     sampleEditor->addKeyListener (this);
+    sampleEditor->addKeyListener (commandManager.getKeyMappings());
     fileBrowser->addKeyListener (this);
+    fileBrowser->addKeyListener (commandManager.getKeyMappings());
     mixerComponent->addKeyListener (this);
+    mixerComponent->addKeyListener (commandManager.getKeyMappings());
     sendEffectsComponent->addKeyListener (this);
+    sendEffectsComponent->addKeyListener (commandManager.getKeyMappings());
+    instrumentPanel->addKeyListener (commandManager.getKeyMappings());
+    arrangementComponent->addKeyListener (commandManager.getKeyMappings());
 
     setSize (1280, 720);
     setWantsKeyboardFocus (true);
@@ -603,9 +621,15 @@ MainComponent::~MainComponent()
    #if JUCE_MAC
     juce::MenuBarModel::setMacMainMenu (nullptr);
    #endif
+    arrangementComponent->removeKeyListener (commandManager.getKeyMappings());
+    instrumentPanel->removeKeyListener (commandManager.getKeyMappings());
+    sendEffectsComponent->removeKeyListener (commandManager.getKeyMappings());
     mixerComponent->removeKeyListener (this);
+    mixerComponent->removeKeyListener (commandManager.getKeyMappings());
     sendEffectsComponent->removeKeyListener (this);
+    fileBrowser->removeKeyListener (commandManager.getKeyMappings());
     fileBrowser->removeKeyListener (this);
+    sampleEditor->removeKeyListener (commandManager.getKeyMappings());
     sampleEditor->removeKeyListener (this);
     trackerGrid->removeKeyListener (commandManager.getKeyMappings());
     trackerGrid->removeKeyListener (this);
@@ -1008,10 +1032,13 @@ void MainComponent::getCommandInfo (juce::CommandID commandID, juce::Application
         case cmdUndo:
             result.setInfo ("Undo", "Undo last action", "Edit", 0);
             result.addDefaultKeypress ('Z', juce::ModifierKeys::commandModifier);
+            result.setActive (undoManager.canUndo());
             break;
         case cmdRedo:
             result.setInfo ("Redo", "Redo last undone action", "Edit", 0);
             result.addDefaultKeypress ('Z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+            result.addDefaultKeypress ('Y', juce::ModifierKeys::commandModifier);
+            result.setActive (undoManager.canRedo());
             break;
         case cmdNewProject:
             result.setInfo ("New Project", "Create a new project", "File", 0);
@@ -1024,10 +1051,12 @@ void MainComponent::getCommandInfo (juce::CommandID commandID, juce::Application
         case cmdSave:
             result.setInfo ("Save", "Save current project", "File", 0);
             result.addDefaultKeypress ('S', juce::ModifierKeys::commandModifier);
+            result.setActive (true);
             break;
         case cmdSaveAs:
             result.setInfo ("Save As...", "Save project to a new file", "File", 0);
             result.addDefaultKeypress ('S', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+            result.setActive (true);
             break;
         case cmdShowHelp:
             result.setInfo ("Keyboard Shortcuts", "Show all keyboard shortcuts", "Help", 0);
@@ -1099,12 +1128,22 @@ bool MainComponent::perform (const InvocationInfo& info)
             doCut();
             return true;
         case cmdUndo:
-            undoManager.undo();
-            trackerGrid->repaint();
+            if (undoManager.undo())
+            {
+                if (trackerGrid->onPatternDataChanged)
+                    trackerGrid->onPatternDataChanged();
+                trackerGrid->repaint();
+                commandManager.commandStatusChanged();
+            }
             return true;
         case cmdRedo:
-            undoManager.redo();
-            trackerGrid->repaint();
+            if (undoManager.redo())
+            {
+                if (trackerGrid->onPatternDataChanged)
+                    trackerGrid->onPatternDataChanged();
+                trackerGrid->repaint();
+                commandManager.commandStatusChanged();
+            }
             return true;
         case cmdNewProject:
             newProject();
@@ -1542,15 +1581,17 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                             }
                             else if (result == 10)
                             {
-                                trackLayout.moveVisualRange (rangeStart, rangeEnd, -1);
-                                markDirty();
-                                trackerGrid->repaint();
+                                performUndoableTrackLayoutChange ([this, rangeStart, rangeEnd]
+                                {
+                                    trackLayout.moveVisualRange (rangeStart, rangeEnd, -1);
+                                });
                             }
                             else if (result == 11)
                             {
-                                trackLayout.moveVisualRange (rangeStart, rangeEnd, +1);
-                                markDirty();
-                                trackerGrid->repaint();
+                                performUndoableTrackLayoutChange ([this, rangeStart, rangeEnd]
+                                {
+                                    trackLayout.moveVisualRange (rangeStart, rangeEnd, +1);
+                                });
                             }
                             else if (result == 12)
                             {
@@ -1566,42 +1607,52 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                                     {
                                         auto name = aw->getTextEditorContents ("name");
                                         if (name.isEmpty()) name = "Group";
-                                        trackLayout.createGroup (name, rangeStart, rangeEnd);
-                                        markDirty();
-                                        trackerGrid->repaint();
+                                        performUndoableTrackLayoutChange ([this, name, rangeStart, rangeEnd]
+                                        {
+                                            trackLayout.createGroup (name, rangeStart, rangeEnd);
+                                        });
                                     }
                                     delete aw;
                                 }), true);
                             }
                             else if (result == 13 && groupIdx >= 0)
                             {
-                                // Remove this track from its group
-                                auto& group = trackLayout.getGroup (groupIdx);
-                                group.trackIndices.erase (
-                                    std::remove (group.trackIndices.begin(), group.trackIndices.end(), track),
-                                    group.trackIndices.end());
-                                if (group.trackIndices.empty())
-                                    trackLayout.removeGroup (groupIdx);
-                                markDirty();
-                                trackerGrid->repaint();
+                                performUndoableTrackLayoutChange ([this, track]
+                                {
+                                    int currentGroupIdx = trackLayout.getGroupForTrack (track);
+                                    if (currentGroupIdx < 0 || currentGroupIdx >= trackLayout.getNumGroups())
+                                        return;
+
+                                    // Remove this track from its group.
+                                    auto& group = trackLayout.getGroup (currentGroupIdx);
+                                    group.trackIndices.erase (
+                                        std::remove (group.trackIndices.begin(), group.trackIndices.end(), track),
+                                        group.trackIndices.end());
+                                    if (group.trackIndices.empty())
+                                        trackLayout.removeGroup (currentGroupIdx);
+                                });
                             }
                             else if (result == 14 && groupIdx >= 0)
                             {
-                                trackLayout.removeGroup (groupIdx);
-                                markDirty();
-                                trackerGrid->repaint();
+                                performUndoableTrackLayoutChange ([this, groupIdx]
+                                {
+                                    if (groupIdx >= 0 && groupIdx < trackLayout.getNumGroups())
+                                        trackLayout.removeGroup (groupIdx);
+                                });
                             }
                             else if (result == 20)
                             {
-                                trackLayout.addFxLane (track);
-                                markDirty();
-                                trackerGrid->repaint();
+                                performUndoableTrackLayoutChange ([this, track]
+                                {
+                                    trackLayout.addFxLane (track);
+                                });
                             }
                             else if (result == 21)
                             {
-                                trackLayout.removeFxLane (track);
-                                markDirty();
-                                trackerGrid->repaint();
+                                performUndoableTrackLayoutChange ([this, track]
+                                {
+                                    trackLayout.removeFxLane (track);
+                                });
                             }
                         });
 }
@@ -1633,6 +1684,26 @@ void MainComponent::showRenameTrackDialog (int track)
         }
         delete aw;
     }), true);
+}
+
+void MainComponent::performUndoableTrackLayoutChange (const std::function<void()>& changeFn)
+{
+    auto before = trackLayout.createSnapshot();
+    changeFn();
+    auto after = trackLayout.createSnapshot();
+
+    if (TrackLayout::snapshotsEqual (before, after))
+    {
+        trackerGrid->repaint();
+        return;
+    }
+
+    undoManager.perform (new TrackLayoutEditAction (trackLayout, std::move (before), std::move (after)));
+
+    trackerGrid->setCursorPosition (trackerGrid->getCursorRow(), trackerGrid->getCursorTrack());
+    trackerGrid->repaint();
+    if (trackerGrid->onPatternDataChanged)
+        trackerGrid->onPatternDataChanged();
 }
 
 void MainComponent::markDirty()
@@ -1906,7 +1977,7 @@ void MainComponent::showHelpOverlay()
                 { "EDITING", {
                     "Cmd+C / X / V     Copy / Cut / Paste",
                     "Cmd+Z             Undo",
-                    "Cmd+Shift+Z       Redo",
+                    "Cmd+Shift+Z / Y   Redo",
                     "Shift+Arrow       Select region" }},
                 { "FILE", {
                     "Cmd+N             New project",
@@ -2173,7 +2244,13 @@ void MainComponent::doPaste()
         }
     }
 
-    undoManager.perform (new MultiCellEditAction (patternData, patternData.getCurrentPatternIndex(), std::move (records)));
+    if (! records.empty())
+    {
+        undoManager.perform (new MultiCellEditAction (patternData, patternData.getCurrentPatternIndex(), std::move (records)));
+        if (trackerGrid->onPatternDataChanged)
+            trackerGrid->onPatternDataChanged();
+        commandManager.commandStatusChanged();
+    }
     trackerGrid->repaint();
 }
 
@@ -2183,6 +2260,25 @@ void MainComponent::doCut()
 
     auto& pat = patternData.getCurrentPattern();
     int patIdx = patternData.getCurrentPatternIndex();
+    std::vector<MultiCellEditAction::CellRecord> cellRecords;
+    std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords;
+
+    auto sameFx = [] (const FxSlot& a, const FxSlot& b)
+    {
+        return a.fx == b.fx && a.fxParam == b.fxParam && a.fxCommand == b.fxCommand;
+    };
+
+    auto sameCell = [&sameFx] (const Cell& a, const Cell& b)
+    {
+        if (a.note != b.note || a.instrument != b.instrument || a.volume != b.volume)
+            return false;
+        if (a.fxSlots.size() != b.fxSlots.size())
+            return false;
+        for (size_t i = 0; i < a.fxSlots.size(); ++i)
+            if (! sameFx (a.fxSlots[i], b.fxSlots[i]))
+                return false;
+        return true;
+    };
 
     if (trackerGrid->hasSelection)
     {
@@ -2190,8 +2286,6 @@ void MainComponent::doCut()
         int minRow, maxRow, minViTrack, maxViTrack;
         trackerGrid->getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
 
-        std::vector<MultiCellEditAction::CellRecord> records;
-        bool changedMaster = false;
         for (int r = minRow; r <= maxRow; ++r)
         {
             for (int vi = minViTrack; vi <= maxViTrack; ++vi)
@@ -2199,8 +2293,13 @@ void MainComponent::doCut()
                 if (vi >= kNumTracks)
                 {
                     for (int lane = 0; lane < trackLayout.getMasterFxLaneCount(); ++lane)
-                        pat.getMasterFxSlot (r, lane).clear();
-                    changedMaster = true;
+                    {
+                        auto oldSlot = pat.getMasterFxSlot (r, lane);
+                        auto newSlot = oldSlot;
+                        newSlot.clear();
+                        if (! sameFx (oldSlot, newSlot))
+                            masterFxRecords.push_back ({ r, lane, oldSlot, newSlot });
+                    }
                 }
                 else
                 {
@@ -2210,15 +2309,11 @@ void MainComponent::doCut()
                     rec.track = phys;
                     rec.oldCell = pat.getCell (r, phys);
                     rec.newCell = Cell{}; // cleared
-                    records.push_back (rec);
+                    if (! sameCell (rec.oldCell, rec.newCell))
+                        cellRecords.push_back (rec);
                 }
             }
         }
-        if (! records.empty())
-            undoManager.perform (new MultiCellEditAction (patternData, patIdx, std::move (records)));
-        if (changedMaster)
-            markDirty();
-        trackerGrid->clearSelection();
     }
     else
     {
@@ -2226,15 +2321,37 @@ void MainComponent::doCut()
         int t = trackerGrid->getCursorTrack();
         if (t >= kNumTracks)
         {
-            pat.getMasterFxSlot (r, trackerGrid->getCursorFxLane()).clear();
-            markDirty();
+            int lane = trackerGrid->getCursorFxLane();
+            auto oldSlot = pat.getMasterFxSlot (r, lane);
+            auto newSlot = oldSlot;
+            newSlot.clear();
+            if (! sameFx (oldSlot, newSlot))
+                masterFxRecords.push_back ({ r, lane, oldSlot, newSlot });
         }
         else
         {
-            Cell empty;
-            undoManager.perform (new CellEditAction (patternData, patIdx, r, t, empty));
+            MultiCellEditAction::CellRecord rec;
+            rec.row = r;
+            rec.track = t;
+            rec.oldCell = pat.getCell (r, t);
+            rec.newCell = Cell{};
+            if (! sameCell (rec.oldCell, rec.newCell))
+                cellRecords.push_back (rec);
         }
     }
+
+    if (! cellRecords.empty() || ! masterFxRecords.empty())
+    {
+        undoManager.perform (new MultiCellEditAction (patternData, patIdx,
+                                                      std::move (cellRecords),
+                                                      std::move (masterFxRecords)));
+        if (trackerGrid->onPatternDataChanged)
+            trackerGrid->onPatternDataChanged();
+        commandManager.commandStatusChanged();
+    }
+
+    if (trackerGrid->hasSelection)
+        trackerGrid->clearSelection();
 
     trackerGrid->repaint();
 }

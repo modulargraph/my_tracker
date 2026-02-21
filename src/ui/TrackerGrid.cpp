@@ -3,6 +3,64 @@
 #include "Clipboard.h"
 #include <map>
 
+namespace
+{
+bool sameFxSlot (const FxSlot& a, const FxSlot& b)
+{
+    return a.fx == b.fx && a.fxParam == b.fxParam && a.fxCommand == b.fxCommand;
+}
+
+bool sameCell (const Cell& a, const Cell& b)
+{
+    if (a.note != b.note || a.instrument != b.instrument || a.volume != b.volume)
+        return false;
+    if (a.fxSlots.size() != b.fxSlots.size())
+        return false;
+    for (size_t i = 0; i < a.fxSlots.size(); ++i)
+    {
+        if (! sameFxSlot (a.fxSlots[i], b.fxSlots[i]))
+            return false;
+    }
+    return true;
+}
+
+bool applyPatternEdit (PatternData& patternData, juce::UndoManager* undoManager, int patternIndex,
+                       std::vector<MultiCellEditAction::CellRecord> cellRecords,
+                       std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords)
+{
+    if (patternIndex < 0 || patternIndex >= patternData.getNumPatterns())
+        return false;
+
+    if (cellRecords.empty() && masterFxRecords.empty())
+        return false;
+
+    if (undoManager != nullptr)
+    {
+        undoManager->perform (new MultiCellEditAction (patternData, patternIndex,
+                                                       std::move (cellRecords),
+                                                       std::move (masterFxRecords)));
+        return true;
+    }
+
+    auto& pat = patternData.getPattern (patternIndex);
+    for (auto& rec : cellRecords)
+    {
+        if (rec.row >= 0 && rec.row < pat.numRows && rec.track >= 0 && rec.track < kNumTracks)
+            pat.setCell (rec.row, rec.track, rec.newCell);
+    }
+
+    for (auto& rec : masterFxRecords)
+    {
+        if (rec.row < 0 || rec.row >= pat.numRows || rec.lane < 0)
+            continue;
+        pat.ensureMasterFxSlots (rec.lane + 1);
+        pat.getMasterFxSlot (rec.row, rec.lane) = rec.newSlot;
+    }
+
+    return true;
+}
+}
+
 TrackerGrid::TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf, TrackLayout& layout)
     : pattern (patternData), lookAndFeel (lnf), trackLayout (layout)
 {
@@ -643,28 +701,42 @@ void TrackerGrid::showFxCommandPopup()
             if (index >= 0 && index < static_cast<int> (commandList.size()))
             {
                 auto& cmd = commandList[static_cast<size_t> (index)];
+                auto& pat = pattern.getCurrentPattern();
+                int patIdx = pattern.getCurrentPatternIndex();
+                std::vector<MultiCellEditAction::CellRecord> cellRecords;
+                std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords;
+
                 if (isMasterTrack (cursorTrack))
                 {
-                    auto& pat = pattern.getCurrentPattern();
                     pat.ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
-                    auto& slot = pat.getMasterFxSlot (cursorRow, cursorFxLane);
-                    slot.setSymbolicCommand (cmd.letter, 0);
+                    auto oldSlot = pat.getMasterFxSlot (cursorRow, cursorFxLane);
+                    auto newSlot = oldSlot;
+                    newSlot.setSymbolicCommand (cmd.letter, 0);
+                    if (! sameFxSlot (oldSlot, newSlot))
+                        masterFxRecords.push_back ({ cursorRow, cursorFxLane, oldSlot, newSlot });
                 }
                 else
                 {
-                    Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+                    auto oldCell = pat.getCell (cursorRow, cursorTrack);
+                    auto newCell = oldCell;
                     int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
-                    cell.ensureFxSlots (fxLanes);
-                    auto& slot = cell.getFxSlot (cursorFxLane);
+                    newCell.ensureFxSlots (fxLanes);
+                    auto& slot = newCell.getFxSlot (cursorFxLane);
                     slot.setSymbolicCommand (cmd.letter, 0);
+                    if (! sameCell (oldCell, newCell))
+                        cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
                 }
 
                 // Position cursor on param digits for further editing
                 hexDigitCount = 1;
                 hexAccumulator = 0;
 
-                if (onPatternDataChanged) onPatternDataChanged();
-                repaint();
+                if (applyPatternEdit (pattern, undoManager, patIdx,
+                                      std::move (cellRecords), std::move (masterFxRecords)))
+                {
+                    if (onPatternDataChanged) onPatternDataChanged();
+                    repaint();
+                }
             }
         }
         grabKeyboardFocus();
@@ -697,27 +769,41 @@ void TrackerGrid::showFxCommandPopupAt (juce::Point<int> screenPos)
             if (index >= 0 && index < static_cast<int> (commandList.size()))
             {
                 auto& cmd = commandList[static_cast<size_t> (index)];
+                auto& pat = pattern.getCurrentPattern();
+                int patIdx = pattern.getCurrentPatternIndex();
+                std::vector<MultiCellEditAction::CellRecord> cellRecords;
+                std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords;
+
                 if (isMasterTrack (cursorTrack))
                 {
-                    auto& pat = pattern.getCurrentPattern();
                     pat.ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
-                    auto& slot = pat.getMasterFxSlot (cursorRow, cursorFxLane);
-                    slot.setSymbolicCommand (cmd.letter, 0);
+                    auto oldSlot = pat.getMasterFxSlot (cursorRow, cursorFxLane);
+                    auto newSlot = oldSlot;
+                    newSlot.setSymbolicCommand (cmd.letter, 0);
+                    if (! sameFxSlot (oldSlot, newSlot))
+                        masterFxRecords.push_back ({ cursorRow, cursorFxLane, oldSlot, newSlot });
                 }
                 else
                 {
-                    Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+                    auto oldCell = pat.getCell (cursorRow, cursorTrack);
+                    auto newCell = oldCell;
                     int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
-                    cell.ensureFxSlots (fxLanes);
-                    auto& slot = cell.getFxSlot (cursorFxLane);
+                    newCell.ensureFxSlots (fxLanes);
+                    auto& slot = newCell.getFxSlot (cursorFxLane);
                     slot.setSymbolicCommand (cmd.letter, 0);
+                    if (! sameCell (oldCell, newCell))
+                        cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
                 }
 
                 hexDigitCount = 1;
                 hexAccumulator = 0;
 
-                if (onPatternDataChanged) onPatternDataChanged();
-                repaint();
+                if (applyPatternEdit (pattern, undoManager, patIdx,
+                                      std::move (cellRecords), std::move (masterFxRecords)))
+                {
+                    if (onPatternDataChanged) onPatternDataChanged();
+                    repaint();
+                }
             }
         }
         grabKeyboardFocus();
@@ -798,6 +884,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
     dragGroupDragIndex = -1;
     dragHeaderVisualIndex = -1;
     dragGroupIndex = -1;
+    layoutDragSnapshotValid = false;
     dragMoveRow = -1;
     dragMoveTrack = -1;
     dragGrabRowOffset = 0;
@@ -873,6 +960,8 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
                     isDraggingGroupBorder = true;
                     dragGroupIndex = gi;
                     dragGroupRightEdge = false;
+                    layoutDragStartSnapshot = trackLayout.createSnapshot();
+                    layoutDragSnapshotValid = true;
                     return;
                 }
                 // Check right border
@@ -881,6 +970,8 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
                     isDraggingGroupBorder = true;
                     dragGroupIndex = gi;
                     dragGroupRightEdge = true;
+                    layoutDragStartSnapshot = trackLayout.createSnapshot();
+                    layoutDragSnapshotValid = true;
                     return;
                 }
 
@@ -890,6 +981,8 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
                     isDraggingGroupBorder = true;
                     dragGroupIndex = gi;
                     dragGroupRightEdge = false;
+                    layoutDragStartSnapshot = trackLayout.createSnapshot();
+                    layoutDragSnapshotValid = true;
                     return;
                 }
                 if (visualIndex == lastVis + 1 && pixelInCell < borderGrabZone)
@@ -897,6 +990,8 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
                     isDraggingGroupBorder = true;
                     dragGroupIndex = gi;
                     dragGroupRightEdge = true;
+                    layoutDragStartSnapshot = trackLayout.createSnapshot();
+                    layoutDragSnapshotValid = true;
                     return;
                 }
             }
@@ -925,6 +1020,8 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
                 isDraggingGroupAsWhole = true;
                 dragGroupDragIndex = groupIdx;
                 dragHeaderVisualIndex = visualIndex;
+                layoutDragStartSnapshot = trackLayout.createSnapshot();
+                layoutDragSnapshotValid = true;
 
                 repaint();
                 if (onCursorMoved) onCursorMoved();
@@ -957,6 +1054,8 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
 
         isDraggingHeader = true;
         dragHeaderVisualIndex = visualIndex;
+        layoutDragStartSnapshot = trackLayout.createSnapshot();
+        layoutDragSnapshotValid = true;
 
         repaint();
         if (onCursorMoved) onCursorMoved();
@@ -1275,21 +1374,45 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
 {
     if (isDraggingGroupBorder)
     {
+        bool changed = false;
+        if (layoutDragSnapshotValid)
+        {
+            auto after = trackLayout.createSnapshot();
+            changed = ! TrackLayout::snapshotsEqual (layoutDragStartSnapshot, after);
+            if (changed && undoManager != nullptr)
+                undoManager->perform (new TrackLayoutEditAction (trackLayout, layoutDragStartSnapshot, after));
+        }
+
         isDraggingGroupBorder = false;
         dragGroupIndex = -1;
-        if (onPatternDataChanged) onPatternDataChanged();
+        layoutDragSnapshotValid = false;
+
+        if (changed && onPatternDataChanged)
+            onPatternDataChanged();
         repaint();
         return;
     }
 
     if (isDraggingHeader)
     {
+        bool changed = false;
+        if (layoutDragSnapshotValid)
+        {
+            auto after = trackLayout.createSnapshot();
+            changed = ! TrackLayout::snapshotsEqual (layoutDragStartSnapshot, after);
+            if (changed && undoManager != nullptr)
+                undoManager->perform (new TrackLayoutEditAction (trackLayout, layoutDragStartSnapshot, after));
+        }
+
         // Header drag complete -- layout already updated during drag
-        if (onTrackHeaderDragged)
+        if (changed && onTrackHeaderDragged)
             onTrackHeaderDragged (-1, -1); // signal completion
         isDraggingHeader = false;
         dragHeaderVisualIndex = -1;
-        if (onPatternDataChanged) onPatternDataChanged();
+        layoutDragSnapshotValid = false;
+
+        if (changed && onPatternDataChanged)
+            onPatternDataChanged();
         repaint();
         return;
     }
@@ -1797,8 +1920,9 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     if (keyCode == juce::KeyPress::deleteKey || keyCode == juce::KeyPress::backspaceKey)
     {
         auto& pat = pattern.getCurrentPattern();
-        std::vector<MultiCellEditAction::CellRecord> records;
-        bool changedMasterLane = false;
+        int patIdx = pattern.getCurrentPatternIndex();
+        std::vector<MultiCellEditAction::CellRecord> cellRecords;
+        std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords;
 
         if (hasSelection)
         {
@@ -1812,18 +1936,22 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                     if (isMasterVisualColumn (vi))
                     {
                         for (int lane = 0; lane < trackLayout.getMasterFxLaneCount(); ++lane)
-                            pat.getMasterFxSlot (r, lane).clear();
-                        changedMasterLane = true;
+                        {
+                            auto oldSlot = pat.getMasterFxSlot (r, lane);
+                            auto newSlot = oldSlot;
+                            newSlot.clear();
+                            if (! sameFxSlot (oldSlot, newSlot))
+                                masterFxRecords.push_back ({ r, lane, oldSlot, newSlot });
+                        }
                     }
                     else
                     {
                         int phys = trackLayout.visualToPhysical (vi);
-                        MultiCellEditAction::CellRecord rec;
-                        rec.row = r;
-                        rec.track = phys;
-                        rec.oldCell = pat.getCell (r, phys);
-                        rec.newCell = Cell{}; // cleared
-                        records.push_back (rec);
+                        auto oldCell = pat.getCell (r, phys);
+                        auto newCell = oldCell;
+                        newCell.clear();
+                        if (! sameCell (oldCell, newCell))
+                            cellRecords.push_back ({ r, phys, oldCell, newCell });
                     }
                 }
             }
@@ -1833,60 +1961,62 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         {
             if (isMasterTrack (cursorTrack))
             {
-                pat.getMasterFxSlot (cursorRow, cursorFxLane).clear();
-                changedMasterLane = true;
+                auto oldSlot = pat.getMasterFxSlot (cursorRow, cursorFxLane);
+                auto newSlot = oldSlot;
+                newSlot.clear();
+                if (! sameFxSlot (oldSlot, newSlot))
+                    masterFxRecords.push_back ({ cursorRow, cursorFxLane, oldSlot, newSlot });
             }
             else
             {
-            int phys = cursorTrack;
-            Cell oldCell = pat.getCell (cursorRow, phys);
-            Cell newCell = oldCell;
+                int phys = cursorTrack;
+                Cell oldCell = pat.getCell (cursorRow, phys);
+                Cell newCell = oldCell;
 
-            switch (cursorSubColumn)
-            {
-                case SubColumn::Note:       newCell.clear(); break;
-                case SubColumn::Instrument: newCell.instrument = -1; break;
-                case SubColumn::Volume:     newCell.volume = -1; break;
-                case SubColumn::FX:
+                switch (cursorSubColumn)
                 {
-                    newCell.ensureFxSlots (cursorFxLane + 1);
-                    newCell.getFxSlot (cursorFxLane).clear();
-                    break;
+                    case SubColumn::Note:       newCell.clear(); break;
+                    case SubColumn::Instrument: newCell.instrument = -1; break;
+                    case SubColumn::Volume:     newCell.volume = -1; break;
+                    case SubColumn::FX:
+                    {
+                        newCell.ensureFxSlots (cursorFxLane + 1);
+                        newCell.getFxSlot (cursorFxLane).clear();
+                        break;
+                    }
                 }
-            }
 
-            MultiCellEditAction::CellRecord rec;
-            rec.row = cursorRow;
-            rec.track = phys;
-            rec.oldCell = oldCell;
-            rec.newCell = newCell;
-            records.push_back (rec);
+                if (! sameCell (oldCell, newCell))
+                    cellRecords.push_back ({ cursorRow, phys, oldCell, newCell });
             }
         }
 
-        if (undoManager != nullptr && ! records.empty())
-            undoManager->perform (new MultiCellEditAction (pattern, pattern.getCurrentPatternIndex(), std::move (records)));
-        else
-        {
-            // Fallback: apply directly
-            for (auto& rec : records)
-                pat.setCell (rec.row, rec.track, rec.newCell);
-        }
+        bool changed = applyPatternEdit (pattern, undoManager, patIdx,
+                                         std::move (cellRecords), std::move (masterFxRecords));
 
         hexDigitCount = 0;
         hexAccumulator = 0;
-        if (onPatternDataChanged && (! records.empty() || changedMasterLane)) onPatternDataChanged();
-        repaint();
+        if (changed)
+        {
+            if (onPatternDataChanged) onPatternDataChanged();
+            repaint();
+        }
         return true;
     }
 
     // Note-off with equals (=)
     if (key.getTextCharacter() == '=' && cursorSubColumn == SubColumn::Note && ! isMasterTrack (cursorTrack))
     {
-        Cell& cell = pattern.getCell (cursorRow, cursorTrack);
-        cell.note = 255; // note-off marker (OFF ===)
-        cell.instrument = currentInstrument;
-        if (onPatternDataChanged) onPatternDataChanged();
+        auto oldCell = pattern.getCell (cursorRow, cursorTrack);
+        auto newCell = oldCell;
+        newCell.note = 255; // note-off marker (OFF ===)
+        newCell.instrument = currentInstrument;
+        std::vector<MultiCellEditAction::CellRecord> cellRecords;
+        if (! sameCell (oldCell, newCell))
+            cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
+        bool changed = applyPatternEdit (pattern, undoManager, pattern.getCurrentPatternIndex(),
+                                         std::move (cellRecords), {});
+        if (changed && onPatternDataChanged) onPatternDataChanged();
         moveCursor (editStep, 0);
         repaint();
         return true;
@@ -1895,10 +2025,16 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     // Note-kill with minus (-)
     if (key.getTextCharacter() == '-' && cursorSubColumn == SubColumn::Note && ! isMasterTrack (cursorTrack))
     {
-        Cell& cell = pattern.getCell (cursorRow, cursorTrack);
-        cell.note = 254; // note-kill marker (KILL ^^^)
-        cell.instrument = currentInstrument;
-        if (onPatternDataChanged) onPatternDataChanged();
+        auto oldCell = pattern.getCell (cursorRow, cursorTrack);
+        auto newCell = oldCell;
+        newCell.note = 254; // note-kill marker (KILL ^^^)
+        newCell.instrument = currentInstrument;
+        std::vector<MultiCellEditAction::CellRecord> cellRecords;
+        if (! sameCell (oldCell, newCell))
+            cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
+        bool changed = applyPatternEdit (pattern, undoManager, pattern.getCurrentPatternIndex(),
+                                         std::move (cellRecords), {});
+        if (changed && onPatternDataChanged) onPatternDataChanged();
         moveCursor (editStep, 0);
         repaint();
         return true;
@@ -1919,15 +2055,22 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         int note = keyToNote (key);
         if (note >= 0 && note <= 127)
         {
-            Cell& cell = pattern.getCell (cursorRow, cursorTrack);
-            cell.note = note;
-            cell.instrument = currentInstrument;
-            if (cell.volume < 0)
-                cell.volume = 127;
+            auto oldCell = pattern.getCell (cursorRow, cursorTrack);
+            auto newCell = oldCell;
+            newCell.note = note;
+            newCell.instrument = currentInstrument;
+            if (newCell.volume < 0)
+                newCell.volume = 127;
 
             if (onNoteEntered)
                 onNoteEntered (note, currentInstrument);
-            if (onPatternDataChanged) onPatternDataChanged();
+
+            std::vector<MultiCellEditAction::CellRecord> cellRecords;
+            if (! sameCell (oldCell, newCell))
+                cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
+            bool changed = applyPatternEdit (pattern, undoManager, pattern.getCurrentPatternIndex(),
+                                             std::move (cellRecords), {});
+            if (changed && onPatternDataChanged) onPatternDataChanged();
 
             moveCursor (editStep, 0);
             repaint();
@@ -1939,22 +2082,29 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         int hexVal = hexCharToValue (key.getTextCharacter());
         if (hexVal >= 0)
         {
-            Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+            auto oldCell = pattern.getCell (cursorRow, cursorTrack);
+            auto newCell = oldCell;
             if (hexDigitCount == 0)
             {
                 hexAccumulator = hexVal;
                 hexDigitCount = 1;
-                cell.instrument = hexAccumulator;
+                newCell.instrument = hexAccumulator;
             }
             else
             {
                 hexAccumulator = (hexAccumulator << 4) | hexVal;
-                cell.instrument = hexAccumulator & 0xFF;
+                newCell.instrument = hexAccumulator & 0xFF;
                 hexDigitCount = 0;
                 hexAccumulator = 0;
                 moveCursor (editStep, 0);
             }
-            if (onPatternDataChanged) onPatternDataChanged();
+
+            std::vector<MultiCellEditAction::CellRecord> cellRecords;
+            if (! sameCell (oldCell, newCell))
+                cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
+            bool changed = applyPatternEdit (pattern, undoManager, pattern.getCurrentPatternIndex(),
+                                             std::move (cellRecords), {});
+            if (changed && onPatternDataChanged) onPatternDataChanged();
             repaint();
             return true;
         }
@@ -1964,22 +2114,29 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         int hexVal = hexCharToValue (key.getTextCharacter());
         if (hexVal >= 0)
         {
-            Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+            auto oldCell = pattern.getCell (cursorRow, cursorTrack);
+            auto newCell = oldCell;
             if (hexDigitCount == 0)
             {
                 hexAccumulator = hexVal;
                 hexDigitCount = 1;
-                cell.volume = hexAccumulator;
+                newCell.volume = hexAccumulator;
             }
             else
             {
                 hexAccumulator = (hexAccumulator << 4) | hexVal;
-                cell.volume = juce::jlimit (0, 127, hexAccumulator);
+                newCell.volume = juce::jlimit (0, 127, hexAccumulator);
                 hexDigitCount = 0;
                 hexAccumulator = 0;
                 moveCursor (editStep, 0);
             }
-            if (onPatternDataChanged) onPatternDataChanged();
+
+            std::vector<MultiCellEditAction::CellRecord> cellRecords;
+            if (! sameCell (oldCell, newCell))
+                cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
+            bool changed = applyPatternEdit (pattern, undoManager, pattern.getCurrentPatternIndex(),
+                                             std::move (cellRecords), {});
+            if (changed && onPatternDataChanged) onPatternDataChanged();
             repaint();
             return true;
         }
@@ -1990,42 +2147,75 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         int hexVal = hexCharToValue (ch);
         int letterCmd = fxLetterToCommand (static_cast<char> (ch));
 
-        auto editSlot = [this, &pat = pattern.getCurrentPattern()]() -> FxSlot&
+        auto applyFxSlotEdit = [this] (auto&& mutator)
         {
+            auto& pat = pattern.getCurrentPattern();
+            int patIdx = pattern.getCurrentPatternIndex();
+            std::vector<MultiCellEditAction::CellRecord> cellRecords;
+            std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords;
+
             if (isMasterTrack (cursorTrack))
             {
                 pat.ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
-                return pat.getMasterFxSlot (cursorRow, cursorFxLane);
+                auto oldSlot = pat.getMasterFxSlot (cursorRow, cursorFxLane);
+                auto newSlot = oldSlot;
+                mutator (newSlot);
+                if (! sameFxSlot (oldSlot, newSlot))
+                    masterFxRecords.push_back ({ cursorRow, cursorFxLane, oldSlot, newSlot });
+                return applyPatternEdit (pattern, undoManager, patIdx,
+                                         std::move (cellRecords), std::move (masterFxRecords));
             }
 
-            Cell& cell = pattern.getCell (cursorRow, cursorTrack);
+            auto oldCell = pat.getCell (cursorRow, cursorTrack);
+            auto newCell = oldCell;
             int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
-            cell.ensureFxSlots (fxLanes);
-            return cell.getFxSlot (cursorFxLane);
+            newCell.ensureFxSlots (fxLanes);
+            mutator (newCell.getFxSlot (cursorFxLane));
+            if (! sameCell (oldCell, newCell))
+                cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
+            return applyPatternEdit (pattern, undoManager, patIdx,
+                                     std::move (cellRecords), std::move (masterFxRecords));
         };
 
         if (hexDigitCount == 0)
         {
             if (letterCmd > 0)
             {
-                auto& slot = editSlot();
-                slot.setSymbolicCommand (static_cast<char> (ch), 0);
+                bool changed = applyFxSlotEdit ([ch] (FxSlot& slot)
+                {
+                    slot.setSymbolicCommand (static_cast<char> (ch), 0);
+                });
                 hexAccumulator = 0;
                 hexDigitCount = 1;
-                if (onPatternDataChanged) onPatternDataChanged();
+                if (changed && onPatternDataChanged) onPatternDataChanged();
                 repaint();
                 return true;
             }
 
             if (hexVal >= 0)
             {
-                auto& slot = editSlot();
-                if (slot.getCommandLetter() != '\0')
+                auto& pat = pattern.getCurrentPattern();
+                char commandLetter = '\0';
+                if (isMasterTrack (cursorTrack))
+                {
+                    pat.ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
+                    commandLetter = pat.getMasterFxSlot (cursorRow, cursorFxLane).getCommandLetter();
+                }
+                else
+                {
+                    const auto& cell = pat.getCell (cursorRow, cursorTrack);
+                    commandLetter = cell.getFxSlot (cursorFxLane).getCommandLetter();
+                }
+
+                if (commandLetter != '\0')
                 {
                     hexAccumulator = hexVal;
                     hexDigitCount = 2;
-                    slot.fxParam = hexAccumulator;
-                    if (onPatternDataChanged) onPatternDataChanged();
+                    bool changed = applyFxSlotEdit ([this] (FxSlot& slot)
+                    {
+                        slot.fxParam = hexAccumulator;
+                    });
+                    if (changed && onPatternDataChanged) onPatternDataChanged();
                     repaint();
                     return true;
                 }
@@ -2033,23 +2223,29 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         }
         else if (hexVal >= 0)
         {
-            auto& slot = editSlot();
-
             if (hexDigitCount == 1)
             {
                 hexAccumulator = hexVal;
                 hexDigitCount = 2;
-                slot.fxParam = hexAccumulator;
+                bool changed = applyFxSlotEdit ([this] (FxSlot& slot)
+                {
+                    slot.fxParam = hexAccumulator;
+                });
+                if (changed && onPatternDataChanged) onPatternDataChanged();
             }
             else
             {
                 hexAccumulator = (hexAccumulator << 4) | hexVal;
-                slot.fxParam = hexAccumulator & 0xFF;
+                int fxParamValue = hexAccumulator & 0xFF;
+                bool changed = applyFxSlotEdit ([fxParamValue] (FxSlot& slot)
+                {
+                    slot.fxParam = fxParamValue;
+                });
+                if (changed && onPatternDataChanged) onPatternDataChanged();
                 hexDigitCount = 0;
                 hexAccumulator = 0;
                 moveCursor (editStep, 0);
             }
-            if (onPatternDataChanged) onPatternDataChanged();
             repaint();
             return true;
         }
