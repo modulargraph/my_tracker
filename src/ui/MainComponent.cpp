@@ -832,12 +832,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         return true;
     }
 
-    // Cmd+Right/Left: next/prev pattern
-    if (cmd && keyCode == juce::KeyPress::rightKey)
+    // Cmd+Shift+Right/Left: next/prev pattern (Cmd+Left/Right is now octave transpose)
+    if (cmd && shift && keyCode == juce::KeyPress::rightKey)
     {
-        if (shift)
+        if (alt)
         {
-            // Cmd+Shift+Right: add new pattern and switch to it
+            // Cmd+Shift+Alt+Right: add new pattern and switch to it
             patternData.addPattern (patternData.getCurrentPattern().numRows);
             switchToPattern (patternData.getNumPatterns() - 1);
         }
@@ -847,7 +847,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         }
         return true;
     }
-    if (cmd && keyCode == juce::KeyPress::leftKey)
+    if (cmd && shift && keyCode == juce::KeyPress::leftKey)
     {
         switchToPattern (patternData.getCurrentPatternIndex() - 1);
         return true;
@@ -905,18 +905,39 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         return true;
     }
 
-    // Cmd+1 through Cmd+8: set octave 0-7 (MacBook-friendly alternative to F1-F8)
-    if (cmd && ! shift && textChar >= '1' && textChar <= '8')
+    // Cmd+Shift+Up/Down: change keyboard octave
+    if (cmd && shift && keyCode == juce::KeyPress::upKey)
     {
-        trackerGrid->setOctave (textChar - '1');
-        sampleEditor->setOctave (textChar - '1');
+        int oct = juce::jmin (9, trackerGrid->getOctave() + 1);
+        trackerGrid->setOctave (oct);
+        sampleEditor->setOctave (oct);
+        updateStatusBar();
+        updateToolbar();
+        return true;
+    }
+    if (cmd && shift && keyCode == juce::KeyPress::downKey)
+    {
+        int oct = juce::jmax (0, trackerGrid->getOctave() - 1);
+        trackerGrid->setOctave (oct);
+        sampleEditor->setOctave (oct);
+        updateStatusBar();
+        updateToolbar();
+        return true;
+    }
+
+    // Cmd+1 through Cmd+8: set octave 0-7 (MacBook-friendly alternative to F1-F8)
+    if (cmd && ! shift && (keyCode >= '1' && keyCode <= '8'))
+    {
+        trackerGrid->setOctave (keyCode - '1');
+        sampleEditor->setOctave (keyCode - '1');
         updateStatusBar();
         updateToolbar();
         return true;
     }
 
     // Cmd+[ / Cmd+]: decrease/increase BPM (MacBook-friendly alternative to F9/F10)
-    if (cmd && ! shift && textChar == '[')
+    // NOTE: use keyCode, not textChar — macOS zeroes textChar when Cmd is held for punctuation keys
+    if (cmd && ! shift && keyCode == '[')
     {
         trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() - 1.0));
         updateStatusBar();
@@ -924,7 +945,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         markDirty();
         return true;
     }
-    if (cmd && ! shift && textChar == ']')
+    if (cmd && ! shift && keyCode == ']')
     {
         trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() + 1.0));
         updateStatusBar();
@@ -934,14 +955,14 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     }
 
     // Cmd+- / Cmd+=: decrease/increase edit step (MacBook-friendly alternative to F11/F12)
-    if (cmd && ! shift && textChar == '-')
+    if (cmd && ! shift && keyCode == '-')
     {
         trackerGrid->setEditStep (juce::jmax (0, trackerGrid->getEditStep() - 1));
         updateStatusBar();
         updateToolbar();
         return true;
     }
-    if (cmd && ! shift && textChar == '=')
+    if (cmd && ! shift && keyCode == '=')
     {
         trackerGrid->setEditStep (juce::jmin (16, trackerGrid->getEditStep() + 1));
         updateStatusBar();
@@ -2094,6 +2115,10 @@ void MainComponent::toggleArrangementPanel()
     arrangementVisible = ! arrangementVisible;
     toolbar->setArrangementVisible (arrangementVisible);
     resized();
+
+    // Restore keyboard focus to the active content component
+    if (! arrangementVisible && activeTab == Tab::Tracker)
+        trackerGrid->grabKeyboardFocus();
 }
 
 void MainComponent::toggleSongMode()

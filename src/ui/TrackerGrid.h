@@ -136,7 +136,7 @@ private:
     int cursorFxLane = 0;  // Which FX lane the cursor is in when SubColumn::FX
     int playbackRow = -1;
     bool isPlaying = false;
-    int editStep = 1;
+    int editStep = 0;
     int currentOctave = 4;
     int currentInstrument = 0;
     int rowsPerBeat = 4;

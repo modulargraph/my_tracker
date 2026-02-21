@@ -1736,16 +1736,24 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     bool shift = key.getModifiers().isShiftDown();
     bool ctrl = key.getModifiers().isCtrlDown();
 
+    bool cmd = key.getModifiers().isCommandDown();
+
     // Ctrl+Up/Down: semitone transpose with preview (Note sub-column only)
-    if (ctrl && ! shift && cursorSubColumn == SubColumn::Note && ! isMasterTrack (cursorTrack)
-        && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey))
+    // Cmd+Left/Right: octave transpose with preview (Note sub-column only)
+    if (((ctrl && ! shift && ! cmd
+          && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey))
+         || (cmd && ! shift && ! ctrl
+             && (keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey)))
+        && cursorSubColumn == SubColumn::Note && ! isMasterTrack (cursorTrack))
     {
         auto& pat = pattern.getCurrentPattern();
         auto oldCell = pat.getCell (cursorRow, cursorTrack);
 
         if (oldCell.hasNote() && oldCell.note <= 127)
         {
-            int delta = (keyCode == juce::KeyPress::upKey) ? 1 : -1;
+            bool isSemitone = (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey);
+            bool isUp = (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::rightKey);
+            int delta = isUp ? (isSemitone ? 1 : 12) : (isSemitone ? -1 : -12);
             int newNote = juce::jlimit (0, 127, oldCell.note + delta);
 
             if (newNote != oldCell.note)

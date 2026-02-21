@@ -2298,14 +2298,16 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
     }
 
     // Up/Down: adjust value in current column
+    // For discrete lists: Down=+1 moves selection down, Up=-1 moves up
+    // For continuous bars: Up=+1 increases, Down=-1 decreases
     if (keyCode == juce::KeyPress::upKey)
     {
-        adjustCurrentValue (1, shift, false);
+        adjustCurrentValue (isCurrentColumnDiscrete() ? -1 : 1, shift, false);
         return true;
     }
     if (keyCode == juce::KeyPress::downKey)
     {
-        adjustCurrentValue (-1, shift, false);
+        adjustCurrentValue (isCurrentColumnDiscrete() ? 1 : -1, shift, false);
         return true;
     }
 

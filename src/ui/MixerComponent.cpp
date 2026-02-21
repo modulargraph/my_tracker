@@ -916,8 +916,8 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
     auto keyCode = key.getKeyCode();
     bool shift = key.getModifiers().isShiftDown();
 
-    // Left/Right: navigate params/sections within strip
-    if (keyCode == juce::KeyPress::leftKey && ! shift)
+    // Up/Down: navigate params/sections within strip (vertical layout)
+    if (keyCode == juce::KeyPress::upKey && ! shift)
     {
         if (currentParam > 0)
             currentParam--;
@@ -926,7 +926,7 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
         repaint();
         return true;
     }
-    if (keyCode == juce::KeyPress::rightKey && ! shift)
+    if (keyCode == juce::KeyPress::downKey && ! shift)
     {
         if (currentParam < getParamCountForSection (currentSection) - 1)
             currentParam++;
@@ -936,14 +936,14 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Up/Down: adjust value
-    if (keyCode == juce::KeyPress::upKey)
+    // Left/Right: adjust value
+    if (keyCode == juce::KeyPress::rightKey)
     {
         adjustCurrentParam (shift ? 5.0 : 1.0);
         repaint();
         return true;
     }
-    if (keyCode == juce::KeyPress::downKey)
+    if (keyCode == juce::KeyPress::leftKey)
     {
         adjustCurrentParam (shift ? -5.0 : -1.0);
         repaint();

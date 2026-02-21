@@ -490,26 +490,28 @@ bool SendEffectsComponent::keyPressed (const juce::KeyPress& key)
     }
 
     // Up/Down: adjust current value
+    // For list columns: Down=+1 moves selection down, Up=-1 moves up
+    // For bar columns: Up=+1 increases, Down=-1 decreases
     if (keyCode == juce::KeyPress::upKey)
     {
-        adjustCurrentValue (1, shift, false);
+        adjustCurrentValue (isBarColumn() ? 1 : -1, shift, false);
         return true;
     }
     if (keyCode == juce::KeyPress::downKey)
     {
-        adjustCurrentValue (-1, shift, false);
+        adjustCurrentValue (isBarColumn() ? -1 : 1, shift, false);
         return true;
     }
 
     // Page Up/Down: large adjustments
     if (keyCode == juce::KeyPress::pageUpKey)
     {
-        adjustCurrentValue (1, false, true);
+        adjustCurrentValue (isBarColumn() ? 1 : -1, false, true);
         return true;
     }
     if (keyCode == juce::KeyPress::pageDownKey)
     {
-        adjustCurrentValue (-1, false, true);
+        adjustCurrentValue (isBarColumn() ? -1 : 1, false, true);
         return true;
     }
 
