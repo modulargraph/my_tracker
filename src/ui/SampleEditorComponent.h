@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "InstrumentParams.h"
 #include "TrackerLookAndFeel.h"
+#include "WaveformView.h"
 
 class SampleEditorComponent : public juce::Component,
                                private juce::Timer
@@ -43,6 +44,7 @@ public:
     std::function<void (int instrument)> onOpenPluginEditorRequested;
 
     void paint (juce::Graphics& g) override;
+    void paintOverChildren (juce::Graphics& g) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress& key) override;
     bool keyStateChanged (bool isKeyDown) override;
@@ -68,10 +70,8 @@ private:
 
     void drawPluginInstrumentPage (juce::Graphics& g, juce::Rectangle<int> area);
 
-    // Waveform display
-    juce::AudioFormatManager formatManager;
-    juce::AudioThumbnailCache thumbnailCache { 1 };
-    juce::AudioThumbnail thumbnail { 512, formatManager, thumbnailCache };
+    // Waveform display (child component, rendering only)
+    WaveformView waveformView;
 
     // Column-based focus (per mode/sub-tab)
     int parametersColumn = 0;
@@ -99,30 +99,30 @@ private:
     InstrumentParams dragStartParams;
     int dragStartModDestIndex = 0;
 
-    // ── Waveform zoom ──
+    // -- Waveform zoom --
     double viewStart = 0.0;  // normalized 0-1 left edge of zoomed view
     double viewEnd   = 1.0;  // normalized 0-1 right edge of zoomed view
 
-    // ── Waveform marker dragging ──
+    // -- Waveform marker dragging --
     enum class MarkerType { None, Start, End, LoopStart, LoopEnd, GranPos, Slice };
     MarkerType draggingMarker = MarkerType::None;
     int draggingSliceIndex = -1;         // which slice point is being dragged
     bool isWaveformDragging = false;     // true when dragging a marker on waveform
     float waveformDragStartX = 0.0f;
 
-    // ── Slice selection ──
+    // -- Slice selection --
     int selectedSliceIndex = -1;         // currently selected slice in Slice modes
 
-    // ── Hover state for cursor feedback ──
+    // -- Hover state for cursor feedback --
     MarkerType hoveredMarker = MarkerType::None;
 
-    // ── Waveform panning ──
+    // -- Waveform panning --
     bool isPanning = false;
     double panStartViewStart = 0.0;
     double panStartViewEnd = 0.0;
     float panStartX = 0.0f;
 
-    // ── Auto-slice sensitivity ──
+    // -- Auto-slice sensitivity --
     double autoSliceSensitivity = 0.5;   // 0.0 - 1.0
 
     // Preview state (for hold-to-preview and cursor)
@@ -137,6 +137,10 @@ private:
     void scheduleApply();
     void notifyParamsChanged();
     bool isRealtimeOnlyChange (const InstrumentParams& oldP, const InstrumentParams& newP) const;
+    void flushPendingParams();
+    void resetWaveformState();
+    void setFilterTypeWithDefaultCutoff (InstrumentParams::FilterType newType);
+    void syncWaveformView();
 
     // Focus helpers
     int getFocusedColumn() const;
@@ -161,9 +165,6 @@ private:
     void drawParametersPage (juce::Graphics& g, juce::Rectangle<int> area);
     void drawModulationPage (juce::Graphics& g, juce::Rectangle<int> area);
     void drawPlaybackPage (juce::Graphics& g, juce::Rectangle<int> area);
-    void drawWaveform (juce::Graphics& g, juce::Rectangle<int> area);
-    void drawWaveformMarkers (juce::Graphics& g, juce::Rectangle<int> area);
-    void drawOverviewBar (juce::Graphics& g, juce::Rectangle<int> area);
     void drawSubTabBar (juce::Graphics& g, juce::Rectangle<int> area);
 
     // Bottom bar content
@@ -173,18 +174,18 @@ private:
     // Note preview
     int keyToNote (const juce::KeyPress& key) const;
 
-    // ── Waveform coordinate helpers ──
+    // -- Waveform coordinate helpers --
     juce::Rectangle<int> getWaveformArea() const;
     double pixelToNormPos (int pixelX, juce::Rectangle<int> waveArea) const;
     int normPosToPixel (double normPos, juce::Rectangle<int> waveArea) const;
     MarkerType hitTestMarker (int pixelX, juce::Rectangle<int> waveArea) const;
     int hitTestSlice (int pixelX, juce::Rectangle<int> waveArea) const;
 
-    // ── Zoom helpers ──
+    // -- Zoom helpers --
     void zoomAroundPoint (double zoomFactor, double normPos);
     void scrollView (double deltaNorm);
 
-    // ── Slice operations ──
+    // -- Slice operations --
     void addSliceAtPosition (double normPos);
     void removeSlice (int sliceIdx);
     void generateEqualSlices (int numSlices);

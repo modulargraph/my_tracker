@@ -50,9 +50,13 @@ target_sources(TrackerAdjust PRIVATE
     src/ui/ArrangementComponent.cpp
     src/ui/InstrumentPanel.cpp
     src/ui/SampleEditorComponent.cpp
+    src/ui/WaveformView.cpp
     src/ui/TabBarComponent.cpp
     src/ui/FileBrowserComponent.cpp
     src/ui/MixerComponent.cpp
+    src/ui/MixerHitTest.cpp
+    src/ui/MixerParamModel.cpp
+    src/ui/MixerStripPainter.cpp
     src/ui/SendEffectsComponent.cpp
     src/audio/PluginCatalogService.cpp
     src/ui/AudioPluginSettingsComponent.cpp

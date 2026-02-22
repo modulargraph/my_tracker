@@ -3,6 +3,8 @@
 #include <JuceHeader.h>
 #include "TrackerLookAndFeel.h"
 #include "MixerState.h"
+#include "MixerHitTest.h"
+#include "MixerParamModel.h"
 #include "TrackLayout.h"
 
 class MixerComponent : public juce::Component,
@@ -54,19 +56,13 @@ private:
 
     int selectedTrack = 0;      // visual strip index (tracks + special strips)
 
-    // Parameter navigation within a strip
-    enum class Section { EQ, Comp, Inserts, Sends, Pan, Volume, Limiter };
+    // Parameter navigation within a strip (aliases to shared types from MixerHitTest.h)
+    using Section   = MixerSection;
+    using StripType = MixerStripType;
+    using StripInfo = MixerStripInfo;
+
     Section currentSection = Section::Volume;
     int currentParam = 0;       // param index within section
-
-    // Strip type identification
-    enum class StripType { Track, DelayReturn, ReverbReturn, GroupBus, Master };
-
-    struct StripInfo
-    {
-        StripType type = StripType::Track;
-        int index = 0;  // physical track index, or group index, or send return index
-    };
 
     int getTotalStripCount() const;
     StripInfo getStripInfo (int visualIndex) const;
@@ -129,28 +125,7 @@ private:
     void paintGroupBusStrip (juce::Graphics& g, int groupIndex, juce::Rectangle<int> bounds, bool isSelected);
     void paintMasterStrip (juce::Graphics& g, juce::Rectangle<int> bounds, bool isSelected);
 
-    // Generic EQ painting for any state with EQ fields
-    void paintGenericEqSection (juce::Graphics& g, double eqLow, double eqMid, double eqHigh, double midFreq,
-                                juce::Rectangle<int> bounds, bool isSelected, int selectedParam);
-    void paintGenericCompSection (juce::Graphics& g, double threshold, double ratio, double attack, double release,
-                                  juce::Rectangle<int> bounds, bool isSelected, int selectedParam);
-    void paintGenericVolumeFader (juce::Graphics& g, double volume, juce::Rectangle<int> bounds,
-                                  bool isSelected, float peakLinear = 0.0f);
-    void paintGenericPanSection (juce::Graphics& g, int pan, juce::Rectangle<int> bounds, bool isSelected);
-    void paintGenericMuteSolo (juce::Graphics& g, bool muted, bool soloed, juce::Rectangle<int> bounds,
-                               bool hasSolo = true);
-    void paintLimiterSection (juce::Graphics& g, double threshold, double release,
-                              juce::Rectangle<int> bounds, bool isSelected, int selectedParam);
-    void paintMasterInsertsSection (juce::Graphics& g, juce::Rectangle<int> bounds,
-                                    bool isSelected, int selectedParam);
-
-    // Value painting helpers
-    void paintVerticalBar (juce::Graphics& g, juce::Rectangle<int> area, double value, double minVal,
-                           double maxVal, juce::Colour colour, bool bipolar = false);
-    void paintHorizontalBar (juce::Graphics& g, juce::Rectangle<int> area, double value, double minVal,
-                             double maxVal, juce::Colour colour, bool bipolar = false);
-    void paintKnob (juce::Graphics& g, juce::Rectangle<int> area, double value, double minVal,
-                    double maxVal, juce::Colour colour, const juce::String& label);
+    // (Generic section painters and primitives moved to MixerStripPainter namespace)
 
     // Insert section height helper (dynamic based on insert count)
     int getInsertsSectionHeight (int physTrack) const;
@@ -163,20 +138,8 @@ private:
     void prevSection();
     void ensureTrackVisible();
 
-    // Hit testing
-    struct HitResult
-    {
-        int visualTrack = -1;
-        Section section = Section::Volume;
-        int param = -1;
-        bool hitMute = false;
-        bool hitSolo = false;
-        bool hitInsertAdd = false;
-        int hitInsertSlot = -1;        // which insert slot was clicked
-        bool hitInsertBypass = false;
-        bool hitInsertOpen = false;
-        bool hitInsertRemove = false;
-    };
+    // Hit testing (delegated to free function in MixerHitTest.cpp)
+    using HitResult = MixerHitResult;
     HitResult hitTestStrip (juce::Point<int> pos) const;
 
     double getParamValue (int visualTrack, Section section, int param) const;

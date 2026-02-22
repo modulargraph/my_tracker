@@ -2,6 +2,7 @@
 #include "NoteUtils.h"
 #include "FormatUtils.h"
 #include "SamplePlaybackLayout.h"
+#include "TransientDetector.h"
 #include <algorithm>
 #include <cmath>
 
@@ -20,10 +21,10 @@ using namespace FormatUtils;
 //==============================================================================
 
 SampleEditorComponent::SampleEditorComponent (TrackerLookAndFeel& lnf)
-    : lookAndFeel (lnf)
+    : lookAndFeel (lnf), waveformView (lnf)
 {
-    formatManager.registerBasicFormats();
     setWantsKeyboardFocus (true);
+    addChildComponent (waveformView);
 }
 
 SampleEditorComponent::~SampleEditorComponent()
@@ -60,13 +61,7 @@ void SampleEditorComponent::setEditSubTab (EditSubTab tab)
 void SampleEditorComponent::setInstrument (int instrumentIndex, const juce::File& sampleFile,
                                             const InstrumentParams& params)
 {
-    if (paramsDirty)
-    {
-        stopTimer();
-        paramsDirty = false;
-        if (onParamsChanged)
-            onParamsChanged (currentInstrument, currentParams);
-    }
+    flushPendingParams();
 
     currentInstrument = instrumentIndex;
     showingPlugin = false;
@@ -77,29 +72,16 @@ void SampleEditorComponent::setInstrument (int instrumentIndex, const juce::File
     paramsDirty = false;
 
     // Reset zoom when switching instruments
-    viewStart = 0.0;
-    viewEnd = 1.0;
-    selectedSliceIndex = -1;
-    isWaveformDragging = false;
-    draggingMarker = MarkerType::None;
-    isPanning = false;
+    resetWaveformState();
 
-    thumbnail.clear();
-    if (sampleFile.existsAsFile())
-        thumbnail.setSource (new juce::FileInputSource (sampleFile));
-
+    waveformView.setSample (sampleFile);
+    syncWaveformView();
     repaint();
 }
 
 void SampleEditorComponent::clearInstrument()
 {
-    if (paramsDirty)
-    {
-        stopTimer();
-        paramsDirty = false;
-        if (onParamsChanged)
-            onParamsChanged (currentInstrument, currentParams);
-    }
+    flushPendingParams();
 
     currentInstrument = -1;
     showingPlugin = false;
@@ -109,26 +91,16 @@ void SampleEditorComponent::clearInstrument()
     paramsDirty = false;
     isDragging = false;
 
-    viewStart = 0.0;
-    viewEnd = 1.0;
-    selectedSliceIndex = -1;
-    isWaveformDragging = false;
-    draggingMarker = MarkerType::None;
-    isPanning = false;
+    resetWaveformState();
 
-    thumbnail.clear();
+    waveformView.clearSample();
+    syncWaveformView();
     repaint();
 }
 
 void SampleEditorComponent::setPluginInstrument (int instrumentIndex, const juce::String& pluginName, int ownerTrack)
 {
-    if (paramsDirty)
-    {
-        stopTimer();
-        paramsDirty = false;
-        if (onParamsChanged)
-            onParamsChanged (currentInstrument, currentParams);
-    }
+    flushPendingParams();
 
     currentInstrument = instrumentIndex;
     showingPlugin = true;
@@ -139,7 +111,7 @@ void SampleEditorComponent::setPluginInstrument (int instrumentIndex, const juce
     currentParams = InstrumentParams();
     lastCommittedParams = InstrumentParams();
     paramsDirty = false;
-    thumbnail.clear();
+    waveformView.clearSample();
     repaint();
 }
 
@@ -155,6 +127,8 @@ void SampleEditorComponent::timerCallback()
             currentPlaybackPos = onGetPreviewPosition();
         else
             currentPlaybackPos = -1.0f;
+
+        waveformView.setPlaybackPosition (currentPlaybackPos);
 
         // Detect natural end of playback (voice went idle)
         if (currentPlaybackPos < 0.0f)
@@ -183,6 +157,70 @@ void SampleEditorComponent::scheduleApply()
 {
     paramsDirty = true;
     startTimer (30);
+}
+
+void SampleEditorComponent::flushPendingParams()
+{
+    if (paramsDirty)
+    {
+        stopTimer();
+        paramsDirty = false;
+        if (onParamsChanged)
+            onParamsChanged (currentInstrument, currentParams);
+    }
+}
+
+void SampleEditorComponent::resetWaveformState()
+{
+    viewStart = 0.0;
+    viewEnd = 1.0;
+    selectedSliceIndex = -1;
+    isWaveformDragging = false;
+    draggingMarker = MarkerType::None;
+    isPanning = false;
+}
+
+void SampleEditorComponent::syncWaveformView()
+{
+    waveformView.setParams (currentParams);
+    waveformView.setViewRange (viewStart, viewEnd);
+    waveformView.setSelectedSliceIndex (selectedSliceIndex);
+    waveformView.setPlaybackPosition (currentPlaybackPos);
+
+    // Map marker hover/drag state to WaveformView's MarkerType
+    auto mapMarker = [] (MarkerType m) -> WaveformView::MarkerType
+    {
+        switch (m)
+        {
+            case MarkerType::None:      return WaveformView::MarkerType::None;
+            case MarkerType::Start:     return WaveformView::MarkerType::Start;
+            case MarkerType::End:       return WaveformView::MarkerType::End;
+            case MarkerType::LoopStart: return WaveformView::MarkerType::LoopStart;
+            case MarkerType::LoopEnd:   return WaveformView::MarkerType::LoopEnd;
+            case MarkerType::GranPos:   return WaveformView::MarkerType::GranPos;
+            case MarkerType::Slice:     return WaveformView::MarkerType::Slice;
+        }
+        return WaveformView::MarkerType::None;
+    };
+    waveformView.setHoveredMarker (mapMarker (hoveredMarker));
+    waveformView.setDraggingMarker (mapMarker (draggingMarker));
+    waveformView.setDraggingSliceIndex (draggingSliceIndex);
+}
+
+void SampleEditorComponent::setFilterTypeWithDefaultCutoff (InstrumentParams::FilterType newType)
+{
+    auto oldType = currentParams.filterType;
+    currentParams.filterType = newType;
+    if (currentParams.filterType != oldType)
+    {
+        switch (currentParams.filterType)
+        {
+            case InstrumentParams::FilterType::HighPass:  currentParams.cutoff = 5;  break;
+            case InstrumentParams::FilterType::BandPass:  currentParams.cutoff = 50; break;
+            case InstrumentParams::FilterType::LowPass:   currentParams.cutoff = 100; break;
+            default: break;
+        }
+    }
 }
 
 bool SampleEditorComponent::isRealtimeOnlyChange (const InstrumentParams& oldP, const InstrumentParams& newP) const
@@ -257,6 +295,7 @@ void SampleEditorComponent::notifyParamsChanged()
         // Structural change: use debounced full apply path
         scheduleApply();
     }
+    syncWaveformView();
     repaint();
 }
 
@@ -504,7 +543,7 @@ juce::String SampleEditorComponent::getColumnName (int col) const
 
 juce::String SampleEditorComponent::getColumnValue (int col) const
 {
-    double totalLen = thumbnail.getTotalLength();
+    double totalLen = waveformView.getTotalLength();
     if (totalLen <= 0.0) totalLen = 1.0;
 
     if (displayMode == DisplayMode::InstrumentEdit)
@@ -649,6 +688,7 @@ void SampleEditorComponent::paint (juce::Graphics& g)
 
     if (currentInstrument < 0)
     {
+        waveformView.setVisible (false);
         g.setFont (lookAndFeel.getMonoFont (12.0f));
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.25f));
         g.drawText ("No instrument selected", getLocalBounds(), juce::Justification::centred);
@@ -662,6 +702,7 @@ void SampleEditorComponent::paint (juce::Graphics& g)
     // Plugin instrument: show simplified info page instead of sample editor
     if (showingPlugin)
     {
+        waveformView.setVisible (false);
         drawHeader (g, { 0, 0, getWidth(), kHeaderHeight });
         auto contentArea = juce::Rectangle<int> (0, kHeaderHeight, getWidth(),
                                                   getHeight() - kHeaderHeight);
@@ -684,6 +725,8 @@ void SampleEditorComponent::paint (juce::Graphics& g)
 
     if (displayMode == DisplayMode::InstrumentEdit)
     {
+        waveformView.setVisible (false);
+
         // Sub-tab sidebar on the left
         auto subTabArea = contentArea.removeFromLeft (kSubTabWidth);
         drawSubTabBar (g, subTabArea);
@@ -697,6 +740,37 @@ void SampleEditorComponent::paint (juce::Graphics& g)
     {
         drawPlaybackPage (g, contentArea);
     }
+}
+
+void SampleEditorComponent::paintOverChildren (juce::Graphics& g)
+{
+    // Draw the play mode list overlay on top of the waveformView child
+    if (currentInstrument < 0 || showingPlugin || displayMode != DisplayMode::InstrumentType)
+        return;
+
+    auto waveArea = getWaveformArea();
+    int numCols = getColumnCount();
+    bool modeColFocused = (playbackColumn == numCols - 1);
+
+    juce::StringArray modeItems = {
+        "1-Shot", "Forward loop", "Backward loop", "Pingpong loop",
+        "Slice", "Beat Slice", "Granular"
+    };
+    int modeIdx = static_cast<int> (currentParams.playMode);
+
+    int listW = 140;
+    int listH = 7 * kListItemHeight + 2;
+    int listX = waveArea.getRight() - listW - 2;
+    int listY = waveArea.getY() + 2;
+    auto listArea = juce::Rectangle<int> (listX, listY, listW, listH);
+
+    // Semi-transparent background behind the list
+    auto bg = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
+    g.setColour (bg.withAlpha (0.85f));
+    g.fillRect (listArea);
+
+    auto textCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+    drawListColumn (g, listArea, modeItems, modeIdx, modeColFocused, textCol);
 }
 
 void SampleEditorComponent::resized() {}
@@ -1197,172 +1271,15 @@ void SampleEditorComponent::drawModulationPage (juce::Graphics& g, juce::Rectang
 
 void SampleEditorComponent::drawPlaybackPage (juce::Graphics& g, juce::Rectangle<int> area)
 {
-    // Reserve space for overview bar at bottom of content area
-    auto overviewArea = area.removeFromBottom (kOverviewBarHeight + 2);
-    overviewArea = overviewArea.reduced (4, 0).withTrimmedTop (2);
+    // Position and show the waveformView child component.
+    // It renders the waveform, markers, and overview bar.
+    waveformView.setBounds (area);
+    waveformView.setVisible (true);
+    syncWaveformView();
 
-    // Waveform fills the remaining content area
-    auto waveArea = area.reduced (4, 4);
-    drawWaveform (g, waveArea);
-    drawWaveformMarkers (g, waveArea);
-
-    // Overview bar
-    drawOverviewBar (g, overviewArea);
-
-    // Play mode list overlay in top-right corner of waveform
-    int numCols = getColumnCount();
-    bool modeColFocused = (playbackColumn == numCols - 1);
-
-    juce::StringArray modeItems = {
-        "1-Shot", "Forward loop", "Backward loop", "Pingpong loop",
-        "Slice", "Beat Slice", "Granular"
-    };
-    int modeIdx = static_cast<int> (currentParams.playMode);
-
-    int listW = 140;
-    int listH = 7 * kListItemHeight + 2;
-    int listX = waveArea.getRight() - listW - 2;
-    int listY = waveArea.getY() + 2;
-    auto listArea = juce::Rectangle<int> (listX, listY, listW, listH);
-
-    // Semi-transparent background behind the list
-    auto bg = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
-    g.setColour (bg.withAlpha (0.85f));
-    g.fillRect (listArea);
-
-    auto textCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
-    drawListColumn (g, listArea, modeItems, modeIdx, modeColFocused, textCol);
-}
-
-//==============================================================================
-// Drawing: Waveform
-//==============================================================================
-
-void SampleEditorComponent::drawWaveform (juce::Graphics& g, juce::Rectangle<int> area)
-{
-    auto bg = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
-
-    g.setColour (bg.brighter (0.06f));
-    g.fillRect (area);
-
-    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
-    g.drawRect (area, 1);
-
-    // Center line
-    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId).withAlpha (0.4f));
-    g.drawHorizontalLine (area.getCentreY(), static_cast<float> (area.getX()),
-                          static_cast<float> (area.getRight()));
-
-    double totalLen = thumbnail.getTotalLength();
-    if (totalLen > 0.0)
-    {
-        // Shade outside start/end (in zoomed coordinates)
-        int startPx = normPosToPixel (currentParams.startPos, area);
-        int endPx   = normPosToPixel (currentParams.endPos, area);
-
-        g.setColour (juce::Colour (0x40000000));
-        if (startPx > area.getX())
-            g.fillRect (area.getX(), area.getY(), startPx - area.getX(), area.getHeight());
-        if (endPx < area.getRight())
-            g.fillRect (endPx, area.getY(), area.getRight() - endPx, area.getHeight());
-
-        // Draw the zoomed portion of the waveform
-        double drawStart = viewStart * totalLen;
-        double drawEnd   = viewEnd * totalLen;
-
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.7f));
-        thumbnail.drawChannels (g, area.reduced (1), drawStart, drawEnd, 1.0f);
-    }
-    else
-    {
-        g.setFont (lookAndFeel.getMonoFont (12.0f));
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.25f));
-        g.drawText ("No waveform data", area, juce::Justification::centred);
-    }
-}
-
-void SampleEditorComponent::drawWaveformMarkers (juce::Graphics& g, juce::Rectangle<int> area)
-{
-    if (thumbnail.getTotalLength() <= 0.0) return;
-
-    auto drawMarker = [&] (double normPos, juce::Colour colour, const juce::String& label,
-                           bool highlighted = false, bool thick = false)
-    {
-        int x = normPosToPixel (normPos, area);
-        if (x < area.getX() - 2 || x > area.getRight() + 2) return; // off-screen
-
-        if (highlighted || thick)
-        {
-            g.setColour (colour.withAlpha (0.3f));
-            g.fillRect (x - 2, area.getY(), 5, area.getHeight());
-        }
-
-        g.setColour (colour);
-        g.drawVerticalLine (x, static_cast<float> (area.getY()),
-                            static_cast<float> (area.getBottom()));
-        if (thick)
-            g.drawVerticalLine (x + 1, static_cast<float> (area.getY()),
-                                static_cast<float> (area.getBottom()));
-
-        g.setFont (lookAndFeel.getMonoFont (9.0f));
-        g.drawText (label, x + 2, area.getY() + 2, 30, 12, juce::Justification::centredLeft);
-    };
-
-    auto startCol = juce::Colour (0xff44cc44);
-    auto endCol   = juce::Colour (0xffcc4444);
-    bool startHi = (hoveredMarker == MarkerType::Start || draggingMarker == MarkerType::Start);
-    bool endHi   = (hoveredMarker == MarkerType::End   || draggingMarker == MarkerType::End);
-
-    drawMarker (currentParams.startPos, startCol, "S", startHi, startHi);
-    drawMarker (currentParams.endPos,   endCol,   "E", endHi,   endHi);
-
-    auto mode = currentParams.playMode;
-    if (mode == InstrumentParams::PlayMode::ForwardLoop
-        || mode == InstrumentParams::PlayMode::BackwardLoop
-        || mode == InstrumentParams::PlayMode::PingpongLoop)
-    {
-        auto loopCol = juce::Colour (0xff4488ff);
-        bool lsHi = (hoveredMarker == MarkerType::LoopStart || draggingMarker == MarkerType::LoopStart);
-        bool leHi = (hoveredMarker == MarkerType::LoopEnd   || draggingMarker == MarkerType::LoopEnd);
-        drawMarker (currentParams.loopStart, loopCol, "LS", lsHi, lsHi);
-        drawMarker (currentParams.loopEnd,   loopCol, "LE", leHi, leHi);
-    }
-
-    if (mode == InstrumentParams::PlayMode::Slice || mode == InstrumentParams::PlayMode::BeatSlice)
-    {
-        auto sliceCol = juce::Colour (0xffddcc44);
-        for (int i = 0; i < static_cast<int> (currentParams.slicePoints.size()); ++i)
-        {
-            bool selected = (i == selectedSliceIndex);
-            bool dragging = (draggingMarker == MarkerType::Slice && draggingSliceIndex == i);
-            bool hi = selected || dragging
-                      || (hoveredMarker == MarkerType::Slice && draggingSliceIndex == -1);
-            auto col = selected ? sliceCol.brighter (0.3f) : sliceCol;
-            drawMarker (currentParams.slicePoints[static_cast<size_t> (i)], col,
-                        juce::String (i), hi, selected || dragging);
-        }
-    }
-
-    if (mode == InstrumentParams::PlayMode::Granular)
-    {
-        bool gHi = (hoveredMarker == MarkerType::GranPos || draggingMarker == MarkerType::GranPos);
-        drawMarker (currentParams.granularPosition, juce::Colour (0xffffaa44), "G", gHi, gHi);
-    }
-
-    // Draw playback cursor
-    if (currentPlaybackPos >= 0.0f)
-    {
-        auto cursorCol = lookAndFeel.findColour (TrackerLookAndFeel::playbackCursorColourId).brighter (0.3f);
-        int cx = normPosToPixel (static_cast<double> (currentPlaybackPos), area);
-        if (cx >= area.getX() && cx <= area.getRight())
-        {
-            g.setColour (cursorCol.withAlpha (0.15f));
-            g.fillRect (cx - 3, area.getY(), 7, area.getHeight());
-            g.setColour (cursorCol);
-            g.drawVerticalLine (cx, static_cast<float> (area.getY()), static_cast<float> (area.getBottom()));
-            g.drawVerticalLine (cx + 1, static_cast<float> (area.getY()), static_cast<float> (area.getBottom()));
-        }
-    }
+    // The play mode list overlay is drawn in paintOverChildren()
+    // so it appears on top of the waveformView child.
+    (void) g;
 }
 
 //==============================================================================
@@ -1407,20 +1324,8 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                 }
                 case 4: // Filter type
                 {
-                    auto oldType = currentParams.filterType;
-                    int v = static_cast<int> (oldType);
-                    v = (v + direction + 4) % 4;
-                    currentParams.filterType = static_cast<InstrumentParams::FilterType> (v);
-                    if (currentParams.filterType != oldType)
-                    {
-                        switch (currentParams.filterType)
-                        {
-                            case InstrumentParams::FilterType::HighPass:  currentParams.cutoff = 5;  break;
-                            case InstrumentParams::FilterType::BandPass:  currentParams.cutoff = 50; break;
-                            case InstrumentParams::FilterType::LowPass:   currentParams.cutoff = 100; break;
-                            default: break;
-                        }
-                    }
+                    int v = (static_cast<int> (currentParams.filterType) + direction + 4) % 4;
+                    setFilterTypeWithDefaultCutoff (static_cast<InstrumentParams::FilterType> (v));
                     break;
                 }
                 case 5: // Cutoff
@@ -1813,21 +1718,10 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                     break;
                 case 4: // Filter type (list - drag inverted)
                 {
-                    auto oldType = currentParams.filterType;
-                    int v = static_cast<int> (oldType)
+                    int v = static_cast<int> (currentParams.filterType)
                             - juce::roundToInt (normDelta * 4.0);
-                    currentParams.filterType = static_cast<InstrumentParams::FilterType> (
-                        juce::jlimit (0, 3, v));
-                    if (currentParams.filterType != oldType)
-                    {
-                        switch (currentParams.filterType)
-                        {
-                            case InstrumentParams::FilterType::HighPass:  currentParams.cutoff = 5;  break;
-                            case InstrumentParams::FilterType::BandPass:  currentParams.cutoff = 50; break;
-                            case InstrumentParams::FilterType::LowPass:   currentParams.cutoff = 100; break;
-                            default: break;
-                        }
-                    }
+                    setFilterTypeWithDefaultCutoff (static_cast<InstrumentParams::FilterType> (
+                        juce::jlimit (0, 3, v)));
                     break;
                 }
                 case 5: // Cutoff 0-100
@@ -2229,13 +2123,7 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
         if (previewActive && previewKeyCode == juce::KeyPress::spaceKey)
             return true;
 
-        if (paramsDirty)
-        {
-            stopTimer();
-            paramsDirty = false;
-            if (onParamsChanged)
-                onParamsChanged (currentInstrument, currentParams);
-        }
+        flushPendingParams();
 
         // In slice modes, space previews the currently selected slice region.
         const bool isSliceMode = (currentParams.playMode == InstrumentParams::PlayMode::Slice
@@ -2485,13 +2373,7 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
                 selectedSliceIndex = sliceIndex;
 
             // Flush pending params before preview
-            if (paramsDirty)
-            {
-                stopTimer();
-                paramsDirty = false;
-                if (onParamsChanged)
-                    onParamsChanged (currentInstrument, currentParams);
-            }
+            flushPendingParams();
 
             // Send note 60 + sliceIndex to trigger that specific slice in the sampler
             if (onPreviewRequested)
@@ -2513,13 +2395,7 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
         if (previewActive && previewKeyCode == key.getKeyCode())
             return true;
 
-        if (paramsDirty)
-        {
-            stopTimer();
-            paramsDirty = false;
-            if (onParamsChanged)
-                onParamsChanged (currentInstrument, currentParams);
-        }
+        flushPendingParams();
         if (onPreviewRequested)
             onPreviewRequested (currentInstrument, note);
         previewActive = true;
@@ -2848,18 +2724,7 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                 int itemIdx = relY / juce::jmax (1, kListItemHeight);
                 if (itemIdx >= 0 && itemIdx < 4)
                 {
-                    auto oldType = currentParams.filterType;
-                    currentParams.filterType = static_cast<InstrumentParams::FilterType> (itemIdx);
-                    if (currentParams.filterType != oldType)
-                    {
-                        switch (currentParams.filterType)
-                        {
-                            case InstrumentParams::FilterType::HighPass:  currentParams.cutoff = 5;  break;
-                            case InstrumentParams::FilterType::BandPass:  currentParams.cutoff = 50; break;
-                            case InstrumentParams::FilterType::LowPass:   currentParams.cutoff = 100; break;
-                            default: break;
-                        }
-                    }
+                    setFilterTypeWithDefaultCutoff (static_cast<InstrumentParams::FilterType> (itemIdx));
                 }
                 notifyParamsChanged();
                 return;
@@ -3381,86 +3246,23 @@ void SampleEditorComponent::autoSlice()
 {
     if (! currentFile.existsAsFile()) return;
 
-    // Read the audio file
-    std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (currentFile));
+    // Read the audio file using a local format manager
+    juce::AudioFormatManager fmtMgr;
+    fmtMgr.registerBasicFormats();
+
+    std::unique_ptr<juce::AudioFormatReader> reader (fmtMgr.createReaderFor (currentFile));
     if (reader == nullptr) return;
 
     auto numSamples = static_cast<int> (reader->lengthInSamples);
     if (numSamples <= 0) return;
 
-    // Read mono audio data
     juce::AudioBuffer<float> buffer (1, numSamples);
     reader->read (&buffer, 0, numSamples, 0, true, false);
 
-    auto* data = buffer.getReadPointer (0);
-
-    // Compute energy envelope with a short window
-    int windowSize = juce::jmax (64, static_cast<int> (reader->sampleRate * 0.005)); // ~5ms window
-    int hopSize = windowSize / 2;
-    int numFrames = (numSamples - windowSize) / hopSize;
-    if (numFrames <= 0) return;
-
-    std::vector<double> energy (static_cast<size_t> (numFrames), 0.0);
-    double maxEnergy = 0.0;
-
-    for (int f = 0; f < numFrames; ++f)
-    {
-        int offset = f * hopSize;
-        double e = 0.0;
-        for (int i = 0; i < windowSize; ++i)
-        {
-            double s = static_cast<double> (data[offset + i]);
-            e += s * s;
-        }
-        e /= static_cast<double> (windowSize);
-        energy[static_cast<size_t> (f)] = e;
-        if (e > maxEnergy) maxEnergy = e;
-    }
-
-    if (maxEnergy <= 0.0) return;
-
-    // Normalize energy
-    for (auto& e : energy)
-        e /= maxEnergy;
-
-    // Compute spectral flux (difference between consecutive frames)
-    std::vector<double> flux (energy.size(), 0.0);
-    for (size_t i = 1; i < energy.size(); ++i)
-    {
-        double diff = energy[i] - energy[i - 1];
-        flux[i] = juce::jmax (0.0, diff); // Only positive flux (onsets)
-    }
-
-    // Compute adaptive threshold
-    double meanFlux = 0.0;
-    for (auto f : flux) meanFlux += f;
-    meanFlux /= static_cast<double> (flux.size());
-
-    // Sensitivity maps: 0.0 = very sensitive (low threshold), 1.0 = less sensitive (high threshold)
-    double threshold = meanFlux * (1.0 + (1.0 - autoSliceSensitivity) * 8.0);
-
-    // Minimum distance between slices (in frames) - about 50ms
-    int minDist = juce::jmax (1, static_cast<int> (reader->sampleRate * 0.05) / hopSize);
-
-    // Find peaks above threshold
-    currentParams.slicePoints.clear();
-    int lastSliceFrame = -minDist;
-
-    for (int f = 1; f < numFrames - 1; ++f)
-    {
-        if (flux[static_cast<size_t> (f)] > threshold
-            && flux[static_cast<size_t> (f)] > flux[static_cast<size_t> (f - 1)]
-            && flux[static_cast<size_t> (f)] >= flux[static_cast<size_t> (f + 1)]
-            && (f - lastSliceFrame) >= minDist)
-        {
-            double normPos = static_cast<double> (f * hopSize) / static_cast<double> (numSamples);
-            if (normPos > currentParams.startPos && normPos < currentParams.endPos)
-            {
-                currentParams.slicePoints.push_back (normPos);
-                lastSliceFrame = f;
-            }
-        }
-    }
+    // Delegate DSP to TransientDetector
+    currentParams.slicePoints = TransientDetector::detectTransients (
+        buffer, reader->sampleRate, autoSliceSensitivity,
+        currentParams.startPos, currentParams.endPos);
 
     // Switch to Slice mode
     if (! currentParams.slicePoints.empty())
@@ -3475,54 +3277,4 @@ void SampleEditorComponent::autoSlice()
     }
 }
 
-//==============================================================================
-// Drawing: Overview bar
-//==============================================================================
-
-void SampleEditorComponent::drawOverviewBar (juce::Graphics& g, juce::Rectangle<int> area)
-{
-    auto bg = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
-    auto gridCol = lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId);
-
-    // Background
-    g.setColour (bg.brighter (0.03f));
-    g.fillRect (area);
-
-    // Border
-    g.setColour (gridCol);
-    g.drawRect (area, 1);
-
-    double totalLen = thumbnail.getTotalLength();
-    if (totalLen <= 0.0) return;
-
-    auto inner = area.reduced (1);
-
-    // Draw full waveform thumbnail (small)
-    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.4f));
-    thumbnail.drawChannels (g, inner, 0.0, totalLen, 0.6f);
-
-    // Draw start/end shading
-    int startPx = inner.getX() + juce::roundToInt (currentParams.startPos * inner.getWidth());
-    int endPx   = inner.getX() + juce::roundToInt (currentParams.endPos * inner.getWidth());
-
-    g.setColour (juce::Colour (0x30000000));
-    if (startPx > inner.getX())
-        g.fillRect (inner.getX(), inner.getY(), startPx - inner.getX(), inner.getHeight());
-    if (endPx < inner.getRight())
-        g.fillRect (endPx, inner.getY(), inner.getRight() - endPx, inner.getHeight());
-
-    // Draw view rectangle (highlight showing current zoomed region)
-    int viewStartPx = inner.getX() + juce::roundToInt (viewStart * inner.getWidth());
-    int viewEndPx   = inner.getX() + juce::roundToInt (viewEnd * inner.getWidth());
-    int viewW = juce::jmax (2, viewEndPx - viewStartPx);
-
-    auto viewRect = juce::Rectangle<int> (viewStartPx, inner.getY(), viewW, inner.getHeight());
-
-    // Semi-transparent fill for view area
-    g.setColour (juce::Colour (0x20ffffff));
-    g.fillRect (viewRect);
-
-    // Border for view area
-    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.6f));
-    g.drawRect (viewRect, 1);
-}
+// (drawOverviewBar has been moved to WaveformView)
