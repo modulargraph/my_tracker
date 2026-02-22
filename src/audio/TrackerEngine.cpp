@@ -1431,6 +1431,7 @@ void TrackerEngine::setupSendEffectsTrack()
     if (existing != nullptr)
     {
         existing->setSendBuffers (&sampler.getSendBuffers());
+        existing->setMixerState (mixerStatePtr);
         sendEffectsPlugin = existing;
     }
 }
@@ -1831,6 +1832,25 @@ void TrackerEngine::snapshotInsertPluginStates()
     }
 }
 
+void TrackerEngine::snapshotPluginInstrumentStates()
+{
+    for (auto& [instrumentIndex, info] : instrumentSlotInfos)
+    {
+        if (! info.isPlugin())
+            continue;
+
+        auto instanceIt = pluginInstrumentInstances.find (instrumentIndex);
+        if (instanceIt != pluginInstrumentInstances.end() && instanceIt->second != nullptr)
+        {
+            if (auto* ext = dynamic_cast<te::ExternalPlugin*> (instanceIt->second.get()))
+            {
+                ext->flushPluginStateToValueTree();
+                info.pluginState = ext->state.createCopy();
+            }
+        }
+    }
+}
+
 void TrackerEngine::openPluginEditor (int trackIndex, int slotIndex)
 {
     auto* plugin = getInsertPlugin (trackIndex, slotIndex);
@@ -2082,6 +2102,13 @@ void TrackerEngine::ensurePluginInstrumentLoaded (int instrumentIndex)
         // Insert at position 0 -- the plugin instrument acts as the sound source
         track->pluginList.insertPlugin (*pluginPtr, 0, nullptr);
         pluginInstrumentInstances[instrumentIndex] = pluginPtr;
+
+        // Restore plugin state if available
+        if (it->second.pluginState.isValid())
+        {
+            if (auto* ext = dynamic_cast<te::ExternalPlugin*> (pluginPtr.get()))
+                ext->restorePluginStateFromValueTree (it->second.pluginState);
+        }
     }
 }
 
