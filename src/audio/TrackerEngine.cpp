@@ -2093,9 +2093,33 @@ void TrackerEngine::ensurePluginInstrumentLoaded (int instrumentIndex)
     if (instanceIt != pluginInstrumentInstances.end() && instanceIt->second != nullptr)
         return;
 
+    // Remove any sample-related plugins from the track.  TrackerSamplerPlugin has
+    // takesAudioInput()==false, so it would overwrite the plugin instrument's audio
+    // output with silence if left in the chain.
+    if (auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+        samplerPlugin->removeFromParent();
+    if (auto* effectsPlugin = track->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
+        effectsPlugin->removeFromParent();
+
+    // Try to find a fully-populated description from the known plugin list so that
+    // all metadata fields (numInputChannels, numOutputChannels, etc.) are present.
+    // Fall back to the saved (partial) description if the plugin hasn't been scanned.
+    auto& savedDesc = it->second.pluginDescription;
+    const juce::PluginDescription* descToUse = &savedDesc;
+
+    auto& knownList = engine->getPluginManager().knownPluginList;
+    for (auto& known : knownList.getTypes())
+    {
+        if (known.fileOrIdentifier == savedDesc.fileOrIdentifier
+            && known.pluginFormatName == savedDesc.pluginFormatName)
+        {
+            descToUse = &known;
+            break;
+        }
+    }
+
     // Create the external plugin instance
-    auto& desc = it->second.pluginDescription;
-    auto pluginPtr = edit->getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, desc);
+    auto pluginPtr = edit->getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, *descToUse);
 
     if (pluginPtr != nullptr)
     {
@@ -2103,7 +2127,7 @@ void TrackerEngine::ensurePluginInstrumentLoaded (int instrumentIndex)
         track->pluginList.insertPlugin (*pluginPtr, 0, nullptr);
         pluginInstrumentInstances[instrumentIndex] = pluginPtr;
 
-        // Restore plugin state if available
+        // Restore plugin state (preset) if available
         if (it->second.pluginState.isValid())
         {
             if (auto* ext = dynamic_cast<te::ExternalPlugin*> (pluginPtr.get()))
