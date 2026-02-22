@@ -222,7 +222,8 @@ void PluginAutomationComponent::setAvailablePlugins (const std::vector<Automatab
 {
     juce::ScopedValueSetter<bool> suppressCallbacks (suppressSelectionCallbacks, true);
 
-    auto previousId = getSelectedPluginId();
+    auto previousPluginId = getSelectedPluginId();
+    int previousParamIdx = getSelectedParameterIndex();
     availablePlugins = plugins;
 
     pluginDropdown.clear (juce::dontSendNotification);
@@ -230,15 +231,48 @@ void PluginAutomationComponent::setAvailablePlugins (const std::vector<Automatab
     for (int i = 0; i < static_cast<int> (availablePlugins.size()); ++i)
         pluginDropdown.addItem (availablePlugins[static_cast<size_t> (i)].displayName, i + 1);
 
-    // Try to re-select the previous plugin
-    if (previousId.isNotEmpty())
+    // Try to re-select the previous plugin (and parameter)
+    if (previousPluginId.isNotEmpty())
     {
         for (int i = 0; i < static_cast<int> (availablePlugins.size()); ++i)
         {
-            if (availablePlugins[static_cast<size_t> (i)].pluginId == previousId)
+            if (availablePlugins[static_cast<size_t> (i)].pluginId == previousPluginId)
             {
                 pluginDropdown.setSelectedId (i + 1, juce::dontSendNotification);
-                pluginSelectionChanged();
+
+                // Rebuild parameter dropdown, then restore the previous parameter
+                parameterDropdown.clear (juce::dontSendNotification);
+                auto& params = availablePlugins[static_cast<size_t> (i)].parameters;
+                for (int pi = 0; pi < static_cast<int> (params.size()); ++pi)
+                {
+                    auto& p = params[static_cast<size_t> (pi)];
+                    auto displayName = p.hasAutomation ? ("* " + p.name) : p.name;
+                    parameterDropdown.addItem (displayName, pi + 1);
+                }
+
+                // Restore previous parameter if it still exists
+                bool restored = false;
+                if (previousParamIdx >= 0)
+                {
+                    for (int pi = 0; pi < static_cast<int> (params.size()); ++pi)
+                    {
+                        if (params[static_cast<size_t> (pi)].index == previousParamIdx)
+                        {
+                            parameterDropdown.setSelectedId (pi + 1, juce::dontSendNotification);
+                            parameterSelectionChanged();
+                            restored = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (! restored && ! params.empty())
+                {
+                    parameterDropdown.setSelectedId (1, juce::dontSendNotification);
+                    parameterSelectionChanged();
+                }
+
+                repaint();
                 return;
             }
         }
@@ -364,7 +398,12 @@ void PluginAutomationComponent::pluginSelectionChanged()
     {
         auto& params = availablePlugins[static_cast<size_t> (idx)].parameters;
         for (int i = 0; i < static_cast<int> (params.size()); ++i)
-            parameterDropdown.addItem (params[static_cast<size_t> (i)].name, i + 1);
+        {
+            auto& p = params[static_cast<size_t> (i)];
+            // Mark automated params with * prefix so the user can identify them
+            auto displayName = p.hasAutomation ? ("* " + p.name) : p.name;
+            parameterDropdown.addItem (displayName, i + 1);
+        }
 
         if (! params.empty())
         {

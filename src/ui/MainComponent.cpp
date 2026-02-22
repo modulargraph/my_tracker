@@ -369,12 +369,15 @@ MainComponent::MainComponent()
                                         patternData.getPattern (p).automationData.removeAllLanesForPlugin (pluginId);
 
                                     trackerEngine.setPluginInstrument (inst, desc, cursorTrack);
+                                    invalidateAutomationPluginCache (cursorTrack);
                                     updateInstrumentPanel();
                                     if (automationPanelVisible)
                                         refreshAutomationPanel();
                                     markDirty();
-                                    setTemporaryStatus ("Plugin instrument set: " + desc.name
-                                                        + " on track " + juce::String (cursorTrack + 1),
+                                    setTemporaryStatus ("Plugin instrument slot "
+                                                        + juce::String::formatted ("%02X", inst)
+                                                        + " set to " + desc.name
+                                                        + " (owner track " + juce::String (cursorTrack + 1) + ")",
                                                         false, 3000);
                                 }
                             });
@@ -382,6 +385,7 @@ MainComponent::MainComponent()
     instrumentPanel->onClearPluginInstrumentRequested = [this] (int inst)
     {
         trackerEngine.clearPluginInstrument (inst);
+        invalidateAutomationPluginCache();
         updateInstrumentPanel();
         if (automationPanelVisible)
             refreshAutomationPanel();
@@ -529,7 +533,10 @@ MainComponent::MainComponent()
                     auto desc = effects[result - 1];
                     if (trackerEngine.addInsertPlugin (track, desc))
                     {
+                        invalidateAutomationPluginCache (track);
                         mixerComponent->repaint();
+                        if (automationPanelVisible)
+                            refreshAutomationPanel();
                         markDirty();
                     }
                 }
@@ -539,7 +546,10 @@ MainComponent::MainComponent()
     mixerComponent->onRemoveInsertClicked = [this] (int track, int slotIndex)
     {
         trackerEngine.removeInsertPlugin (track, slotIndex);
+        invalidateAutomationPluginCache (track);
         mixerComponent->repaint();
+        if (automationPanelVisible)
+            refreshAutomationPanel();
         markDirty();
     };
 
@@ -558,6 +568,7 @@ MainComponent::MainComponent()
     // Callback from engine when insert state changes (e.g. after addInsertPlugin modifies the state model)
     trackerEngine.onInsertStateChanged = [this]
     {
+        invalidateAutomationPluginCache();
         mixerComponent->repaint();
     };
 
@@ -679,9 +690,17 @@ MainComponent::MainComponent()
 
         if (auto* audioPlugin = trackerEngine.resolvePluginInstance (pluginId))
         {
-            auto& params = audioPlugin->getParameters();
-            if (paramIdx >= 0 && paramIdx < params.size())
-                return params[paramIdx]->getValue();
+            // tryEnter to avoid deadlocking with the audio thread.
+            auto& lock = audioPlugin->getCallbackLock();
+            if (lock.tryEnter())
+            {
+                auto& params = audioPlugin->getParameters();
+                float val = 0.5f;
+                if (paramIdx >= 0 && paramIdx < params.size())
+                    val = params[paramIdx]->getValue();
+                lock.exit();
+                return val;
+            }
         }
         return 0.5f;
     };
@@ -729,7 +748,7 @@ MainComponent::MainComponent()
         updateToolbar();
         instrumentPanel->setSelectedInstrument (trackerGrid->getCurrentInstrument());
         if (automationPanelVisible)
-            refreshAutomationPanel();
+            refreshAutomationPanel (false);
     };
 
     // Pattern data changed — re-sync during playback
@@ -890,6 +909,13 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    // Prevent any late engine callbacks from touching a partially-destroyed UI.
+    trackerEngine.onTransportChanged = nullptr;
+    trackerEngine.onStatusMessage = nullptr;
+    trackerEngine.onNavigateToAutomation = nullptr;
+    trackerEngine.onPluginInstrumentCleared = nullptr;
+    trackerEngine.onInsertStateChanged = nullptr;
+
    #if JUCE_MAC
     juce::MenuBarModel::setMacMainMenu (nullptr);
    #endif
@@ -2168,6 +2194,7 @@ void MainComponent::newProject()
     trackerEngine.setInstrumentSlotInfos ({});
     mixerState.reset();
     trackerEngine.refreshMixerPlugins();
+    invalidateAutomationPluginCache();
     undoManager.clearUndoHistory();
     currentProjectFile = juce::File();
     isDirty = false;
@@ -2258,6 +2285,7 @@ void MainComponent::openProject()
 
                               // Invalidate track instrument cache so next sync re-loads correctly
                               trackerEngine.invalidateTrackInstruments();
+                              invalidateAutomationPluginCache();
 
                               arrangementComponent->setSelectedEntry (arrangement.getNumEntries() > 0 ? 0 : -1);
 
@@ -3055,7 +3083,7 @@ void MainComponent::showAudioPluginSettings()
     opts.launchAsync();
 }
 
-void MainComponent::refreshAutomationPanel()
+void MainComponent::refreshAutomationPanel (bool forcePopulate)
 {
     if (automationPanel == nullptr)
         return;
@@ -3063,8 +3091,53 @@ void MainComponent::refreshAutomationPanel()
     auto& pat = patternData.getCurrentPattern();
     automationPanel->setAutomationData (&pat.automationData);
     automationPanel->setPatternLength (pat.numRows);
-    automationPanel->setCurrentTrack (trackerGrid->getCursorTrack());
-    populateAutomationPlugins();
+
+    int curTrack = trackerGrid->getCursorTrack();
+    automationPanel->setCurrentTrack (curTrack);
+
+    // Only re-enumerate plugin parameters when the track actually changes
+    // (or when explicitly forced).
+    if (forcePopulate || curTrack != lastAutomationPopulateTrack)
+    {
+        // Save selection for the track we're leaving
+        if (lastAutomationPopulateTrack >= 0)
+            saveAutomationSelection();
+        lastAutomationPopulateTrack = curTrack;
+        populateAutomationPlugins();
+        restoreAutomationSelection (curTrack);
+    }
+    else
+    {
+        automationPanel->repaint();
+    }
+}
+
+void MainComponent::invalidateAutomationPluginCache (int trackIndex)
+{
+    if (trackIndex < 0)
+        automationPluginCache.clear();
+    else
+        automationPluginCache.erase (trackIndex);
+    lastAutomationPopulateTrack = -1;
+}
+
+void MainComponent::saveAutomationSelection()
+{
+    if (automationPanel == nullptr || lastAutomationPopulateTrack < 0)
+        return;
+    auto pluginId = automationPanel->getSelectedPluginId();
+    auto paramIdx = automationPanel->getSelectedParameterIndex();
+    if (pluginId.isNotEmpty())
+        automationSelectionPerTrack[lastAutomationPopulateTrack] = { pluginId, paramIdx };
+}
+
+void MainComponent::restoreAutomationSelection (int trackIndex)
+{
+    if (automationPanel == nullptr)
+        return;
+    auto it = automationSelectionPerTrack.find (trackIndex);
+    if (it != automationSelectionPerTrack.end())
+        automationPanel->navigateToParam (it->second.first, it->second.second);
 }
 
 void MainComponent::populateAutomationPlugins()
@@ -3075,6 +3148,49 @@ void MainComponent::populateAutomationPlugins()
     int cursorTrack = trackerGrid->getCursorTrack();
     if (cursorTrack >= kNumTracks)
         cursorTrack = 0;
+
+    // Return cached result if available — avoids expensive getName
+    // on every parameter each time the user switches to this track.
+    // Refresh hasAutomation flags from current pattern since automation
+    // data may have changed since the cache was built.
+    auto cacheIt = automationPluginCache.find (cursorTrack);
+    if (cacheIt != automationPluginCache.end())
+    {
+        auto& cachedPlugins = cacheIt->second;
+        const auto& cachedAutoData = patternData.getCurrentPattern().automationData;
+        for (auto& plugin : cachedPlugins)
+            for (auto& param : plugin.parameters)
+                param.hasAutomation = cachedAutoData.findLane (plugin.pluginId, param.index) != nullptr;
+        automationPanel->setAvailablePlugins (cachedPlugins);
+        return;
+    }
+
+    // Get current automation data so we can mark already-automated parameters.
+    auto& pat = patternData.getCurrentPattern();
+    const auto& automationData = pat.automationData;
+
+    // Helper: collect parameters from a JUCE AudioPluginInstance.
+    // getName() is safe without the callback lock — it just reads stored strings,
+    // not audio-thread state.  Removing tryEnter from this path eliminates the
+    // main source of latency (lock contention with the always-live audio graph).
+    auto collectParams = [&] (juce::AudioPluginInstance* audioPlugin,
+                              const juce::String& pluginId,
+                              AutomatablePluginInfo& pluginInfo)
+    {
+        if (audioPlugin == nullptr)
+            return;
+
+        auto& params = audioPlugin->getParameters();
+        pluginInfo.parameters.reserve (static_cast<size_t> (params.size()));
+        for (int pi = 0; pi < params.size(); ++pi)
+        {
+            AutomatablePluginInfo::ParamInfo paramInfo;
+            paramInfo.index = pi;
+            paramInfo.name = params[pi]->getName (40);
+            paramInfo.hasAutomation = automationData.findLane (pluginId, pi) != nullptr;
+            pluginInfo.parameters.push_back (paramInfo);
+        }
+    };
 
     std::vector<AutomatablePluginInfo> plugins;
 
@@ -3089,24 +3205,10 @@ void MainComponent::populateAutomationPlugins()
             pluginInfo.owningTrack = cursorTrack;
             pluginInfo.isInstrument = true;
 
-            // Get parameters from the loaded plugin instance
             if (auto* pluginInstance = trackerEngine.getPluginInstrumentInstance (instIdx))
             {
                 if (auto* external = dynamic_cast<te::ExternalPlugin*> (pluginInstance))
-                {
-                    auto audioPlugin = external->getAudioPluginInstance();
-                    if (audioPlugin != nullptr)
-                    {
-                        auto& params = audioPlugin->getParameters();
-                        for (int pi = 0; pi < params.size(); ++pi)
-                        {
-                            AutomatablePluginInfo::ParamInfo paramInfo;
-                            paramInfo.index = pi;
-                            paramInfo.name = params[pi]->getName (40);
-                            pluginInfo.parameters.push_back (paramInfo);
-                        }
-                    }
-                }
+                    collectParams (external->getAudioPluginInstance(), pluginInfo.pluginId, pluginInfo);
             }
 
             if (! pluginInfo.parameters.empty())
@@ -3130,24 +3232,10 @@ void MainComponent::populateAutomationPlugins()
             pluginInfo.owningTrack = cursorTrack;
             pluginInfo.isInstrument = false;
 
-            // Get parameters from the loaded plugin instance
             if (auto* plugin = trackerEngine.getInsertPlugin (cursorTrack, si))
             {
                 if (auto* external = dynamic_cast<te::ExternalPlugin*> (plugin))
-                {
-                    auto audioPlugin = external->getAudioPluginInstance();
-                    if (audioPlugin != nullptr)
-                    {
-                        auto& params = audioPlugin->getParameters();
-                        for (int pi = 0; pi < params.size(); ++pi)
-                        {
-                            AutomatablePluginInfo::ParamInfo paramInfo;
-                            paramInfo.index = pi;
-                            paramInfo.name = params[pi]->getName (40);
-                            pluginInfo.parameters.push_back (paramInfo);
-                        }
-                    }
-                }
+                    collectParams (external->getAudioPluginInstance(), pluginInfo.pluginId, pluginInfo);
             }
 
             if (! pluginInfo.parameters.empty())
@@ -3155,50 +3243,32 @@ void MainComponent::populateAutomationPlugins()
         }
     }
 
-    // Sort parameters by relevance: common automation targets first, then alphabetical.
-    // Priority tiers (lower = higher priority):
-    //   0: Macros (most plugins expose these as top-level controls)
-    //   1: Filter cutoff / frequency
-    //   2: Filter resonance / Q
-    //   3: Volume / gain / level / amplitude
-    //   4: Mix / dry-wet / blend
-    //   5: Pan / balance / width / stereo
-    //   6: LFO rate / speed / frequency
-    //   7: Attack / decay / sustain / release (envelope)
-    //   8: Pitch / tune / detune / semitone / coarse / fine
-    //   9: Drive / distortion / saturation / overdrive
-    //  10: Delay time / feedback
-    //  11: Reverb size / decay / damping
-    //  12: Chorus / flanger / phaser rate / depth
-    //  99: Everything else (alphabetical)
-    static const std::vector<std::pair<int, std::regex>> priorityPatterns = []
-    {
-        std::vector<std::pair<int, std::regex>> p;
-        auto icase = std::regex_constants::icase;
-        p.push_back ({ 0, std::regex ("macro|mmod", icase) });
-        p.push_back ({ 1, std::regex ("cutoff|cut.?off|filter.?freq|filt.?freq|frequency|fc$|lpf|hpf|bpf", icase) });
-        p.push_back ({ 2, std::regex ("reson|\\bq\\b|emphasis", icase) });
-        p.push_back ({ 3, std::regex ("\\b(vol|volume|gain|level|amplitude|output|master.?vol|master.?gain)\\b", icase) });
-        p.push_back ({ 4, std::regex ("\\b(mix|dry.?wet|wet.?dry|blend|d/w|w/d)\\b", icase) });
-        p.push_back ({ 5, std::regex ("\\b(pan|balance|width|stereo|spread)\\b", icase) });
-        p.push_back ({ 6, std::regex ("\\blfo.*(rate|speed|freq)|\\b(rate|speed)\\b", icase) });
-        p.push_back ({ 7, std::regex ("\\b(attack|decay|sustain|release|env.*(a|d|s|r)\\b|adsr)", icase) });
-        p.push_back ({ 8, std::regex ("\\b(pitch|tune|detune|semi|coarse|fine|transpose|cent)\\b", icase) });
-        p.push_back ({ 9, std::regex ("\\b(drive|distort|saturat|overdrive|dirt|crunch)\\b", icase) });
-        p.push_back ({ 10, std::regex ("\\b(delay.*(time|feedback|tempo)|feedback|time)\\b", icase) });
-        p.push_back ({ 11, std::regex ("\\b(reverb|room|size|damping|decay.?time|pre.?delay)\\b", icase) });
-        p.push_back ({ 12, std::regex ("\\b(chorus|flanger|phaser|rate|depth|modulation)\\b", icase) });
-        return p;
-    }();
-
+    // Sort parameters: already-automated first (marked with *), then by
+    // relevance tier (common automation targets), then alphabetical.
+    // Uses fast containsIgnoreCase instead of regex for speed.
     auto getParamPriority = [] (const juce::String& name) -> int
     {
-        auto stdName = name.toStdString();
-        for (auto& [priority, pattern] : priorityPatterns)
-        {
-            if (std::regex_search (stdName, pattern))
-                return priority;
-        }
+        auto lo = name.toLowerCase();
+        if (lo.contains ("macro") || lo.contains ("mmod"))                       return 0;
+        if (lo.contains ("cutoff") || (lo.contains ("filter") && lo.contains ("freq"))) return 1;
+        if (lo.contains ("reson") || lo.contains ("emphasis"))                   return 2;
+        if (lo.contains ("volume") || lo.contains ("gain") || lo.contains ("level")
+            || lo.contains ("amplitude") || lo.contains ("output"))              return 3;
+        if (lo.contains ("mix") || lo.contains ("dry") || lo.contains ("wet")
+            || lo.contains ("blend"))                                            return 4;
+        if (lo.contains ("pan") || lo.contains ("balance") || lo.contains ("width")
+            || lo.contains ("stereo") || lo.contains ("spread"))                 return 5;
+        if (lo.contains ("lfo") && (lo.contains ("rate") || lo.contains ("speed"))) return 6;
+        if (lo.contains ("attack") || lo.contains ("decay") || lo.contains ("sustain")
+            || lo.contains ("release") || lo.contains ("adsr"))                  return 7;
+        if (lo.contains ("pitch") || lo.contains ("tune") || lo.contains ("detune")
+            || lo.contains ("semi") || lo.contains ("coarse") || lo.contains ("fine")
+            || lo.contains ("transpose") || lo.contains ("cent"))                return 8;
+        if (lo.contains ("drive") || lo.contains ("distort") || lo.contains ("saturat")
+            || lo.contains ("overdrive"))                                        return 9;
+        if (lo.contains ("feedback") || (lo.contains ("delay") && lo.contains ("time"))) return 10;
+        if (lo.contains ("reverb") || lo.contains ("room") || lo.contains ("damping")) return 11;
+        if (lo.contains ("chorus") || lo.contains ("flanger") || lo.contains ("phaser")) return 12;
         return 99;
     };
 
@@ -3208,6 +3278,9 @@ void MainComponent::populateAutomationPlugins()
                           [&] (const AutomatablePluginInfo::ParamInfo& a,
                                const AutomatablePluginInfo::ParamInfo& b)
                           {
+                              // Already-automated params always come first
+                              if (a.hasAutomation != b.hasAutomation)
+                                  return a.hasAutomation;
                               int pa = getParamPriority (a.name);
                               int pb = getParamPriority (b.name);
                               if (pa != pb) return pa < pb;
@@ -3215,6 +3288,8 @@ void MainComponent::populateAutomationPlugins()
                           });
     }
 
+    // Cache the result so subsequent visits to this track are instant.
+    automationPluginCache[cursorTrack] = plugins;
     automationPanel->setAvailablePlugins (plugins);
 }
 
@@ -3225,7 +3300,90 @@ void MainComponent::navigateToAutomationParam (const juce::String& pluginId, int
     {
         automationPanelVisible = true;
         toolbar->setAutomationPanelVisible (true);
-        refreshAutomationPanel();
+        if (automationPanel != nullptr)
+        {
+            auto& pat = patternData.getCurrentPattern();
+            automationPanel->setAutomationData (&pat.automationData);
+            automationPanel->setPatternLength (pat.numRows);
+            automationPanel->setCurrentTrack (trackerGrid->getCursorTrack());
+
+            // Lightweight population for auto-learn navigation: avoid expensive
+            // full plugin scans and parameter-name queries while a plugin UI is active.
+            std::vector<AutomatablePluginInfo> plugins;
+            AutomatablePluginInfo pluginInfo;
+            pluginInfo.pluginId = pluginId;
+            pluginInfo.owningTrack = trackerGrid->getCursorTrack();
+
+            if (pluginId.startsWith ("inst:"))
+            {
+                int instIdx = pluginId.substring (5).getIntValue();
+                const auto& slotInfo = trackerEngine.getInstrumentSlotInfo (instIdx);
+                pluginInfo.owningTrack = slotInfo.ownerTrack;
+                pluginInfo.isInstrument = true;
+                auto name = slotInfo.pluginDescription.name;
+                if (name.isEmpty())
+                    name = "Instrument";
+                pluginInfo.displayName = name + " (Inst " + juce::String (instIdx) + ")";
+            }
+            else if (pluginId.startsWith ("insert:"))
+            {
+                auto parts = juce::StringArray::fromTokens (pluginId.substring (7), ":", "");
+                int trackIdx = parts.size() > 0 ? parts[0].getIntValue() : trackerGrid->getCursorTrack();
+                int slotIdx = parts.size() > 1 ? parts[1].getIntValue() : 0;
+                pluginInfo.owningTrack = trackIdx;
+                pluginInfo.isInstrument = false;
+
+                juce::String name = "Insert";
+                if (trackIdx >= 0 && trackIdx < static_cast<int> (mixerState.insertSlots.size()))
+                {
+                    auto& slots = mixerState.insertSlots[static_cast<size_t> (trackIdx)];
+                    if (slotIdx >= 0 && slotIdx < static_cast<int> (slots.size())
+                        && slots[static_cast<size_t> (slotIdx)].pluginName.isNotEmpty())
+                    {
+                        name = slots[static_cast<size_t> (slotIdx)].pluginName;
+                    }
+                }
+                pluginInfo.displayName = name + " (Insert " + juce::String (slotIdx + 1) + ")";
+            }
+            else
+            {
+                pluginInfo.displayName = "Plugin";
+            }
+
+            if (paramIndex >= 0)
+            {
+                AutomatablePluginInfo::ParamInfo paramInfo;
+                paramInfo.index = paramIndex;
+
+                // Get the real parameter name from the plugin instance.
+                // getName() is safe without the callback lock.
+                juce::String realName;
+                auto* resolvedPlugin = trackerEngine.resolvePluginInstance (pluginId);
+                if (resolvedPlugin != nullptr)
+                {
+                    auto& params = resolvedPlugin->getParameters();
+                    if (paramIndex < params.size() && params[paramIndex] != nullptr)
+                        realName = params[paramIndex]->getName (40);
+                }
+                paramInfo.name = realName.isNotEmpty() ? realName
+                                                       : ("Param " + juce::String (paramIndex));
+                pluginInfo.parameters.push_back (paramInfo);
+            }
+
+            // Invalidate cache for this track so the next full populate
+            // picks up the newly automated parameter correctly.
+            invalidateAutomationPluginCache (pluginInfo.owningTrack);
+
+            if (! pluginInfo.parameters.empty())
+            {
+                plugins.push_back (std::move (pluginInfo));
+                automationPanel->setAvailablePlugins (plugins);
+            }
+            else
+            {
+                populateAutomationPlugins();
+            }
+        }
         resized();
     }
 

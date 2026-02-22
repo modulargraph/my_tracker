@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <set>
 #include "TrackerEngine.h"
 #include "InstrumentEffectsPlugin.h"
 #include "TrackerSamplerPlugin.h"
@@ -10,7 +9,6 @@
 #include "TrackOutputPlugin.h"
 #include "InstrumentRouting.h"
 #include "FxParamTransport.h"
-#include "NoteUtils.h"
 
 namespace
 {
@@ -801,10 +799,31 @@ void TrackerEngine::stop()
     if (edit == nullptr)
         return;
 
-    edit->getTransport().stop (false, false);
+    // Stop any active plugin instrument preview (sends explicit note-off).
+    stopPluginPreview();
 
-    // Reset automated parameters back to their baseline values
-    resetAutomationParameters();
+    // Send all-notes-off to every plugin instrument track BEFORE stopping
+    // transport.  This prevents stuck notes from in-progress MIDI clips and
+    // avoids potential deadlocks from the transport's stop logic trying to
+    // flush MIDI while plugins are actively processing.
+    for (const auto& [instIdx, info] : instrumentSlotInfos)
+    {
+        if (info.isPlugin() && info.ownerTrack >= 0 && info.ownerTrack < kNumTracks)
+        {
+            auto* track = getTrack (info.ownerTrack);
+            if (track != nullptr)
+            {
+                track->injectLiveMidiMessage (
+                    juce::MidiMessage::allNotesOff (1), 0);
+                track->turnOffGuideNotes();
+            }
+        }
+    }
+
+    edit->getTransport().stop (false, false);
+    // Avoid synchronous parameter writes during transport stop (can block with
+    // some plugin combinations). New play/sync re-establishes automation state.
+    lastAutomatedParams.clear();
 }
 
 void TrackerEngine::togglePlayStop()
@@ -1130,38 +1149,31 @@ void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNo
 
     stopPreview();
 
-    // Check if this is a plugin instrument — send MIDI directly to the plugin
+    // Plugin instrument: inject an explicit note-on on the owner track via
+    // injectLiveMidiMessage so we have full control over note-off timing.
+    // playGuideNote with autorelease killed the note after ~100ms, breaking
+    // hold-to-preview; and clearing state immediately meant stopPluginPreview
+    // could never send the matching note-off, causing stuck notes.
     if (isPluginInstrument (instrumentIndex))
     {
-        auto* plugin = getPluginInstrumentInstance (instrumentIndex);
-        if (plugin == nullptr)
+        ensurePluginInstrumentLoaded (instrumentIndex);
+
+        const auto& slotInfo = getInstrumentSlotInfo (instrumentIndex);
+        auto* ownerTrack = getTrack (slotInfo.ownerTrack);
+        if (ownerTrack != nullptr)
         {
-            ensurePluginInstrumentLoaded (instrumentIndex);
-            plugin = getPluginInstrumentInstance (instrumentIndex);
+            int note = juce::jlimit (0, 127, midiNote);
+            int velocity = juce::jlimit (1, 127, static_cast<int> (previewVolume * 127.0f + 0.5f));
+            ownerTrack->injectLiveMidiMessage (
+                juce::MidiMessage::noteOn (1, note, static_cast<juce::uint8> (velocity)), 0);
+
+            previewPluginNote = note;
+            previewPluginInstrument = instrumentIndex;
+            previewPluginTrack = slotInfo.ownerTrack;
         }
 
-        if (plugin != nullptr)
-        {
-            if (auto* ext = dynamic_cast<te::ExternalPlugin*> (plugin))
-            {
-                if (auto* api = ext->getAudioPluginInstance())
-                {
-                    const juce::ScopedLock sl (api->getCallbackLock());
-                    juce::MidiBuffer midiBuf;
-                    midiBuf.addEvent (juce::MidiMessage::noteOn (1, midiNote, (juce::uint8) 100), 0);
-                    juce::AudioBuffer<float> audioBuf (juce::jmax (2, api->getTotalNumOutputChannels()), 64);
-                    audioBuf.clear();
-                    api->processBlock (audioBuf, midiBuf);
-
-                    previewPluginNote = midiNote;
-                    previewPluginInstrument = instrumentIndex;
-
-                    if (autoStop)
-                        startTimer (kPluginPreviewDurationMs);
-                    return;
-                }
-            }
-        }
+        if (autoStop)
+            startTimer (kPluginPreviewDurationMs);
         return;
     }
 
@@ -1281,29 +1293,20 @@ void TrackerEngine::previewInstrument (int instrumentIndex)
     previewNote (kPreviewTrack, instrumentIndex, 60, true);
 }
 
-void TrackerEngine::stopPluginPreview()
+bool TrackerEngine::stopPluginPreview()
 {
-    if (previewPluginNote >= 0 && previewPluginInstrument >= 0)
+    if (previewPluginNote >= 0 && previewPluginTrack >= 0)
     {
-        auto* plugin = getPluginInstrumentInstance (previewPluginInstrument);
-        if (plugin != nullptr)
-        {
-            if (auto* ext = dynamic_cast<te::ExternalPlugin*> (plugin))
-            {
-                if (auto* api = ext->getAudioPluginInstance())
-                {
-                    const juce::ScopedLock sl (api->getCallbackLock());
-                    juce::MidiBuffer midiBuf;
-                    midiBuf.addEvent (juce::MidiMessage::noteOff (1, previewPluginNote), 0);
-                    juce::AudioBuffer<float> audioBuf (juce::jmax (2, api->getTotalNumOutputChannels()), 64);
-                    audioBuf.clear();
-                    api->processBlock (audioBuf, midiBuf);
-                }
-            }
-        }
-        previewPluginNote = -1;
-        previewPluginInstrument = -1;
+        auto* track = getTrack (previewPluginTrack);
+        if (track != nullptr)
+            track->injectLiveMidiMessage (
+                juce::MidiMessage::noteOff (1, previewPluginNote), 0);
     }
+
+    previewPluginNote = -1;
+    previewPluginInstrument = -1;
+    previewPluginTrack = -1;
+    return true;
 }
 
 void TrackerEngine::stopPreview()
@@ -2110,12 +2113,26 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
         }
     }
 
-    // Check if window already exists
-    if (pluginInstrumentEditorWindows.count (instrumentIndex) > 0
-        && pluginInstrumentEditorWindows[instrumentIndex] != nullptr)
+    // Check if a window already exists; recover from stale hidden entries.
+    if (auto it = pluginInstrumentEditorWindows.find (instrumentIndex);
+        it != pluginInstrumentEditorWindows.end())
     {
-        pluginInstrumentEditorWindows[instrumentIndex]->toFront (true);
-        return;
+        auto* existing = it->second.get();
+        if (existing != nullptr)
+        {
+            if (existing->isMinimised())
+                existing->setMinimised (false);
+
+            if (! existing->isShowing() || ! existing->isVisible())
+                existing->setVisible (true);
+
+            existing->toFront (true);
+            return;
+        }
+        else
+        {
+            pluginInstrumentEditorWindows.erase (it);
+        }
     }
 
     auto* extPlugin = dynamic_cast<te::ExternalPlugin*> (plugin);
@@ -2132,12 +2149,10 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 
     //==========================================================================
     // Content component: wraps the VST editor + toolbar at the bottom.
-    // Implements KeyListener to intercept note keys before the VST editor
-    // consumes them (VST editors aggressively grab keyboard focus).
     //==========================================================================
     struct PluginEditorContent : public juce::Component,
                                  public juce::KeyListener,
-                                 public juce::AudioProcessorListener
+                                 private juce::Timer
     {
         using juce::Component::keyPressed;
         using juce::Component::keyStateChanged;
@@ -2149,11 +2164,16 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             : vstEditor (ed), pluginInstance (api), engine (eng), instrumentIndex (instIdx)
         {
             addAndMakeVisible (vstEditor);
+            addKeyHookToComponentTree (*vstEditor);
 
             previewKbButton.setButtonText ("Preview KB");
             previewKbButton.setClickingTogglesState (true);
             previewKbButton.setWantsKeyboardFocus (false);
             previewKbButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::steelblue);
+            previewKbButton.onClick = [this]
+            {
+                setPreviewKeyboardEnabled (previewKbButton.getToggleState());
+            };
             addAndMakeVisible (previewKbButton);
 
             autoLearnButton.setButtonText ("Auto Learn");
@@ -2162,10 +2182,14 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             autoLearnButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::orange);
             autoLearnButton.onClick = [this]
             {
-                if (autoLearnButton.getToggleState())
-                    pluginInstance->addListener (this);
-                else
-                    pluginInstance->removeListener (this);
+                bool enabled = autoLearnButton.getToggleState();
+                autoLearnEnabled = enabled;
+                lastDispatchedAutoLearnParam = -1;
+
+                if (enabled)
+                    captureAutoLearnSnapshot();
+
+                updatePollingTimerState();
             };
             addAndMakeVisible (autoLearnButton);
 
@@ -2174,6 +2198,10 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             octaveLabel.setJustificationType (juce::Justification::centred);
             addAndMakeVisible (octaveLabel);
 
+            setWantsKeyboardFocus (true);
+            previewKbButton.setToggleState (true, juce::dontSendNotification);
+            setPreviewKeyboardEnabled (true);
+
             auto edW = vstEditor->getWidth();
             auto edH = vstEditor->getHeight();
             setSize (juce::jmax (edW, 300), edH + kToolbarHeight);
@@ -2181,12 +2209,15 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 
         ~PluginEditorContent() override
         {
-            if (autoLearnButton.getToggleState() && pluginInstance != nullptr)
-                pluginInstance->removeListener (this);
+            stopTimer();
+            releaseHeldPreviewNotes();
+            removeKeyHookFromComponentTree (*vstEditor);
         }
 
         void resized() override
         {
+            addKeyHookToComponentTree (*vstEditor);
+
             auto area = getLocalBounds();
             auto toolbar = area.removeFromBottom (kToolbarHeight);
 
@@ -2197,10 +2228,12 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             autoLearnButton.setBounds (toolbar.removeFromLeft (100).reduced (4));
         }
 
-        // KeyListener — intercepts keys before the VST editor can consume them
         bool keyPressed (const juce::KeyPress& key, juce::Component*) override
         {
             if (! previewKbButton.getToggleState())
+                return false;
+
+            if (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown() || key.getModifiers().isAltDown())
                 return false;
 
             // Octave change: F1-F8
@@ -2212,15 +2245,15 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
                 return true;
             }
 
-            int note = NoteUtils::keyToNote (key, currentOctave);
+            int note = getMappedNoteForKeyCode (keyCode);
             if (note < 0 || note > 127)
                 return false;
 
-            // Only trigger if this note isn't already playing
-            if (heldNotes.find (note) == heldNotes.end())
+            auto pressedKeyCode = normaliseAlphaKeyCode (keyCode);
+            if (heldNotesByKeyCode.find (pressedKeyCode) == heldNotesByKeyCode.end())
             {
                 engine.previewNote (0, instrumentIndex, note, false);
-                heldNotes.insert (note);
+                heldNotesByKeyCode[pressedKeyCode] = note;
             }
             return true;
         }
@@ -2232,14 +2265,14 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 
             // Check which held notes are no longer pressed
             bool handled = false;
-            auto it = heldNotes.begin();
-            while (it != heldNotes.end())
+            auto it = heldNotesByKeyCode.begin();
+            while (it != heldNotesByKeyCode.end())
             {
-                bool stillDown = isNoteKeyDown (*it);
+                bool stillDown = juce::KeyPress::isKeyCurrentlyDown (it->first);
                 if (! stillDown)
                 {
                     engine.stopPreview();
-                    it = heldNotes.erase (it);
+                    it = heldNotesByKeyCode.erase (it);
                     handled = true;
                 }
                 else
@@ -2252,20 +2285,26 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             return handled;
         }
 
-        // AudioProcessorListener — auto-learn
-        void audioProcessorParameterChanged (juce::AudioProcessor*, int parameterIndex, float) override
+        void timerCallback() override
         {
-            if (autoLearnButton.getToggleState() && engine.onNavigateToAutomation)
-            {
-                auto pluginId = "inst:" + juce::String (instrumentIndex);
-                juce::MessageManager::callAsync ([cb = engine.onNavigateToAutomation, pluginId, parameterIndex]
-                {
-                    cb (pluginId, parameterIndex);
-                });
-            }
-        }
+            pollAutoLearnParameterChanges();
 
-        void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override {}
+            if (! previewKeyboardEnabled)
+                return;
+
+            // Don't keep sounding notes if this editor window loses focus.
+            if (auto* topLevel = findParentComponentOfClass<juce::TopLevelWindow>())
+            {
+                if (! topLevel->isActiveWindow())
+                {
+                    releaseHeldPreviewNotes();
+                    return;
+                }
+            }
+
+            pollOctaveKeys();
+            pollMappedNoteKeys();
+        }
 
     private:
         enum { kToolbarHeight = 32 };
@@ -2280,34 +2319,259 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
         juce::TextButton autoLearnButton;
         juce::Label octaveLabel;
 
-        std::set<int> heldNotes;
+        bool autoLearnEnabled = false;
+        int lastDispatchedAutoLearnParam = -1;
+        std::vector<float> autoLearnParamSnapshot;
+        bool previewKeyboardEnabled = false;
 
-        bool isNoteKeyDown (int midiNote) const
+        std::map<int, int> heldNotesByKeyCode;
+        bool octaveKeysDown[8] = { false, false, false, false, false, false, false, false };
+
+        void flushAutoLearnNavigation (int parameterIndex)
         {
+            if (! autoLearnEnabled)
+                return;
+
+            if (parameterIndex < 0)
+                return;
+            if (parameterIndex == lastDispatchedAutoLearnParam)
+                return;
+
+            lastDispatchedAutoLearnParam = parameterIndex;
+
+            if (engine.onNavigateToAutomation)
+            {
+                auto pluginId = "inst:" + juce::String (instrumentIndex);
+                engine.onNavigateToAutomation (pluginId, parameterIndex);
+            }
+
+            // One-shot learn: after capturing a parameter, return to idle mode.
+            if (autoLearnButton.getToggleState())
+            {
+                autoLearnButton.setToggleState (false, juce::dontSendNotification);
+                autoLearnEnabled = false;
+                updatePollingTimerState();
+            }
+        }
+
+        void captureAutoLearnSnapshot()
+        {
+            autoLearnParamSnapshot.clear();
+
+            if (pluginInstance == nullptr)
+                return;
+
+            // tryEnter: audio thread may hold the callback lock (playInStopEnabled).
+            auto& lock = pluginInstance->getCallbackLock();
+            if (! lock.tryEnter())
+                return;
+
+            auto& params = pluginInstance->getParameters();
+            autoLearnParamSnapshot.reserve (static_cast<size_t> (params.size()));
+
+            for (int i = 0; i < params.size(); ++i)
+            {
+                auto* p = params[i];
+                autoLearnParamSnapshot.push_back (p != nullptr ? p->getValue() : 0.0f);
+            }
+
+            lock.exit();
+        }
+
+        void pollAutoLearnParameterChanges()
+        {
+            if (! autoLearnEnabled || pluginInstance == nullptr)
+                return;
+
+            // tryEnter: audio thread may hold the callback lock (playInStopEnabled).
+            // If we can't get the lock, skip this poll cycle — the next timer
+            // tick will try again.
+            auto& lock = pluginInstance->getCallbackLock();
+            if (! lock.tryEnter())
+                return;
+
+            auto& params = pluginInstance->getParameters();
+            if (params.isEmpty())
+            {
+                lock.exit();
+                return;
+            }
+
+            if (autoLearnParamSnapshot.size() != static_cast<size_t> (params.size()))
+            {
+                lock.exit();
+                captureAutoLearnSnapshot();
+                return;
+            }
+
+            constexpr float kLearnThreshold = 0.004f;
+            int changedParam = -1;
+            float maxDelta = kLearnThreshold;
+
+            for (int i = 0; i < params.size(); ++i)
+            {
+                auto* p = params[i];
+                if (p == nullptr)
+                    continue;
+
+                float current = p->getValue();
+                float delta = std::abs (current - autoLearnParamSnapshot[static_cast<size_t> (i)]);
+                autoLearnParamSnapshot[static_cast<size_t> (i)] = current;
+
+                if (delta > maxDelta)
+                {
+                    maxDelta = delta;
+                    changedParam = i;
+                }
+            }
+
+            lock.exit();
+
+            if (changedParam >= 0)
+                flushAutoLearnNavigation (changedParam);
+        }
+
+        static int normaliseAlphaKeyCode (int keyCode)
+        {
+            if (keyCode >= 'a' && keyCode <= 'z')
+                return keyCode - ('a' - 'A');
+            return keyCode;
+        }
+
+        int getMappedNoteForKeyCode (int keyCode) const
+        {
+            keyCode = normaliseAlphaKeyCode (keyCode);
+
             int baseNote = currentOctave * 12;
             int upperBase = (currentOctave + 1) * 12;
+            switch (keyCode)
+            {
+                case 'Z': return baseNote + 0;
+                case 'S': return baseNote + 1;
+                case 'X': return baseNote + 2;
+                case 'D': return baseNote + 3;
+                case 'C': return baseNote + 4;
+                case 'V': return baseNote + 5;
+                case 'G': return baseNote + 6;
+                case 'B': return baseNote + 7;
+                case 'H': return baseNote + 8;
+                case 'N': return baseNote + 9;
+                case 'J': return baseNote + 10;
+                case 'M': return baseNote + 11;
+                case 'Q': return upperBase + 0;
+                case '2': return upperBase + 1;
+                case 'W': return upperBase + 2;
+                case '3': return upperBase + 3;
+                case 'E': return upperBase + 4;
+                case 'R': return upperBase + 5;
+                case '5': return upperBase + 6;
+                case 'T': return upperBase + 7;
+                case '6': return upperBase + 8;
+                case 'Y': return upperBase + 9;
+                case '7': return upperBase + 10;
+                case 'U': return upperBase + 11;
+                default: break;
+            }
 
-            struct NoteKeyMapping { int note; int keyCode; };
-            const NoteKeyMapping lowerMap[] = {
-                { baseNote + 0, 'Z' }, { baseNote + 1, 'S' }, { baseNote + 2, 'X' },
-                { baseNote + 3, 'D' }, { baseNote + 4, 'C' }, { baseNote + 5, 'V' },
-                { baseNote + 6, 'G' }, { baseNote + 7, 'B' }, { baseNote + 8, 'H' },
-                { baseNote + 9, 'N' }, { baseNote + 10, 'J' }, { baseNote + 11, 'M' }
-            };
-            const NoteKeyMapping upperMap[] = {
-                { upperBase + 0, 'Q' }, { upperBase + 1, '2' }, { upperBase + 2, 'W' },
-                { upperBase + 3, '3' }, { upperBase + 4, 'E' }, { upperBase + 5, 'R' },
-                { upperBase + 6, '5' }, { upperBase + 7, 'T' }, { upperBase + 8, '6' },
-                { upperBase + 9, 'Y' }, { upperBase + 10, '7' }, { upperBase + 11, 'U' }
+            return -1;
+        }
+
+        void releaseHeldPreviewNotes()
+        {
+            if (! heldNotesByKeyCode.empty())
+                engine.stopPreview();
+
+            heldNotesByKeyCode.clear();
+        }
+
+        void setPreviewKeyboardEnabled (bool enabled)
+        {
+            previewKeyboardEnabled = enabled;
+
+            if (! enabled)
+            {
+                releaseHeldPreviewNotes();
+                for (bool& down : octaveKeysDown)
+                    down = false;
+            }
+            else
+            {
+                grabKeyboardFocus();
+            }
+
+            updatePollingTimerState();
+        }
+
+        void updatePollingTimerState()
+        {
+            bool shouldPoll = previewKeyboardEnabled
+                              || autoLearnEnabled;
+
+            if (shouldPoll)
+                startTimerHz (75);
+            else
+                stopTimer();
+        }
+
+        void pollOctaveKeys()
+        {
+            for (int i = 0; i < 8; ++i)
+            {
+                int keyCode = juce::KeyPress::F1Key + i;
+                bool down = juce::KeyPress::isKeyCurrentlyDown (keyCode);
+
+                if (down && ! octaveKeysDown[i])
+                {
+                    currentOctave = i;
+                    octaveLabel.setText ("Oct: " + juce::String (currentOctave), juce::dontSendNotification);
+                }
+
+                octaveKeysDown[i] = down;
+            }
+        }
+
+        void pollMappedNoteKeys()
+        {
+            static constexpr int keyCodes[] =
+            {
+                'Z', 'S', 'X', 'D', 'C', 'V', 'G', 'B', 'H', 'N', 'J', 'M',
+                'Q', '2', 'W', '3', 'E', 'R', '5', 'T', '6', 'Y', '7', 'U'
             };
 
-            for (auto& m : lowerMap)
-                if (m.note == midiNote)
-                    return juce::KeyPress::isKeyCurrentlyDown (m.keyCode);
-            for (auto& m : upperMap)
-                if (m.note == midiNote)
-                    return juce::KeyPress::isKeyCurrentlyDown (m.keyCode);
-            return false;
+            for (auto keyCode : keyCodes)
+            {
+                bool down = juce::KeyPress::isKeyCurrentlyDown (keyCode);
+                auto it = heldNotesByKeyCode.find (keyCode);
+
+                if (down && it == heldNotesByKeyCode.end())
+                {
+                    int note = getMappedNoteForKeyCode (keyCode);
+                    if (note >= 0 && note <= 127)
+                    {
+                        engine.previewNote (0, instrumentIndex, note, false);
+                        heldNotesByKeyCode[keyCode] = note;
+                    }
+                }
+                else if (! down && it != heldNotesByKeyCode.end())
+                {
+                    engine.stopPreview();
+                    heldNotesByKeyCode.erase (it);
+                }
+            }
+        }
+
+        void addKeyHookToComponentTree (juce::Component& component)
+        {
+            component.addKeyListener (this);
+            for (int i = 0; i < component.getNumChildComponents(); ++i)
+                addKeyHookToComponentTree (*component.getChildComponent (i));
+        }
+
+        void removeKeyHookFromComponentTree (juce::Component& component)
+        {
+            component.removeKeyListener (this);
+            for (int i = 0; i < component.getNumChildComponents(); ++i)
+                removeKeyHookFromComponentTree (*component.getChildComponent (i));
         }
     };
 
@@ -2316,29 +2580,22 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
     //==========================================================================
     struct PluginInstrumentEditorWindow : public juce::DocumentWindow
     {
-        PluginInstrumentEditorWindow (const juce::String& name,
-                                       std::map<int, std::unique_ptr<juce::DocumentWindow>>& windowMap,
-                                       int instIndex)
+        PluginInstrumentEditorWindow (const juce::String& name)
             : juce::DocumentWindow (name, juce::Colours::darkgrey,
-                                    juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton),
-              windows (windowMap), instrumentIndex (instIndex)
+                                    juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton)
         {
         }
 
         void closeButtonPressed() override
         {
-            windows.erase (instrumentIndex);  // destroys this window
+            // Hide instead of destroy to avoid repeated editor teardown races.
+            setVisible (false);
         }
-
-    private:
-        std::map<int, std::unique_ptr<juce::DocumentWindow>>& windows;
-        int instrumentIndex;
     };
 
     auto* content = new PluginEditorContent (editor, audioPlugin, *this, instrumentIndex);
 
-    auto window = std::make_unique<PluginInstrumentEditorWindow> (
-        extPlugin->getName(), pluginInstrumentEditorWindows, instrumentIndex);
+    auto window = std::make_unique<PluginInstrumentEditorWindow> (extPlugin->getName());
 
     window->setContentOwned (content, true);
     window->setResizable (true, false);
@@ -2346,8 +2603,8 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
     window->setVisible (true);
     window->setAlwaysOnTop (true);
 
-    // Register the content as a KeyListener on the window so it intercepts
-    // keys before the VST editor can consume them.
+    // Keep a window-level hook as a fallback for editor implementations that
+    // don't route key events through child JUCE components.
     window->addKeyListener (content);
 
     pluginInstrumentEditorWindows[instrumentIndex] = std::move (window);
@@ -2423,8 +2680,11 @@ void TrackerEngine::applyPatternAutomation (const PatternAutomationData& automat
     if (edit == nullptr)
         return;
 
-    // Re-baseline whenever a new pattern/arrangement sync happens.
-    resetAutomationParameters();
+    // Clear previous tracking without touching plugin parameters synchronously.
+    // resetAutomationParameters() used to call param->setValue() for every
+    // tracked param, which deadlocks when the audio thread is processing the
+    // plugin (playInStopEnabled = true means the graph is always live).
+    lastAutomatedParams.clear();
 
     if (automationData.isEmpty())
         return;
@@ -2446,8 +2706,16 @@ void TrackerEngine::applyPatternAutomation (const PatternAutomationData& automat
         if (param == nullptr)
             continue;
 
-        // Store baseline for later reset and row-wise playback updates.
-        lastAutomatedParams.push_back ({ lane.pluginId, lane.parameterId, param->getValue() });
+        // Store baseline for later row-wise playback updates.
+        // tryEnter: audio thread may hold the callback lock (playInStopEnabled).
+        float baseline = 0.5f;
+        auto& lock = audioPlugin->getCallbackLock();
+        if (lock.tryEnter())
+        {
+            baseline = param->getValue();
+            lock.exit();
+        }
+        lastAutomatedParams.push_back ({ lane.pluginId, lane.parameterId, baseline });
     }
 
     // Prime row-0 value immediately so playback starts from correct automation state.
@@ -2486,7 +2754,18 @@ void TrackerEngine::applyAutomationForPlaybackRow (const PatternAutomationData& 
         }
 
         const float value = lane.getValueAtRow (rowPosition, tracked->baselineValue);
-        param->setValue (value);
+
+        // Use tryEnter on the plugin's callback lock to avoid deadlocking
+        // with the audio thread.  playInStopEnabled = true means the
+        // playback graph is always live, so processBlock() can hold the
+        // lock at any time.  If we can't get the lock we skip this tick;
+        // the next timer callback (30 Hz) will try again.
+        auto& lock = audioPlugin->getCallbackLock();
+        if (lock.tryEnter())
+        {
+            param->setValue (value);
+            lock.exit();
+        }
     }
 }
 
@@ -2503,8 +2782,16 @@ void TrackerEngine::resetAutomationParameters()
             continue;
 
         auto* param = params[ap.paramIndex];
-        if (param != nullptr)
+        if (param == nullptr)
+            continue;
+
+        // Try-lock to avoid deadlocking with the audio thread.
+        auto& lock = audioPlugin->getCallbackLock();
+        if (lock.tryEnter())
+        {
             param->setValue (ap.baselineValue);
+            lock.exit();
+        }
     }
 
     lastAutomatedParams.clear();

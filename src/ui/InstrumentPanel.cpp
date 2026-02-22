@@ -1,4 +1,5 @@
 #include "InstrumentPanel.h"
+#include <cmath>
 
 InstrumentPanel::InstrumentPanel (TrackerLookAndFeel& lnf)
     : lookAndFeel (lnf)
@@ -151,13 +152,17 @@ void InstrumentPanel::mouseDown (const juce::MouseEvent& event)
     selectedInstrument = idx;
     repaint();
 
+    // Keep tracker/global instrument selection in sync with panel selection
+    // for both left-click and right-click context-menu actions.
+    if (onInstrumentSelected)
+        onInstrumentSelected (idx);
+
     if (event.mods.isPopupMenu())
     {
+        // Two-finger secondary click on trackpads can emit a tiny wheel event
+        // around the same gesture. Suppress wheel briefly to keep slot stable.
+        suppressWheelUntilMs = juce::Time::getMillisecondCounter() + 250;
         showContextMenu (idx, event.getScreenPosition());
-    }
-    else if (onInstrumentSelected)
-    {
-        onInstrumentSelected (idx);
     }
 }
 
@@ -243,7 +248,30 @@ bool InstrumentPanel::keyPressed (const juce::KeyPress& key)
 
 void InstrumentPanel::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)
 {
-    int delta = (wheel.deltaY > 0) ? -3 : 3;
+    if (juce::Time::getMillisecondCounter() < suppressWheelUntilMs)
+        return;
+
+    int delta = 0;
+    if (wheel.isSmooth)
+    {
+        // Ignore micro-jitter from resting fingers on a trackpad.
+        if (std::abs (wheel.deltaY) < 0.05f)
+            return;
+
+        // Accumulate smooth wheel movement; only scroll when enough motion has built up.
+        smoothScrollCarry += (-wheel.deltaY * 4.0f);
+        delta = static_cast<int> (smoothScrollCarry);
+        smoothScrollCarry -= static_cast<float> (delta);
+
+        if (delta == 0)
+            return;
+    }
+    else
+    {
+        smoothScrollCarry = 0.0f;
+        delta = (wheel.deltaY > 0) ? -3 : 3;
+    }
+
     int maxScroll = juce::jmax (0, 256 - getVisibleSlotCount());
     scrollOffset = juce::jlimit (0, maxScroll, scrollOffset + delta);
     repaint();

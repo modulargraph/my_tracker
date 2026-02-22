@@ -102,6 +102,12 @@ private:
     std::unique_ptr<SendEffectsComponent> sendEffectsComponent;
     std::unique_ptr<PluginAutomationComponent> automationPanel;
     bool automationPanelVisible = false;
+    int lastAutomationPopulateTrack = -1;
+    std::map<int, std::vector<AutomatablePluginInfo>> automationPluginCache;
+    std::map<int, std::pair<juce::String, int>> automationSelectionPerTrack;
+    void invalidateAutomationPluginCache (int trackIndex = -1);
+    void saveAutomationSelection();
+    void restoreAutomationSelection (int trackIndex);
     bool arrangementVisible = false;
     bool instrumentPanelVisible = true;
     bool songMode = false;
@@ -170,7 +176,7 @@ private:
     void cycleTab (int direction);
     void switchToTab (Tab tab);
     void showAudioPluginSettings();
-    void refreshAutomationPanel();
+    void refreshAutomationPanel (bool forcePopulate = true);
     void populateAutomationPlugins();
     void navigateToAutomationParam (const juce::String& pluginId, int paramIndex);
 

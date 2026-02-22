@@ -22,6 +22,7 @@ struct AutomatablePluginInfo
     {
         int index = 0;
         juce::String name;
+        bool hasAutomation = false;  // True if this param has automation data in the current pattern
     };
     std::vector<ParamInfo> parameters;
 };

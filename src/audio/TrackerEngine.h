@@ -245,7 +245,8 @@ private:
     // Plugin instrument preview state
     int previewPluginNote = -1;
     int previewPluginInstrument = -1;
-    void stopPluginPreview();
+    int previewPluginTrack = -1;
+    bool stopPluginPreview();
 
     void prepareTracksForInstrumentUsage (const std::array<std::vector<int>, kNumTracks>& instrumentsByTrack);
     void rebuildTempoSequenceFromPatternMasterLane (const Pattern& pattern);

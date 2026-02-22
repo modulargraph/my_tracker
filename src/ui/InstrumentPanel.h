@@ -55,6 +55,8 @@ private:
     static constexpr int kSlotHeight = 20;
 
     int scrollOffset = 0;
+    float smoothScrollCarry = 0.0f;
+    juce::uint32 suppressWheelUntilMs = 0;
     int getVisibleSlotCount() const;
 
     void showContextMenu (int instrument, juce::Point<int> screenPos);

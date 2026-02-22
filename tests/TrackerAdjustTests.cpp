@@ -4379,6 +4379,147 @@ bool testPluginAutomationSetAvailablePluginsIsNotReentrant()
     return true;
 }
 
+bool testPluginAutomationPreservesParameterSelection()
+{
+    TrackerLookAndFeel lnf;
+    PluginAutomationComponent automationComponent (lnf);
+
+    // Set up a plugin with multiple parameters
+    AutomatablePluginInfo pluginInfo;
+    pluginInfo.pluginId = "inst:1";
+    pluginInfo.displayName = "Synth (Inst 1)";
+    pluginInfo.owningTrack = 0;
+    pluginInfo.parameters.push_back ({ 0, "Cutoff 1" });
+    pluginInfo.parameters.push_back ({ 1, "Cutoff 2" });
+    pluginInfo.parameters.push_back ({ 2, "Resonance" });
+
+    std::vector<AutomatablePluginInfo> plugins { pluginInfo };
+    automationComponent.setAvailablePlugins (plugins);
+
+    // Verify first param is auto-selected
+    if (automationComponent.getSelectedPluginId() != "inst:1")
+    {
+        std::cerr << "Expected plugin inst:1 selected initially\n";
+        return false;
+    }
+
+    if (automationComponent.getSelectedParameterIndex() != 0)
+    {
+        std::cerr << "Expected param 0 selected initially, got "
+                  << automationComponent.getSelectedParameterIndex() << "\n";
+        return false;
+    }
+
+    // Navigate to param index 1 (Cutoff 2)
+    automationComponent.navigateToParam ("inst:1", 1);
+
+    if (automationComponent.getSelectedParameterIndex() != 1)
+    {
+        std::cerr << "Expected param 1 after navigateToParam, got "
+                  << automationComponent.getSelectedParameterIndex() << "\n";
+        return false;
+    }
+
+    // Re-populate with the same plugin list — param 1 should be preserved
+    automationComponent.setAvailablePlugins (plugins);
+
+    if (automationComponent.getSelectedPluginId() != "inst:1")
+    {
+        std::cerr << "Plugin selection not preserved after setAvailablePlugins\n";
+        return false;
+    }
+
+    if (automationComponent.getSelectedParameterIndex() != 1)
+    {
+        std::cerr << "Parameter selection not preserved, expected 1 got "
+                  << automationComponent.getSelectedParameterIndex() << "\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testPluginAutomationMultiPluginTrack()
+{
+    TrackerLookAndFeel lnf;
+    PluginAutomationComponent automationComponent (lnf);
+
+    // Set up two plugins on the same track
+    AutomatablePluginInfo plugin1;
+    plugin1.pluginId = "inst:1";
+    plugin1.displayName = "Synth A (Inst 1)";
+    plugin1.owningTrack = 0;
+    plugin1.isInstrument = true;
+    plugin1.parameters.push_back ({ 0, "Cutoff" });
+    plugin1.parameters.push_back ({ 1, "Resonance" });
+
+    AutomatablePluginInfo plugin2;
+    plugin2.pluginId = "inst:2";
+    plugin2.displayName = "Synth B (Inst 2)";
+    plugin2.owningTrack = 0;
+    plugin2.isInstrument = true;
+    plugin2.parameters.push_back ({ 0, "Volume" });
+    plugin2.parameters.push_back ({ 1, "Pan" });
+
+    std::vector<AutomatablePluginInfo> plugins { plugin1, plugin2 };
+    automationComponent.setAvailablePlugins (plugins);
+
+    // Navigate to plugin 2, param 1 (Pan)
+    automationComponent.navigateToParam ("inst:2", 1);
+
+    if (automationComponent.getSelectedPluginId() != "inst:2")
+    {
+        std::cerr << "Expected inst:2 selected after navigateToParam, got "
+                  << automationComponent.getSelectedPluginId() << "\n";
+        return false;
+    }
+
+    if (automationComponent.getSelectedParameterIndex() != 1)
+    {
+        std::cerr << "Expected param 1 (Pan) after navigate, got "
+                  << automationComponent.getSelectedParameterIndex() << "\n";
+        return false;
+    }
+
+    // Re-populate (simulating cache hit with same data) — should preserve inst:2 param 1
+    automationComponent.setAvailablePlugins (plugins);
+
+    if (automationComponent.getSelectedPluginId() != "inst:2")
+    {
+        std::cerr << "Plugin 2 not preserved after re-populate\n";
+        return false;
+    }
+
+    if (automationComponent.getSelectedParameterIndex() != 1)
+    {
+        std::cerr << "Param 1 not preserved on plugin 2, got "
+                  << automationComponent.getSelectedParameterIndex() << "\n";
+        return false;
+    }
+
+    // Now simulate removing plugin 2 (only plugin 1 remains)
+    std::vector<AutomatablePluginInfo> singlePlugin { plugin1 };
+    automationComponent.setAvailablePlugins (singlePlugin);
+
+    // Should fall back to first available plugin/param
+    if (automationComponent.getSelectedPluginId() != "inst:1")
+    {
+        std::cerr << "Expected fallback to inst:1 after plugin 2 removed, got "
+                  << automationComponent.getSelectedPluginId() << "\n";
+        return false;
+    }
+
+    // Empty list: no plugin selected
+    automationComponent.setAvailablePlugins ({});
+    if (automationComponent.getSelectedPluginId().isNotEmpty())
+    {
+        std::cerr << "Expected empty selection with no plugins\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testTrackerGridClampsCursorNoteLaneOnTrackChange()
 {
     PatternData patternData;
@@ -4488,6 +4629,8 @@ int main()
         { "InsertSlotMaxCapacity", &testInsertSlotMaxCapacity },
         { "AutomationLaneEquality", &testAutomationLaneEquality },
         { "PluginAutomationSetAvailablePluginsIsNotReentrant", &testPluginAutomationSetAvailablePluginsIsNotReentrant },
+        { "PluginAutomationPreservesParameterSelection", &testPluginAutomationPreservesParameterSelection },
+        { "PluginAutomationMultiPluginTrack", &testPluginAutomationMultiPluginTrack },
         { "TrackerGridClampsCursorNoteLaneOnTrackChange", &testTrackerGridClampsCursorNoteLaneOnTrackChange },
     };
 
