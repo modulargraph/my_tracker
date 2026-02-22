@@ -239,6 +239,8 @@ private:
     juce::Point<float> dataToScreen (float row, float value) const;
     juce::Point<float> screenToData (juce::Point<float> screenPos) const;
     int findPointNear (juce::Point<float> screenPos, float maxDist = 8.0f) const;
+    int getSelectedPluginOwnerTrack() const;
+    void notifyAndRepaint();
 
     // Get the current automation lane (or nullptr)
     AutomationLane* getCurrentLane();

@@ -197,6 +197,9 @@ private:
                          bool isCursor, bool isCurrentRow, bool isPlaybackRow);
     void drawSelection (juce::Graphics& g);
     void drawGroupHeaders (juce::Graphics& g);
+    void fillCellBackground (juce::Graphics& g, int x, int y, int width,
+                             bool isCursor, bool isCurrentRow, bool isPlaybackRow) const;
+    void drawCursorSubColumnHighlight (juce::Graphics& g, int x, int y, int width) const;
     int getEffectiveHeaderHeight() const;
 
     // Note name helper
@@ -207,6 +210,11 @@ private:
 
     // Hex character helper
     static int hexCharToValue (juce::juce_wchar c);
+
+    // FX popup helpers
+    juce::Rectangle<int> getFxPopupTargetRect() const;
+    bool applyFxCommandAtCursor (char commandLetter);
+    void showFxCommandPopupWithOptions (const juce::PopupMenu::Options& options);
 
     // Navigation
     void moveCursor (int rowDelta, int trackDelta);

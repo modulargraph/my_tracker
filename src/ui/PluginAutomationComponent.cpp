@@ -1,4 +1,6 @@
 #include "PluginAutomationComponent.h"
+#include "AutomationCoordinateMapper.h"
+#include "AutomationPointEditor.h"
 
 // Static clipboard shared across instances
 PluginAutomationComponent::ClipboardData PluginAutomationComponent::clipboard;
@@ -17,6 +19,9 @@ static constexpr juce::uint32 kLaneColours[] = {
     0xffffaa44, // amber
     0xffaa44ff  // purple
 };
+
+using PluginAutomationInternal::AutomationCoordinateMapper;
+using PluginAutomationInternal::AutomationPointEditor;
 
 juce::Colour PluginAutomationComponent::getLaneColour (int index)
 {
@@ -313,6 +318,22 @@ int PluginAutomationComponent::getSelectedParameterIndex() const
     return -1;
 }
 
+int PluginAutomationComponent::getSelectedPluginOwnerTrack() const
+{
+    int ownerTrack = currentTrack;
+    int plugIdx = pluginDropdown.getSelectedId() - 1;
+    if (plugIdx >= 0 && plugIdx < static_cast<int> (availablePlugins.size()))
+        ownerTrack = availablePlugins[static_cast<size_t> (plugIdx)].owningTrack;
+    return ownerTrack;
+}
+
+void PluginAutomationComponent::notifyAndRepaint()
+{
+    if (onAutomationChanged)
+        onAutomationChanged();
+    repaint();
+}
+
 //==============================================================================
 // Resizable panel
 //==============================================================================
@@ -364,9 +385,8 @@ void PluginAutomationComponent::setZoomLevel (float zoom)
 
 void PluginAutomationComponent::clampViewToPattern()
 {
-    float visibleRange = static_cast<float> (patternLength) / zoomLevel;
-    float maxStart = static_cast<float> (patternLength) - visibleRange;
-    viewStartRow = juce::jlimit (0.0f, juce::jmax (0.0f, maxStart), viewStartRow);
+    AutomationCoordinateMapper mapper (getGraphBounds(), patternLength, zoomLevel, viewStartRow);
+    viewStartRow = mapper.clampViewStart (viewStartRow);
 }
 
 //==============================================================================
@@ -448,9 +468,7 @@ void PluginAutomationComponent::curveTypeChanged()
             lane->points[static_cast<size_t> (idx)].curveType = ct;
     }
 
-    if (onAutomationChanged)
-        onAutomationChanged();
-    repaint();
+    notifyAndRepaint();
 }
 
 AutomationCurveType PluginAutomationComponent::getSelectedCurveType() const
@@ -498,21 +516,14 @@ void PluginAutomationComponent::navigateToParam (const juce::String& pluginId, i
 
 juce::Point<float> PluginAutomationComponent::dataToScreen (float row, float value) const
 {
-    auto gb = getGraphBounds().toFloat();
-    float visibleRange = static_cast<float> (patternLength) / zoomLevel;
-    float x = gb.getX() + ((row - viewStartRow) / visibleRange) * gb.getWidth();
-    float y = gb.getBottom() - value * gb.getHeight();
-    return { x, y };
+    AutomationCoordinateMapper mapper (getGraphBounds(), patternLength, zoomLevel, viewStartRow);
+    return mapper.dataToScreen (row, value);
 }
 
 juce::Point<float> PluginAutomationComponent::screenToData (juce::Point<float> screenPos) const
 {
-    auto gb = getGraphBounds().toFloat();
-    float visibleRange = static_cast<float> (patternLength) / zoomLevel;
-    float row = viewStartRow + ((screenPos.x - gb.getX()) / gb.getWidth()) * visibleRange;
-    float value = 1.0f - (screenPos.y - gb.getY()) / gb.getHeight();
-    return { juce::jlimit (0.0f, static_cast<float> (patternLength - 1), row),
-             juce::jlimit (0.0f, 1.0f, value) };
+    AutomationCoordinateMapper mapper (getGraphBounds(), patternLength, zoomLevel, viewStartRow);
+    return mapper.screenToData (screenPos);
 }
 
 int PluginAutomationComponent::findPointNear (juce::Point<float> screenPos, float maxDist) const
@@ -653,15 +664,13 @@ void PluginAutomationComponent::restoreState (const UndoSnapshot& state)
     else if (! state.points.empty())
     {
         // Re-create the lane
-        int ownerTrack = currentTrack;
+        int ownerTrack = getSelectedPluginOwnerTrack();
         auto& newLane = automationData->getOrCreateLane (state.pluginId, state.parameterId, ownerTrack);
         newLane.points = state.points;
     }
 
     selectedPoints.clear();
-    if (onAutomationChanged)
-        onAutomationChanged();
-    repaint();
+    notifyAndRepaint();
 }
 
 void PluginAutomationComponent::undo()
@@ -707,26 +716,15 @@ void PluginAutomationComponent::deleteSelected()
         return;
 
     pushUndoState();
-
-    // Delete in reverse order to preserve indices
-    std::vector<int> sorted (selectedPoints.begin(), selectedPoints.end());
-    std::sort (sorted.rbegin(), sorted.rend());
-
-    for (int idx : sorted)
-    {
-        if (idx >= 0 && idx < static_cast<int> (lane->points.size()))
-            lane->points.erase (lane->points.begin() + idx);
-    }
+    if (! AutomationPointEditor::eraseSelectedPoints (*lane, selectedPoints))
+        return;
 
     auto pluginId = getSelectedPluginId();
     int paramIdx = getSelectedParameterIndex();
     if (lane->isEmpty() && pluginId.isNotEmpty() && paramIdx >= 0)
         automationData->removeLane (pluginId, paramIdx);
 
-    selectedPoints.clear();
-    if (onAutomationChanged)
-        onAutomationChanged();
-    repaint();
+    notifyAndRepaint();
 }
 
 void PluginAutomationComponent::copySelected()
@@ -760,11 +758,7 @@ void PluginAutomationComponent::pasteFromClipboard()
 
     pushUndoState();
 
-    int ownerTrack = currentTrack;
-    int plugIdx = pluginDropdown.getSelectedId() - 1;
-    if (plugIdx >= 0 && plugIdx < static_cast<int> (availablePlugins.size()))
-        ownerTrack = availablePlugins[static_cast<size_t> (plugIdx)].owningTrack;
-
+    int ownerTrack = getSelectedPluginOwnerTrack();
     auto& lane = automationData->getOrCreateLane (pluginId, paramIdx, ownerTrack);
 
     // Paste at a row offset so the first point starts at row 0
@@ -783,19 +777,12 @@ void PluginAutomationComponent::pasteFromClipboard()
     for (auto& pt : clipboard.points)
     {
         int pastedRow = juce::jlimit (0, patternLength - 1, pt.row + pasteOffset);
-        for (int i = 0; i < static_cast<int> (lane.points.size()); ++i)
-        {
-            if (lane.points[static_cast<size_t> (i)].row == pastedRow)
-            {
-                selectedPoints.insert (i);
-                break;
-            }
-        }
+        int insertedIdx = AutomationPointEditor::findPointByRowAndValue (lane, pastedRow, pt.value);
+        if (insertedIdx >= 0)
+            selectedPoints.insert (insertedIdx);
     }
 
-    if (onAutomationChanged)
-        onAutomationChanged();
-    repaint();
+    notifyAndRepaint();
 }
 
 //==============================================================================
@@ -818,17 +805,11 @@ void PluginAutomationComponent::recordParameterValue (int row, float value)
     if (pluginId.isEmpty() || paramIdx < 0)
         return;
 
-    int ownerTrack = currentTrack;
-    int plugIdx = pluginDropdown.getSelectedId() - 1;
-    if (plugIdx >= 0 && plugIdx < static_cast<int> (availablePlugins.size()))
-        ownerTrack = availablePlugins[static_cast<size_t> (plugIdx)].owningTrack;
-
+    int ownerTrack = getSelectedPluginOwnerTrack();
     auto& lane = automationData->getOrCreateLane (pluginId, paramIdx, ownerTrack);
     lane.setPoint (juce::jlimit (0, patternLength - 1, row), value, getSelectedCurveType());
 
-    if (onAutomationChanged)
-        onAutomationChanged();
-    repaint();
+    notifyAndRepaint();
 }
 
 //==============================================================================
@@ -872,14 +853,12 @@ void PluginAutomationComponent::mouseDown (const juce::MouseEvent& e)
             if (nearIdx >= 0)
             {
                 pushUndoState();
-                lane->points.erase (lane->points.begin() + nearIdx);
-                selectedPoints.erase (nearIdx);
+                if (! AutomationPointEditor::erasePoint (*lane, nearIdx, selectedPoints))
+                    return;
                 if (lane->isEmpty())
                     automationData->removeLane (pluginId, paramIdx);
 
-                if (onAutomationChanged)
-                    onAutomationChanged();
-                repaint();
+                notifyAndRepaint();
             }
         }
         return;
@@ -896,19 +875,13 @@ void PluginAutomationComponent::mouseDown (const juce::MouseEvent& e)
         int row = snapRow (juce::roundToInt (data.x));
         float value = data.y;
 
-        int ownerTrack = currentTrack;
-        int plugIdx = pluginDropdown.getSelectedId() - 1;
-        if (plugIdx >= 0 && plugIdx < static_cast<int> (availablePlugins.size()))
-            ownerTrack = availablePlugins[static_cast<size_t> (plugIdx)].owningTrack;
-
+        int ownerTrack = getSelectedPluginOwnerTrack();
         auto& laneRef = automationData->getOrCreateLane (pluginId, paramIdx, ownerTrack);
         laneRef.setPoint (row, value, getSelectedCurveType());
         lastDrawRow = row;
         isDragging = true;
 
-        if (onAutomationChanged)
-            onAutomationChanged();
-        repaint();
+        notifyAndRepaint();
         return;
     }
 
@@ -965,28 +938,19 @@ void PluginAutomationComponent::mouseDown (const juce::MouseEvent& e)
             int row = snapRow (juce::roundToInt (data.x));
             float value = data.y;
 
-            int ownerTrack = currentTrack;
-            int plugIdx = pluginDropdown.getSelectedId() - 1;
-            if (plugIdx >= 0 && plugIdx < static_cast<int> (availablePlugins.size()))
-                ownerTrack = availablePlugins[static_cast<size_t> (plugIdx)].owningTrack;
-
+            int ownerTrack = getSelectedPluginOwnerTrack();
             auto& laneRef = automationData->getOrCreateLane (pluginId, paramIdx, ownerTrack);
             laneRef.setPoint (row, value, getSelectedCurveType());
 
-            for (int i = 0; i < static_cast<int> (laneRef.points.size()); ++i)
+            int insertedIdx = AutomationPointEditor::findPointByRowAndValue (laneRef, row, value);
+            if (insertedIdx >= 0)
             {
-                if (laneRef.points[static_cast<size_t> (i)].row == row)
-                {
-                    dragPointIndex = i;
-                    isDragging = true;
-                    selectedPoints.insert (i);
-                    break;
-                }
+                dragPointIndex = insertedIdx;
+                isDragging = true;
+                selectedPoints.insert (insertedIdx);
             }
 
-            if (onAutomationChanged)
-                onAutomationChanged();
-            repaint();
+            notifyAndRepaint();
         }
     }
 }
@@ -1026,8 +990,6 @@ void PluginAutomationComponent::mouseDrag (const juce::MouseEvent& e)
 
         if (row != lastDrawRow)
         {
-            auto pluginId = getSelectedPluginId();
-            int paramIdx = getSelectedParameterIndex();
             auto* lane = getCurrentLane();
             if (lane != nullptr)
             {
@@ -1044,9 +1006,7 @@ void PluginAutomationComponent::mouseDrag (const juce::MouseEvent& e)
                 }
                 lastDrawRow = row;
 
-                if (onAutomationChanged)
-                    onAutomationChanged();
-                repaint();
+                notifyAndRepaint();
             }
         }
         return;
@@ -1069,16 +1029,8 @@ void PluginAutomationComponent::mouseDrag (const juce::MouseEvent& e)
         if (rowDelta == 0 && std::abs (valueDelta) < 0.001f)
             return;
 
-        // Apply delta to selected points
-        for (int idx : selectedPoints)
-        {
-            if (idx >= 0 && idx < static_cast<int> (lane->points.size()))
-            {
-                auto& p = lane->points[static_cast<size_t> (idx)];
-                p.row = juce::jlimit (0, patternLength - 1, p.row + rowDelta);
-                p.value = juce::jlimit (0.0f, 1.0f, p.value + valueDelta);
-            }
-        }
+        AutomationPointEditor::applySelectionDelta (*lane, selectedPoints,
+                                                    rowDelta, valueDelta, patternLength);
 
         lane->sortPoints();
         moveSelectionAnchor = screenPos;
@@ -1086,9 +1038,7 @@ void PluginAutomationComponent::mouseDrag (const juce::MouseEvent& e)
         // Re-discover selected point indices after sort
         // (This is a simplification; in practice we'd track by identity)
 
-        if (onAutomationChanged)
-            onAutomationChanged();
-        repaint();
+        notifyAndRepaint();
         return;
     }
 
@@ -1115,21 +1065,15 @@ void PluginAutomationComponent::mouseDrag (const juce::MouseEvent& e)
     float targetVal = point.value;
     lane->sortPoints();
 
-    for (int i = 0; i < static_cast<int> (lane->points.size()); ++i)
+    int movedPointIndex = AutomationPointEditor::findPointByRowAndValue (*lane, targetRow, targetVal);
+    if (movedPointIndex >= 0)
     {
-        if (lane->points[static_cast<size_t> (i)].row == targetRow
-            && std::abs (lane->points[static_cast<size_t> (i)].value - targetVal) < 1.0e-6f)
-        {
-            dragPointIndex = i;
-            selectedPoints.clear();
-            selectedPoints.insert (i);
-            break;
-        }
+        dragPointIndex = movedPointIndex;
+        selectedPoints.clear();
+        selectedPoints.insert (movedPointIndex);
     }
 
-    if (onAutomationChanged)
-        onAutomationChanged();
-    repaint();
+    notifyAndRepaint();
 }
 
 void PluginAutomationComponent::mouseUp (const juce::MouseEvent&)
@@ -1245,9 +1189,7 @@ void PluginAutomationComponent::mouseDoubleClick (const juce::MouseEvent& e)
         ct = (ct + 1) % 4;
         pt.curveType = static_cast<AutomationCurveType> (ct);
 
-        if (onAutomationChanged)
-            onAutomationChanged();
-        repaint();
+        notifyAndRepaint();
     }
 }
 

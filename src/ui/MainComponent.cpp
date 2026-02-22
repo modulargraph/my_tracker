@@ -1,6 +1,48 @@
 #include <regex>
 #include "MainComponent.h"
 
+namespace
+{
+void sortPluginsByManufacturerAndName (juce::Array<juce::PluginDescription>& plugins)
+{
+    std::sort (plugins.begin(), plugins.end(),
+               [] (const juce::PluginDescription& a, const juce::PluginDescription& b)
+               {
+                   int cmp = a.manufacturerName.compareIgnoreCase (b.manufacturerName);
+                   if (cmp != 0) return cmp < 0;
+                   return a.name.compareIgnoreCase (b.name) < 0;
+               });
+}
+
+juce::PopupMenu buildPluginMenuByManufacturer (const juce::Array<juce::PluginDescription>& plugins)
+{
+    juce::PopupMenu menu;
+    juce::String currentMfr;
+    juce::PopupMenu currentSubMenu;
+
+    for (int i = 0; i < plugins.size(); ++i)
+    {
+        auto& desc = plugins.getReference (i);
+        auto mfr = desc.manufacturerName.isEmpty() ? juce::String ("Unknown") : desc.manufacturerName;
+
+        if (mfr != currentMfr)
+        {
+            if (currentMfr.isNotEmpty())
+                menu.addSubMenu (currentMfr, currentSubMenu);
+            currentSubMenu = juce::PopupMenu();
+            currentMfr = mfr;
+        }
+
+        currentSubMenu.addItem (i + 1, desc.name + " (" + desc.pluginFormatName + ")");
+    }
+
+    if (currentMfr.isNotEmpty())
+        menu.addSubMenu (currentMfr, currentSubMenu);
+
+    return menu;
+}
+}
+
 MainComponent::MainComponent()
 {
     setLookAndFeel (&trackerLookAndFeel);
@@ -320,37 +362,8 @@ MainComponent::MainComponent()
             return;
         }
 
-        // Sort by manufacturer, then by name within each manufacturer
-        std::sort (instruments.begin(), instruments.end(),
-                   [] (const juce::PluginDescription& a, const juce::PluginDescription& b)
-                   {
-                       int cmp = a.manufacturerName.compareIgnoreCase (b.manufacturerName);
-                       if (cmp != 0) return cmp < 0;
-                       return a.name.compareIgnoreCase (b.name) < 0;
-                   });
-
-        // Build menu with manufacturer submenus
-        juce::PopupMenu menu;
-        juce::String currentMfr;
-        juce::PopupMenu currentSubMenu;
-        std::vector<int> subMenuStartIndices;  // first index in each submenu
-
-        for (int i = 0; i < instruments.size(); ++i)
-        {
-            auto& desc = instruments.getReference (i);
-            auto mfr = desc.manufacturerName.isEmpty() ? juce::String ("Unknown") : desc.manufacturerName;
-
-            if (mfr != currentMfr)
-            {
-                if (currentMfr.isNotEmpty())
-                    menu.addSubMenu (currentMfr, currentSubMenu);
-                currentSubMenu = juce::PopupMenu();
-                currentMfr = mfr;
-            }
-            currentSubMenu.addItem (i + 1, desc.name + " (" + desc.pluginFormatName + ")");
-        }
-        if (currentMfr.isNotEmpty())
-            menu.addSubMenu (currentMfr, currentSubMenu);
+        sortPluginsByManufacturerAndName (instruments);
+        auto menu = buildPluginMenuByManufacturer (instruments);
 
         int cursorTrack = trackerGrid->getCursorTrack();
         if (cursorTrack >= kNumTracks)
@@ -495,35 +508,8 @@ MainComponent::MainComponent()
             return;
         }
 
-        // Sort by manufacturer, then by name within each manufacturer
-        std::sort (effects.begin(), effects.end(),
-                   [] (const juce::PluginDescription& a, const juce::PluginDescription& b)
-                   {
-                       int cmp = a.manufacturerName.compareIgnoreCase (b.manufacturerName);
-                       if (cmp != 0) return cmp < 0;
-                       return a.name.compareIgnoreCase (b.name) < 0;
-                   });
-
-        // Build menu with manufacturer submenus
-        juce::PopupMenu menu;
-        juce::String currentMfr;
-        juce::PopupMenu currentSubMenu;
-
-        for (int i = 0; i < effects.size(); ++i)
-        {
-            auto mfr = effects[i].manufacturerName.isEmpty() ? juce::String ("Unknown") : effects[i].manufacturerName;
-
-            if (mfr != currentMfr)
-            {
-                if (currentMfr.isNotEmpty())
-                    menu.addSubMenu (currentMfr, currentSubMenu);
-                currentSubMenu = juce::PopupMenu();
-                currentMfr = mfr;
-            }
-            currentSubMenu.addItem (i + 1, effects[i].name + " (" + effects[i].pluginFormatName + ")");
-        }
-        if (currentMfr.isNotEmpty())
-            menu.addSubMenu (currentMfr, currentSubMenu);
+        sortPluginsByManufacturerAndName (effects);
+        auto menu = buildPluginMenuByManufacturer (effects);
 
         menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (mixerComponent.get()),
             [this, track, effects] (int result)
@@ -659,12 +645,7 @@ MainComponent::MainComponent()
     automationPanel->onAutomationChanged = [this]
     {
         if (trackerEngine.isPlaying())
-        {
-            if (songMode)
-                syncArrangementToEdit();
-            else
-                trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
-        }
+            resyncPlaybackForCurrentMode();
         markDirty();
     };
     automationPanel->onPluginSelected = [] (const juce::String& /*pluginId*/)
@@ -755,12 +736,7 @@ MainComponent::MainComponent()
     trackerGrid->onPatternDataChanged = [this]
     {
         if (trackerEngine.isPlaying())
-        {
-            if (songMode)
-                syncArrangementToEdit();
-            else
-                trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
-        }
+            resyncPlaybackForCurrentMode();
         markDirty();
         commandManager.commandStatusChanged();
     };
@@ -819,14 +795,8 @@ MainComponent::MainComponent()
     trackerGrid->onNoteModeToggled = [this] (int /*track*/)
     {
         markDirty();
-        if (trackerEngine.isPlaying() && ! songMode)
-        {
-            trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
-        }
-        else if (trackerEngine.isPlaying() && songMode)
-        {
-            syncArrangementToEdit();
-        }
+        if (trackerEngine.isPlaying())
+            resyncPlaybackForCurrentMode();
     };
 
     // Transport change callback
@@ -2895,12 +2865,7 @@ void MainComponent::clearSampleForInstrument (int instrument)
     trackerEngine.invalidateTrackInstruments();
 
     if (trackerEngine.isPlaying())
-    {
-        if (songMode)
-            syncArrangementToEdit();
-        else
-            trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
-    }
+        resyncPlaybackForCurrentMode();
 
     if (trackerGrid->getCurrentInstrument() == instrument)
         updateSampleEditorForCurrentInstrument();

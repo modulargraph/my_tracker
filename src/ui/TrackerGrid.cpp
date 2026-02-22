@@ -1,76 +1,14 @@
 #include "TrackerGrid.h"
 #include "NoteUtils.h"
+#include "PatternEditUtils.h"
 #include "Clipboard.h"
 #include <map>
 
 namespace
 {
-bool sameFxSlot (const FxSlot& a, const FxSlot& b)
-{
-    return a.fx == b.fx && a.fxParam == b.fxParam && a.fxCommand == b.fxCommand;
-}
-
-bool sameNoteSlot (const NoteSlot& a, const NoteSlot& b)
-{
-    return a.note == b.note && a.instrument == b.instrument && a.volume == b.volume;
-}
-
-bool sameCell (const Cell& a, const Cell& b)
-{
-    if (a.note != b.note || a.instrument != b.instrument || a.volume != b.volume)
-        return false;
-    if (a.extraNoteLanes.size() != b.extraNoteLanes.size())
-        return false;
-    for (size_t i = 0; i < a.extraNoteLanes.size(); ++i)
-    {
-        if (! sameNoteSlot (a.extraNoteLanes[i], b.extraNoteLanes[i]))
-            return false;
-    }
-    if (a.fxSlots.size() != b.fxSlots.size())
-        return false;
-    for (size_t i = 0; i < a.fxSlots.size(); ++i)
-    {
-        if (! sameFxSlot (a.fxSlots[i], b.fxSlots[i]))
-            return false;
-    }
-    return true;
-}
-
-bool applyPatternEdit (PatternData& patternData, juce::UndoManager* undoManager, int patternIndex,
-                       std::vector<MultiCellEditAction::CellRecord> cellRecords,
-                       std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords)
-{
-    if (patternIndex < 0 || patternIndex >= patternData.getNumPatterns())
-        return false;
-
-    if (cellRecords.empty() && masterFxRecords.empty())
-        return false;
-
-    if (undoManager != nullptr)
-    {
-        undoManager->perform (new MultiCellEditAction (patternData, patternIndex,
-                                                       std::move (cellRecords),
-                                                       std::move (masterFxRecords)));
-        return true;
-    }
-
-    auto& pat = patternData.getPattern (patternIndex);
-    for (auto& rec : cellRecords)
-    {
-        if (rec.row >= 0 && rec.row < pat.numRows && rec.track >= 0 && rec.track < kNumTracks)
-            pat.setCell (rec.row, rec.track, rec.newCell);
-    }
-
-    for (auto& rec : masterFxRecords)
-    {
-        if (rec.row < 0 || rec.row >= pat.numRows || rec.lane < 0)
-            continue;
-        pat.ensureMasterFxSlots (rec.lane + 1);
-        pat.getMasterFxSlot (rec.row, rec.lane) = rec.newSlot;
-    }
-
-    return true;
-}
+using PatternEditUtils::applyPatternEdit;
+using PatternEditUtils::sameCell;
+using PatternEditUtils::sameFxSlot;
 }
 
 TrackerGrid::TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf, TrackLayout& layout)
@@ -418,18 +356,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
 {
     int noteLaneCount = trackLayout.getTrackNoteLaneCount (track);
 
-    // Background
-    if (isCursor)
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::cursorCellColourId));
-    else if (isPlaybackRow)
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::playbackCursorColourId));
-    else if (isCurrentRow)
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::cursorRowColourId));
-    else
-        g.setColour (juce::Colours::transparentBlack);
-
-    if (isCursor || isCurrentRow || isPlaybackRow)
-        g.fillRect (x, y, width, kRowHeight);
+    fillCellBackground (g, x, y, width, isCursor, isCurrentRow, isPlaybackRow);
 
     // Draw sub-columns with distinct colors
     g.setFont (lookAndFeel.getMonoFont (12.0f));
@@ -446,10 +373,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
         auto noteColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId);
 
         if (isCursor && cursorSubColumn == SubColumn::Note && cursorNoteLane == nl)
-        {
-            g.setColour (juce::Colour (0xff3a5a7a));
-            g.fillRect (textX - 1, y, kNoteWidth + 2, kRowHeight);
-        }
+            drawCursorSubColumnHighlight (g, textX - 1, y, kNoteWidth + 2);
         g.setColour (noteColour);
         g.drawText (noteStr, textX, y, kNoteWidth, kRowHeight, juce::Justification::centredLeft);
         textX += kNoteWidth + kSubColSpace;
@@ -458,10 +382,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
         juce::String instStr = noteSlot.instrument >= 0 ? juce::String::formatted ("%02X", noteSlot.instrument) : "..";
         auto instColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
         if (isCursor && cursorSubColumn == SubColumn::Instrument && cursorNoteLane == nl)
-        {
-            g.setColour (juce::Colour (0xff3a5a7a));
-            g.fillRect (textX - 1, y, kInstWidth + 2, kRowHeight);
-        }
+            drawCursorSubColumnHighlight (g, textX - 1, y, kInstWidth + 2);
         g.setColour (instColour);
         g.drawText (instStr, textX, y, kInstWidth, kRowHeight, juce::Justification::centredLeft);
         textX += kInstWidth + kSubColSpace;
@@ -470,10 +391,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
         juce::String volStr = noteSlot.volume >= 0 ? juce::String::formatted ("%02X", noteSlot.volume) : "..";
         auto volColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
         if (isCursor && cursorSubColumn == SubColumn::Volume && cursorNoteLane == nl)
-        {
-            g.setColour (juce::Colour (0xff3a5a7a));
-            g.fillRect (textX - 1, y, kVolWidth + 2, kRowHeight);
-        }
+            drawCursorSubColumnHighlight (g, textX - 1, y, kVolWidth + 2);
         g.setColour (volColour);
         g.drawText (volStr, textX, y, kVolWidth, kRowHeight, juce::Justification::centredLeft);
         textX += kVolWidth + kSubColSpace;
@@ -494,10 +412,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
         }
 
         if (isCursor && cursorSubColumn == SubColumn::FX && cursorFxLane == fxLane)
-        {
-            g.setColour (juce::Colour (0xff3a5a7a));
-            g.fillRect (textX - 1, y, kFxWidth + 2, kRowHeight);
-        }
+            drawCursorSubColumnHighlight (g, textX - 1, y, kFxWidth + 2);
         g.setColour (fxColour);
         g.drawText (fxStr, textX, y, kFxWidth, kRowHeight, juce::Justification::centredLeft);
         textX += kFxWidth + kSubColSpace;
@@ -507,17 +422,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
 void TrackerGrid::drawMasterCell (juce::Graphics& g, const Pattern& pat, int row, int x, int y, int width,
                                   bool isCursor, bool isCurrentRow, bool isPlaybackRow)
 {
-    if (isCursor)
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::cursorCellColourId));
-    else if (isPlaybackRow)
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::playbackCursorColourId));
-    else if (isCurrentRow)
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::cursorRowColourId));
-    else
-        g.setColour (juce::Colours::transparentBlack);
-
-    if (isCursor || isCurrentRow || isPlaybackRow)
-        g.fillRect (x, y, width, kRowHeight);
+    fillCellBackground (g, x, y, width, isCursor, isCurrentRow, isPlaybackRow);
 
     g.setFont (lookAndFeel.getMonoFont (12.0f));
     auto fxColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
@@ -536,15 +441,34 @@ void TrackerGrid::drawMasterCell (juce::Graphics& g, const Pattern& pat, int row
         }
 
         if (isCursor && cursorSubColumn == SubColumn::FX && cursorFxLane == lane)
-        {
-            g.setColour (juce::Colour (0xff3a5a7a));
-            g.fillRect (textX - 1, y, kFxWidth + 2, kRowHeight);
-        }
+            drawCursorSubColumnHighlight (g, textX - 1, y, kFxWidth + 2);
 
         g.setColour (fxColour);
         g.drawText (fxStr, textX, y, kFxWidth, kRowHeight, juce::Justification::centredLeft);
         textX += kFxWidth + kSubColSpace;
     }
+}
+
+void TrackerGrid::fillCellBackground (juce::Graphics& g, int x, int y, int width,
+                                      bool isCursor, bool isCurrentRow, bool isPlaybackRow) const
+{
+    if (isCursor)
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::cursorCellColourId));
+    else if (isPlaybackRow)
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::playbackCursorColourId));
+    else if (isCurrentRow)
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::cursorRowColourId));
+    else
+        g.setColour (juce::Colours::transparentBlack);
+
+    if (isCursor || isCurrentRow || isPlaybackRow)
+        g.fillRect (x, y, width, kRowHeight);
+}
+
+void TrackerGrid::drawCursorSubColumnHighlight (juce::Graphics& g, int x, int y, int width) const
+{
+    g.setColour (juce::Colour (0xff3a5a7a));
+    g.fillRect (x, y, width, kRowHeight);
 }
 
 void TrackerGrid::drawSelection (juce::Graphics& g)
@@ -685,11 +609,60 @@ int TrackerGrid::hexCharToValue (juce::juce_wchar c)
 // FX Command Popup
 //==============================================================================
 
-void TrackerGrid::showFxCommandPopup()
+juce::Rectangle<int> TrackerGrid::getFxPopupTargetRect() const
+{
+    int cursorVisual = trackToVisualIndex (cursorTrack);
+    int effectiveHeaderH = getEffectiveHeaderHeight();
+    int xOff = getTrackXOffset (cursorVisual);
+    int popupX = kRowNumberWidth + xOff + kCellPadding;
+    if (! isMasterTrack (cursorTrack))
+        popupX += trackLayout.getTrackNoteLaneCount (cursorTrack) * kNoteLaneWidth;
+
+    popupX += cursorFxLane * (kFxWidth + kSubColSpace);
+    int popupY = effectiveHeaderH + (cursorRow - scrollOffset) * kRowHeight + kRowHeight;
+    return localAreaToGlobal (juce::Rectangle<int> (popupX, popupY, 1, 1));
+}
+
+bool TrackerGrid::applyFxCommandAtCursor (char commandLetter)
+{
+    auto& pat = pattern.getCurrentPattern();
+    int patIdx = pattern.getCurrentPatternIndex();
+    std::vector<MultiCellEditAction::CellRecord> cellRecords;
+    std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords;
+
+    if (isMasterTrack (cursorTrack))
+    {
+        pat.ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
+        auto oldSlot = pat.getMasterFxSlot (cursorRow, cursorFxLane);
+        auto newSlot = oldSlot;
+        newSlot.setSymbolicCommand (commandLetter, 0);
+        if (! sameFxSlot (oldSlot, newSlot))
+            masterFxRecords.push_back ({ cursorRow, cursorFxLane, oldSlot, newSlot });
+    }
+    else
+    {
+        auto oldCell = pat.getCell (cursorRow, cursorTrack);
+        auto newCell = oldCell;
+        int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
+        newCell.ensureFxSlots (fxLanes);
+        auto& slot = newCell.getFxSlot (cursorFxLane);
+        slot.setSymbolicCommand (commandLetter, 0);
+        if (! sameCell (oldCell, newCell))
+            cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
+    }
+
+    // Position cursor on param digits for further editing
+    hexDigitCount = 1;
+    hexAccumulator = 0;
+
+    return applyPatternEdit (pattern, undoManager, patIdx,
+                             std::move (cellRecords), std::move (masterFxRecords));
+}
+
+void TrackerGrid::showFxCommandPopupWithOptions (const juce::PopupMenu::Options& options)
 {
     juce::PopupMenu menu;
     auto& commands = getFxCommandList();
-
     for (int i = 0; i < static_cast<int> (commands.size()); ++i)
     {
         auto& cmd = commands[static_cast<size_t> (i)];
@@ -699,22 +672,6 @@ void TrackerGrid::showFxCommandPopup()
         menu.addItem (i + 1, label);
     }
 
-    // Calculate popup position near cursor
-    int cursorVisual = trackToVisualIndex (cursorTrack);
-    int effectiveHeaderH = getEffectiveHeaderHeight();
-    int xOff = getTrackXOffset (cursorVisual);
-    int popupX = kRowNumberWidth + xOff + kCellPadding;
-    if (! isMasterTrack (cursorTrack))
-    {
-        int noteLanes = trackLayout.getTrackNoteLaneCount (cursorTrack);
-        popupX += noteLanes * kNoteLaneWidth;
-    }
-    popupX += cursorFxLane * (kFxWidth + kSubColSpace);
-    int popupY = effectiveHeaderH + (cursorRow - scrollOffset) * kRowHeight + kRowHeight;
-
-    auto options = juce::PopupMenu::Options()
-                       .withTargetScreenArea (localAreaToGlobal (juce::Rectangle<int> (popupX, popupY, 1, 1)));
-
     menu.showMenuAsync (options, [this] (int result)
     {
         if (result > 0)
@@ -723,39 +680,7 @@ void TrackerGrid::showFxCommandPopup()
             int index = result - 1;
             if (index >= 0 && index < static_cast<int> (commandList.size()))
             {
-                auto& cmd = commandList[static_cast<size_t> (index)];
-                auto& pat = pattern.getCurrentPattern();
-                int patIdx = pattern.getCurrentPatternIndex();
-                std::vector<MultiCellEditAction::CellRecord> cellRecords;
-                std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords;
-
-                if (isMasterTrack (cursorTrack))
-                {
-                    pat.ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
-                    auto oldSlot = pat.getMasterFxSlot (cursorRow, cursorFxLane);
-                    auto newSlot = oldSlot;
-                    newSlot.setSymbolicCommand (cmd.letter, 0);
-                    if (! sameFxSlot (oldSlot, newSlot))
-                        masterFxRecords.push_back ({ cursorRow, cursorFxLane, oldSlot, newSlot });
-                }
-                else
-                {
-                    auto oldCell = pat.getCell (cursorRow, cursorTrack);
-                    auto newCell = oldCell;
-                    int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
-                    newCell.ensureFxSlots (fxLanes);
-                    auto& slot = newCell.getFxSlot (cursorFxLane);
-                    slot.setSymbolicCommand (cmd.letter, 0);
-                    if (! sameCell (oldCell, newCell))
-                        cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
-                }
-
-                // Position cursor on param digits for further editing
-                hexDigitCount = 1;
-                hexAccumulator = 0;
-
-                if (applyPatternEdit (pattern, undoManager, patIdx,
-                                      std::move (cellRecords), std::move (masterFxRecords)))
+                if (applyFxCommandAtCursor (commandList[static_cast<size_t> (index)].letter))
                 {
                     if (onPatternDataChanged) onPatternDataChanged();
                     repaint();
@@ -766,71 +691,16 @@ void TrackerGrid::showFxCommandPopup()
     });
 }
 
+void TrackerGrid::showFxCommandPopup()
+{
+    showFxCommandPopupWithOptions (juce::PopupMenu::Options()
+                                       .withTargetScreenArea (getFxPopupTargetRect()));
+}
+
 void TrackerGrid::showFxCommandPopupAt (juce::Point<int> screenPos)
 {
-    juce::PopupMenu menu;
-    auto& commands = getFxCommandList();
-
-    for (int i = 0; i < static_cast<int> (commands.size()); ++i)
-    {
-        auto& cmd = commands[static_cast<size_t> (i)];
-        juce::String label = cmd.format + ": " + cmd.name;
-        if (cmd.description.isNotEmpty())
-            label += " (" + cmd.description + ")";
-        menu.addItem (i + 1, label);
-    }
-
-    auto options = juce::PopupMenu::Options()
-                       .withTargetScreenArea (juce::Rectangle<int> (screenPos.x, screenPos.y, 1, 1));
-
-    menu.showMenuAsync (options, [this] (int result)
-    {
-        if (result > 0)
-        {
-            const auto& commandList = getFxCommandList();
-            int index = result - 1;
-            if (index >= 0 && index < static_cast<int> (commandList.size()))
-            {
-                auto& cmd = commandList[static_cast<size_t> (index)];
-                auto& pat = pattern.getCurrentPattern();
-                int patIdx = pattern.getCurrentPatternIndex();
-                std::vector<MultiCellEditAction::CellRecord> cellRecords;
-                std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords;
-
-                if (isMasterTrack (cursorTrack))
-                {
-                    pat.ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
-                    auto oldSlot = pat.getMasterFxSlot (cursorRow, cursorFxLane);
-                    auto newSlot = oldSlot;
-                    newSlot.setSymbolicCommand (cmd.letter, 0);
-                    if (! sameFxSlot (oldSlot, newSlot))
-                        masterFxRecords.push_back ({ cursorRow, cursorFxLane, oldSlot, newSlot });
-                }
-                else
-                {
-                    auto oldCell = pat.getCell (cursorRow, cursorTrack);
-                    auto newCell = oldCell;
-                    int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
-                    newCell.ensureFxSlots (fxLanes);
-                    auto& slot = newCell.getFxSlot (cursorFxLane);
-                    slot.setSymbolicCommand (cmd.letter, 0);
-                    if (! sameCell (oldCell, newCell))
-                        cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
-                }
-
-                hexDigitCount = 1;
-                hexAccumulator = 0;
-
-                if (applyPatternEdit (pattern, undoManager, patIdx,
-                                      std::move (cellRecords), std::move (masterFxRecords)))
-                {
-                    if (onPatternDataChanged) onPatternDataChanged();
-                    repaint();
-                }
-            }
-        }
-        grabKeyboardFocus();
-    });
+    showFxCommandPopupWithOptions (juce::PopupMenu::Options()
+                                       .withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }));
 }
 
 //==============================================================================
