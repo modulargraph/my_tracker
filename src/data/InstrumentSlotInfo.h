@@ -23,6 +23,7 @@ struct InstrumentSlotInfo
     // Plugin instrument fields (only valid when sourceType == PluginInstrument)
     juce::PluginDescription pluginDescription;  // Identifies which plugin
     int ownerTrack = -1;                         // Which track owns this plugin instrument (-1 = unassigned)
+    juce::ValueTree pluginState;                 // Saved plugin state (preset data)
 
     bool isPlugin() const { return sourceType == InstrumentSourceType::PluginInstrument; }
     bool isSample() const { return sourceType == InstrumentSourceType::Sample; }
@@ -33,6 +34,7 @@ struct InstrumentSlotInfo
         sourceType = InstrumentSourceType::Sample;
         pluginDescription = {};
         ownerTrack = -1;
+        pluginState = {};
     }
 
     void setPlugin (const juce::PluginDescription& desc, int track)

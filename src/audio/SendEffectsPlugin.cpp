@@ -39,10 +39,27 @@ void SendEffectsPlugin::initialise (const te::PluginInitialisationInfo& info)
     preDelayBuffer.clear();
     preDelayWritePos = 0;
 
-    // Scratch buffer
+    // Scratch buffers
     delayScratch.setSize (2, info.blockSizeSamples);
     reverbInputScratch.setSize (2, info.blockSizeSamples);
     reverbScratch.setSize (2, info.blockSizeSamples);
+    delayReturnScratch.setSize (2, info.blockSizeSamples);
+    reverbReturnScratch.setSize (2, info.blockSizeSamples);
+
+    // Initialize EQ filters with flat coefficients
+    auto flatCoeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sampleRate, 1000.0f, 0.707f, 1.0f);
+    delayReturnEqLowL.coefficients = flatCoeffs;  delayReturnEqLowR.coefficients = flatCoeffs;
+    delayReturnEqMidL.coefficients = flatCoeffs;   delayReturnEqMidR.coefficients = flatCoeffs;
+    delayReturnEqHighL.coefficients = flatCoeffs;  delayReturnEqHighR.coefficients = flatCoeffs;
+    reverbReturnEqLowL.coefficients = flatCoeffs;  reverbReturnEqLowR.coefficients = flatCoeffs;
+    reverbReturnEqMidL.coefficients = flatCoeffs;   reverbReturnEqMidR.coefficients = flatCoeffs;
+    reverbReturnEqHighL.coefficients = flatCoeffs;  reverbReturnEqHighR.coefficients = flatCoeffs;
+    masterEqLowL.coefficients = flatCoeffs;  masterEqLowR.coefficients = flatCoeffs;
+    masterEqMidL.coefficients = flatCoeffs;   masterEqMidR.coefficients = flatCoeffs;
+    masterEqHighL.coefficients = flatCoeffs;  masterEqHighR.coefficients = flatCoeffs;
+
+    masterCompEnvelope = 0.0f;
+    masterLimiterEnvelope = 0.0f;
 }
 
 void SendEffectsPlugin::deinitialise()
@@ -282,12 +299,102 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     // Capture and clear this block slice atomically from shared send buffers.
     sendBuffers->consumeSlice (delayScratch, reverbInputScratch, startSample, numSamples, 2);
 
-    // Process delay and reverb from the captured slice into output.
-    processDelay (delayScratch, buffer, startSample, numSamples);
-    processReverb (reverbInputScratch, buffer, startSample, numSamples);
+    // Process delay and reverb into separate scratch buffers for send return processing
+    delayReturnScratch.setSize (2, numSamples, false, false, true);
+    delayReturnScratch.clear();
+    reverbReturnScratch.setSize (2, numSamples, false, false, true);
+    reverbReturnScratch.clear();
+
+    processDelay (delayScratch, delayReturnScratch, 0, numSamples);
+    processReverb (reverbInputScratch, reverbReturnScratch, 0, numSamples);
+
+    // Apply send return channel processing (EQ, volume, pan)
+    if (mixerStatePtr != nullptr)
+    {
+        auto& delayReturn = mixerStatePtr->sendReturns[0];
+        auto& reverbReturn = mixerStatePtr->sendReturns[1];
+
+        if (! delayReturn.muted)
+        {
+            processSendReturnEQ (delayReturnScratch, numSamples, delayReturn,
+                                 delayReturnEqLowL, delayReturnEqLowR,
+                                 delayReturnEqMidL, delayReturnEqMidR,
+                                 delayReturnEqHighL, delayReturnEqHighR);
+            applySendReturnVolumePan (delayReturnScratch, numSamples, delayReturn);
+
+            for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
+                buffer.addFrom (ch, startSample, delayReturnScratch, ch, 0, numSamples);
+        }
+
+        if (! reverbReturn.muted)
+        {
+            processSendReturnEQ (reverbReturnScratch, numSamples, reverbReturn,
+                                 reverbReturnEqLowL, reverbReturnEqLowR,
+                                 reverbReturnEqMidL, reverbReturnEqMidR,
+                                 reverbReturnEqHighL, reverbReturnEqHighR);
+            applySendReturnVolumePan (reverbReturnScratch, numSamples, reverbReturn);
+
+            for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
+                buffer.addFrom (ch, startSample, reverbReturnScratch, ch, 0, numSamples);
+        }
+
+        // Master processing: EQ -> Compressor -> Limiter -> Volume/Pan
+        processMasterEQ (buffer, startSample, numSamples);
+        processMasterCompressor (buffer, startSample, numSamples);
+        processMasterLimiter (buffer, startSample, numSamples);
+
+        // Master volume and pan
+        auto& master = mixerStatePtr->master;
+        float masterGain;
+        if (master.volume <= -99.0)
+            masterGain = 0.0f;
+        else
+            masterGain = juce::Decibels::decibelsToGain (static_cast<float> (master.volume));
+
+        float panNorm = (static_cast<float> (master.pan) + 50.0f) / 100.0f;
+        float masterGainL = masterGain * std::cos (panNorm * juce::MathConstants<float>::halfPi);
+        float masterGainR = masterGain * std::sin (panNorm * juce::MathConstants<float>::halfPi);
+
+        if (buffer.getNumChannels() >= 2)
+        {
+            auto* left  = buffer.getWritePointer (0, startSample);
+            auto* right = buffer.getWritePointer (1, startSample);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                left[i]  *= masterGainL;
+                right[i] *= masterGainR;
+            }
+        }
+        else if (buffer.getNumChannels() >= 1)
+        {
+            auto* data = buffer.getWritePointer (0, startSample);
+            for (int i = 0; i < numSamples; ++i)
+                data[i] *= masterGainL;
+        }
+
+        // Master peak metering
+        float peak = 0.0f;
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        {
+            auto mag = buffer.getMagnitude (ch, startSample, numSamples);
+            if (mag > peak) peak = mag;
+        }
+        float prev = masterPeakLevel.load (std::memory_order_relaxed);
+        if (peak > prev)
+            masterPeakLevel.store (peak, std::memory_order_relaxed);
+    }
+    else
+    {
+        // No mixer state: just add delay/reverb directly (legacy behavior)
+        for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
+        {
+            buffer.addFrom (ch, startSample, delayReturnScratch, ch, 0, numSamples);
+            buffer.addFrom (ch, startSample, reverbReturnScratch, ch, 0, numSamples);
+        }
+    }
 
     // Safety limiter
-    static constexpr float kSafetyLimit = 1.5f;
+    static constexpr float kSafetyLimit = 4.0f;
     for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
     {
         auto* data = buffer.getWritePointer (ch, startSample);
@@ -298,5 +405,239 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             else
                 data[i] = juce::jlimit (-kSafetyLimit, kSafetyLimit, data[i]);
         }
+    }
+}
+
+//==============================================================================
+// Send return EQ processing
+//==============================================================================
+
+void SendEffectsPlugin::processSendReturnEQ (juce::AudioBuffer<float>& buffer, int numSamples,
+                                              const SendReturnState& state,
+                                              juce::dsp::IIR::Filter<float>& eqLowL,
+                                              juce::dsp::IIR::Filter<float>& eqLowR,
+                                              juce::dsp::IIR::Filter<float>& eqMidL,
+                                              juce::dsp::IIR::Filter<float>& eqMidR,
+                                              juce::dsp::IIR::Filter<float>& eqHighL,
+                                              juce::dsp::IIR::Filter<float>& eqHighR)
+{
+    bool hasEQ = state.eqLowGain != 0.0 || state.eqMidGain != 0.0 || state.eqHighGain != 0.0;
+    if (! hasEQ) return;
+
+    {
+        float gain = (state.eqLowGain != 0.0)
+                         ? juce::Decibels::decibelsToGain (static_cast<float> (state.eqLowGain))
+                         : 1.0f;
+        auto coeffs = juce::dsp::IIR::Coefficients<float>::makeLowShelf (sampleRate, 200.0f, 0.707f, gain);
+        eqLowL.coefficients = coeffs;
+        eqLowR.coefficients = coeffs;
+    }
+    {
+        float gain = (state.eqMidGain != 0.0)
+                         ? juce::Decibels::decibelsToGain (static_cast<float> (state.eqMidGain))
+                         : 1.0f;
+        float freq = juce::jlimit (200.0f, 8000.0f, static_cast<float> (state.eqMidFreq));
+        auto coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sampleRate, freq, 1.0f, gain);
+        eqMidL.coefficients = coeffs;
+        eqMidR.coefficients = coeffs;
+    }
+    {
+        float gain = (state.eqHighGain != 0.0)
+                         ? juce::Decibels::decibelsToGain (static_cast<float> (state.eqHighGain))
+                         : 1.0f;
+        auto coeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate, 4000.0f, 0.707f, gain);
+        eqHighL.coefficients = coeffs;
+        eqHighR.coefficients = coeffs;
+    }
+
+    if (buffer.getNumChannels() >= 2)
+    {
+        auto* left  = buffer.getWritePointer (0);
+        auto* right = buffer.getWritePointer (1);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            left[i]  = eqLowL.processSample (left[i]);
+            right[i] = eqLowR.processSample (right[i]);
+            left[i]  = eqMidL.processSample (left[i]);
+            right[i] = eqMidR.processSample (right[i]);
+            left[i]  = eqHighL.processSample (left[i]);
+            right[i] = eqHighR.processSample (right[i]);
+        }
+    }
+    else if (buffer.getNumChannels() >= 1)
+    {
+        auto* data = buffer.getWritePointer (0);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            data[i] = eqLowL.processSample (data[i]);
+            data[i] = eqMidL.processSample (data[i]);
+            data[i] = eqHighL.processSample (data[i]);
+        }
+    }
+}
+
+void SendEffectsPlugin::applySendReturnVolumePan (juce::AudioBuffer<float>& buffer, int numSamples,
+                                                   const SendReturnState& state)
+{
+    float gain;
+    if (state.volume <= -99.0)
+        gain = 0.0f;
+    else
+        gain = juce::Decibels::decibelsToGain (static_cast<float> (state.volume));
+
+    float panNorm = (static_cast<float> (state.pan) + 50.0f) / 100.0f;
+    float gainL = gain * std::cos (panNorm * juce::MathConstants<float>::halfPi);
+    float gainR = gain * std::sin (panNorm * juce::MathConstants<float>::halfPi);
+
+    if (buffer.getNumChannels() >= 2)
+    {
+        auto* left  = buffer.getWritePointer (0);
+        auto* right = buffer.getWritePointer (1);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            left[i]  *= gainL;
+            right[i] *= gainR;
+        }
+    }
+    else if (buffer.getNumChannels() >= 1)
+    {
+        auto* data = buffer.getWritePointer (0);
+        for (int i = 0; i < numSamples; ++i)
+            data[i] *= gainL;
+    }
+}
+
+//==============================================================================
+// Master EQ
+//==============================================================================
+
+void SendEffectsPlugin::processMasterEQ (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
+{
+    if (mixerStatePtr == nullptr) return;
+
+    auto& master = mixerStatePtr->master;
+    bool hasEQ = master.eqLowGain != 0.0 || master.eqMidGain != 0.0 || master.eqHighGain != 0.0;
+    if (! hasEQ) return;
+
+    {
+        float gain = (master.eqLowGain != 0.0)
+                         ? juce::Decibels::decibelsToGain (static_cast<float> (master.eqLowGain))
+                         : 1.0f;
+        auto coeffs = juce::dsp::IIR::Coefficients<float>::makeLowShelf (sampleRate, 200.0f, 0.707f, gain);
+        masterEqLowL.coefficients = coeffs;
+        masterEqLowR.coefficients = coeffs;
+    }
+    {
+        float gain = (master.eqMidGain != 0.0)
+                         ? juce::Decibels::decibelsToGain (static_cast<float> (master.eqMidGain))
+                         : 1.0f;
+        float freq = juce::jlimit (200.0f, 8000.0f, static_cast<float> (master.eqMidFreq));
+        auto coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sampleRate, freq, 1.0f, gain);
+        masterEqMidL.coefficients = coeffs;
+        masterEqMidR.coefficients = coeffs;
+    }
+    {
+        float gain = (master.eqHighGain != 0.0)
+                         ? juce::Decibels::decibelsToGain (static_cast<float> (master.eqHighGain))
+                         : 1.0f;
+        auto coeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate, 4000.0f, 0.707f, gain);
+        masterEqHighL.coefficients = coeffs;
+        masterEqHighR.coefficients = coeffs;
+    }
+
+    if (buffer.getNumChannels() >= 2)
+    {
+        auto* left  = buffer.getWritePointer (0, startSample);
+        auto* right = buffer.getWritePointer (1, startSample);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            left[i]  = masterEqLowL.processSample (left[i]);
+            right[i] = masterEqLowR.processSample (right[i]);
+            left[i]  = masterEqMidL.processSample (left[i]);
+            right[i] = masterEqMidR.processSample (right[i]);
+            left[i]  = masterEqHighL.processSample (left[i]);
+            right[i] = masterEqHighR.processSample (right[i]);
+        }
+    }
+}
+
+//==============================================================================
+// Master Compressor
+//==============================================================================
+
+void SendEffectsPlugin::processMasterCompressor (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
+{
+    if (mixerStatePtr == nullptr) return;
+
+    auto& master = mixerStatePtr->master;
+    if (master.compThreshold >= 0.0 && master.compRatio <= 1.0) return;
+
+    float thresholdLinear = juce::Decibels::decibelsToGain (static_cast<float> (master.compThreshold));
+    float ratio = static_cast<float> (juce::jmax (1.0, master.compRatio));
+    float attackCoeff  = std::exp (-1.0f / (static_cast<float> (master.compAttack) * 0.001f * static_cast<float> (sampleRate)));
+    float releaseCoeff = std::exp (-1.0f / (static_cast<float> (master.compRelease) * 0.001f * static_cast<float> (sampleRate)));
+
+    int numChannels = buffer.getNumChannels();
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float peak = 0.0f;
+        for (int ch = 0; ch < numChannels; ++ch)
+            peak = juce::jmax (peak, std::abs (buffer.getSample (ch, startSample + i)));
+
+        if (peak > masterCompEnvelope)
+            masterCompEnvelope = attackCoeff * masterCompEnvelope + (1.0f - attackCoeff) * peak;
+        else
+            masterCompEnvelope = releaseCoeff * masterCompEnvelope + (1.0f - releaseCoeff) * peak;
+
+        float gain = 1.0f;
+        if (masterCompEnvelope > thresholdLinear && thresholdLinear > 0.0f)
+        {
+            float overDB = juce::Decibels::gainToDecibels (masterCompEnvelope / thresholdLinear);
+            float reductionDB = overDB * (1.0f - 1.0f / ratio);
+            gain = juce::Decibels::decibelsToGain (-reductionDB);
+        }
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            buffer.getWritePointer (ch)[startSample + i] *= gain;
+    }
+}
+
+//==============================================================================
+// Master Limiter (brickwall)
+//==============================================================================
+
+void SendEffectsPlugin::processMasterLimiter (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
+{
+    if (mixerStatePtr == nullptr) return;
+
+    auto& master = mixerStatePtr->master;
+    if (master.limiterThreshold >= 0.0) return;  // 0 dB = off
+
+    float thresholdLinear = juce::Decibels::decibelsToGain (static_cast<float> (master.limiterThreshold));
+    float releaseCoeff = std::exp (-1.0f / (static_cast<float> (master.limiterRelease) * 0.001f * static_cast<float> (sampleRate)));
+
+    int numChannels = buffer.getNumChannels();
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float peak = 0.0f;
+        for (int ch = 0; ch < numChannels; ++ch)
+            peak = juce::jmax (peak, std::abs (buffer.getSample (ch, startSample + i)));
+
+        float targetGain = 1.0f;
+        if (peak > thresholdLinear && thresholdLinear > 0.0f)
+            targetGain = thresholdLinear / peak;
+
+        // Fast attack (essentially instant), slow release
+        if (targetGain < masterLimiterEnvelope)
+            masterLimiterEnvelope = targetGain;
+        else
+            masterLimiterEnvelope = releaseCoeff * masterLimiterEnvelope + (1.0f - releaseCoeff) * targetGain;
+
+        masterLimiterEnvelope = juce::jlimit (0.0f, 1.0f, masterLimiterEnvelope);
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            buffer.getWritePointer (ch)[startSample + i] *= masterLimiterEnvelope;
     }
 }

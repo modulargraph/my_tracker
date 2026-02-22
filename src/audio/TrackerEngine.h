@@ -132,6 +132,7 @@ public:
     te::Plugin* getInsertPlugin (int trackIndex, int slotIndex);
     void rebuildInsertChain (int trackIndex);
     void snapshotInsertPluginStates();
+    void snapshotPluginInstrumentStates();
 
     // Plugin editor window management
     void openPluginEditor (int trackIndex, int slotIndex);

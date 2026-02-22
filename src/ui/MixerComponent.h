@@ -33,6 +33,12 @@ public:
     std::function<void (int track, int slotIndex, bool bypassed)> onInsertBypassToggled;
     std::function<void (int track, int slotIndex)> onOpenInsertEditor;    // open plugin UI
 
+    // Master insert callbacks
+    std::function<void()> onAddMasterInsertClicked;
+    std::function<void (int slotIndex)> onRemoveMasterInsertClicked;
+    std::function<void (int slotIndex, bool bypassed)> onMasterInsertBypassToggled;
+    std::function<void (int slotIndex)> onOpenMasterInsertEditor;
+
     int getSelectedTrack() const { return selectedTrack; }
 
     // Peak level metering
@@ -46,12 +52,24 @@ private:
     MixerState& mixerState;
     TrackLayout& trackLayout;
 
-    int selectedTrack = 0;      // visual track index
+    int selectedTrack = 0;      // visual strip index (tracks + special strips)
 
     // Parameter navigation within a strip
-    enum class Section { EQ, Comp, Inserts, Sends, Pan, Volume };
+    enum class Section { EQ, Comp, Inserts, Sends, Pan, Volume, Limiter };
     Section currentSection = Section::Volume;
     int currentParam = 0;       // param index within section
+
+    // Strip type identification
+    enum class StripType { Track, DelayReturn, ReverbReturn, GroupBus, Master };
+
+    struct StripInfo
+    {
+        StripType type = StripType::Track;
+        int index = 0;  // physical track index, or group index, or send return index
+    };
+
+    int getTotalStripCount() const;
+    StripInfo getStripInfo (int visualIndex) const;
 
     // Peak level metering
     std::array<float, kNumTracks> trackPeakLevels {};
@@ -71,9 +89,11 @@ private:
     // Layout constants
     static constexpr int kStripWidth = 104;
     static constexpr int kStripGap = 1;
+    static constexpr int kSeparatorWidth = 6;
     static constexpr int kHeaderHeight = 31;
     static constexpr int kEqSectionHeight = 104;
     static constexpr int kCompSectionHeight = 104;
+    static constexpr int kLimiterSectionHeight = 57;
     static constexpr int kInsertRowHeight = 20;
     static constexpr int kInsertAddButtonHeight = 20;
     static constexpr int kSendsSectionHeight = 57;
@@ -86,7 +106,7 @@ private:
     int getVisibleStripCount() const;
     juce::Rectangle<int> getStripBounds (int visualTrack) const;
 
-    // Paint helpers
+    // Paint helpers - regular tracks
     void paintStrip (juce::Graphics& g, int visualTrack, juce::Rectangle<int> bounds);
     void paintHeader (juce::Graphics& g, int physTrack, int visualTrack, juce::Rectangle<int> bounds);
     void paintEqSection (juce::Graphics& g, const TrackMixState& state, juce::Rectangle<int> bounds,
@@ -104,6 +124,26 @@ private:
     void paintMuteSolo (juce::Graphics& g, const TrackMixState& state, juce::Rectangle<int> bounds,
                         int physTrack);
 
+    // Paint helpers - special strips
+    void paintSendReturnStrip (juce::Graphics& g, int returnIndex, juce::Rectangle<int> bounds, bool isSelected);
+    void paintGroupBusStrip (juce::Graphics& g, int groupIndex, juce::Rectangle<int> bounds, bool isSelected);
+    void paintMasterStrip (juce::Graphics& g, juce::Rectangle<int> bounds, bool isSelected);
+
+    // Generic EQ painting for any state with EQ fields
+    void paintGenericEqSection (juce::Graphics& g, double eqLow, double eqMid, double eqHigh, double midFreq,
+                                juce::Rectangle<int> bounds, bool isSelected, int selectedParam);
+    void paintGenericCompSection (juce::Graphics& g, double threshold, double ratio, double attack, double release,
+                                  juce::Rectangle<int> bounds, bool isSelected, int selectedParam);
+    void paintGenericVolumeFader (juce::Graphics& g, double volume, juce::Rectangle<int> bounds,
+                                  bool isSelected, float peakLinear = 0.0f);
+    void paintGenericPanSection (juce::Graphics& g, int pan, juce::Rectangle<int> bounds, bool isSelected);
+    void paintGenericMuteSolo (juce::Graphics& g, bool muted, bool soloed, juce::Rectangle<int> bounds,
+                               bool hasSolo = true);
+    void paintLimiterSection (juce::Graphics& g, double threshold, double release,
+                              juce::Rectangle<int> bounds, bool isSelected, int selectedParam);
+    void paintMasterInsertsSection (juce::Graphics& g, juce::Rectangle<int> bounds,
+                                    bool isSelected, int selectedParam);
+
     // Value painting helpers
     void paintVerticalBar (juce::Graphics& g, juce::Rectangle<int> area, double value, double minVal,
                            double maxVal, juce::Colour colour, bool bipolar = false);
@@ -114,6 +154,7 @@ private:
 
     // Insert section height helper (dynamic based on insert count)
     int getInsertsSectionHeight (int physTrack) const;
+    int getMasterInsertsSectionHeight() const;
 
     // Interaction
     void adjustCurrentParam (double delta);
@@ -138,11 +179,14 @@ private:
     };
     HitResult hitTestStrip (juce::Point<int> pos) const;
 
-    double getParamValue (int physTrack, Section section, int param) const;
-    void setParamValue (int physTrack, Section section, int param, double value);
+    double getParamValue (int visualTrack, Section section, int param) const;
+    void setParamValue (int visualTrack, Section section, int param, double value);
     double getParamMin (Section section, int param) const;
     double getParamMax (Section section, int param) const;
     double getParamStep (Section section, int param) const;
+
+    // Check if a visual index is a "separator" position (between sections)
+    bool isSeparatorPosition (int visualIndex) const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MixerComponent)
 };

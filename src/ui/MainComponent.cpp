@@ -2319,6 +2319,7 @@ void MainComponent::saveProject()
     if (currentProjectFile.existsAsFile())
     {
         trackerEngine.snapshotInsertPluginStates();
+        trackerEngine.snapshotPluginInstrumentStates();
         auto& slotInfos = trackerEngine.getAllInstrumentSlotInfos();
         auto error = ProjectSerializer::saveToFile (currentProjectFile, patternData,
                                                      trackerEngine.getBpm(),
@@ -2363,6 +2364,7 @@ void MainComponent::saveProjectAs()
 
                               auto f = file.withFileExtension ("tkadj");
                               trackerEngine.snapshotInsertPluginStates();
+                              trackerEngine.snapshotPluginInstrumentStates();
                               auto& slotInfos = trackerEngine.getAllInstrumentSlotInfos();
                               auto error = ProjectSerializer::saveToFile (f, patternData,
                                                                           trackerEngine.getBpm(),

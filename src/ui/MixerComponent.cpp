@@ -8,6 +8,80 @@ MixerComponent::MixerComponent (TrackerLookAndFeel& lnf, MixerState& state, Trac
 }
 
 //==============================================================================
+// Strip type identification
+//==============================================================================
+
+int MixerComponent::getTotalStripCount() const
+{
+    // kNumTracks regular tracks + 2 send returns + N group buses + 1 master
+    int numGroups = trackLayout.getNumGroups();
+    return kNumTracks + 2 + numGroups + 1;
+}
+
+MixerComponent::StripInfo MixerComponent::getStripInfo (int visualIndex) const
+{
+    StripInfo info;
+
+    if (visualIndex < kNumTracks)
+    {
+        info.type = StripType::Track;
+        info.index = trackLayout.visualToPhysical (visualIndex);
+        return info;
+    }
+
+    int offset = kNumTracks;
+
+    // Delay return
+    if (visualIndex == offset)
+    {
+        info.type = StripType::DelayReturn;
+        info.index = 0;
+        return info;
+    }
+    offset++;
+
+    // Reverb return
+    if (visualIndex == offset)
+    {
+        info.type = StripType::ReverbReturn;
+        info.index = 1;
+        return info;
+    }
+    offset++;
+
+    // Group buses
+    int numGroups = trackLayout.getNumGroups();
+    if (visualIndex < offset + numGroups)
+    {
+        info.type = StripType::GroupBus;
+        info.index = visualIndex - offset;
+        return info;
+    }
+    offset += numGroups;
+
+    // Master
+    info.type = StripType::Master;
+    info.index = 0;
+    return info;
+}
+
+bool MixerComponent::isSeparatorPosition (int visualIndex) const
+{
+    // Separators before send returns, group buses section, and master
+    if (visualIndex == kNumTracks) return true;  // before delay return
+    int numGroups = trackLayout.getNumGroups();
+    if (numGroups > 0 && visualIndex == kNumTracks + 2) return true;  // before group buses
+    if (visualIndex == kNumTracks + 2 + numGroups) return true;  // before master
+    return false;
+}
+
+int MixerComponent::getMasterInsertsSectionHeight() const
+{
+    int numSlots = static_cast<int> (mixerState.masterInsertSlots.size());
+    return numSlots * kInsertRowHeight + kInsertAddButtonHeight;
+}
+
+//==============================================================================
 // Metering timer
 //==============================================================================
 
@@ -45,7 +119,14 @@ void MixerComponent::timerCallback()
 
 int MixerComponent::getStripX (int visualTrack) const
 {
-    return (visualTrack - scrollOffset) * (kStripWidth + kStripGap);
+    int x = 0;
+    for (int i = scrollOffset; i < visualTrack; ++i)
+    {
+        x += kStripWidth + kStripGap;
+        if (isSeparatorPosition (i))
+            x += kSeparatorWidth;
+    }
+    return x;
 }
 
 int MixerComponent::getVisibleStripCount() const
@@ -76,15 +157,40 @@ void MixerComponent::paint (juce::Graphics& g)
     auto bg = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
     g.fillAll (bg);
 
+    int totalStrips = getTotalStripCount();
     int visibleCount = getVisibleStripCount();
 
-    for (int vi = scrollOffset; vi < juce::jmin (scrollOffset + visibleCount + 1, kNumTracks); ++vi)
+    for (int vi = scrollOffset; vi < juce::jmin (scrollOffset + visibleCount + 2, totalStrips); ++vi)
     {
         auto bounds = getStripBounds (vi);
         if (bounds.getRight() < 0 || bounds.getX() > getWidth())
             continue;
 
-        paintStrip (g, vi, bounds);
+        // Draw separator before special sections
+        if (isSeparatorPosition (vi))
+        {
+            int sepX = bounds.getX() - kSeparatorWidth;
+            g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId).brighter (0.15f));
+            g.fillRect (sepX, 0, kSeparatorWidth, getHeight());
+        }
+
+        auto info = getStripInfo (vi);
+        switch (info.type)
+        {
+            case StripType::Track:
+                paintStrip (g, vi, bounds);
+                break;
+            case StripType::DelayReturn:
+            case StripType::ReverbReturn:
+                paintSendReturnStrip (g, info.index, bounds, vi == selectedTrack);
+                break;
+            case StripType::GroupBus:
+                paintGroupBusStrip (g, info.index, bounds, vi == selectedTrack);
+                break;
+            case StripType::Master:
+                paintMasterStrip (g, bounds, vi == selectedTrack);
+                break;
+        }
     }
 
     // Draw scroll indicators if needed
@@ -94,7 +200,7 @@ void MixerComponent::paint (juce::Graphics& g)
         g.setFont (lookAndFeel.getMonoFont (13.0f));
         g.drawText ("<", 0, getHeight() / 2 - 10, 12, 20, juce::Justification::centred);
     }
-    if (scrollOffset + visibleCount < kNumTracks)
+    if (scrollOffset + visibleCount < totalStrips)
     {
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
         g.setFont (lookAndFeel.getMonoFont (13.0f));
@@ -589,6 +695,569 @@ void MixerComponent::paintMuteSolo (juce::Graphics& g, const TrackMixState& stat
 }
 
 //==============================================================================
+// Send Return Strip
+//==============================================================================
+
+void MixerComponent::paintSendReturnStrip (juce::Graphics& g, int returnIndex,
+                                            juce::Rectangle<int> bounds, bool isSelected)
+{
+    auto& sr = mixerState.sendReturns[static_cast<size_t> (returnIndex)];
+
+    // Strip background
+    auto stripBg = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId).brighter (0.04f);
+    if (isSelected)
+        stripBg = stripBg.brighter (0.06f);
+    g.setColour (stripBg);
+    g.fillRect (bounds);
+
+    // Strip border
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getHeight()));
+
+    auto r = bounds;
+
+    // Header
+    auto headerArea = r.removeFromTop (kHeaderHeight);
+    auto sendCol = juce::Colour (returnIndex == 0 ? 0xff5577aa : 0xff7755aa);
+    g.setColour (sendCol.withAlpha (0.3f));
+    g.fillRect (headerArea);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
+    g.setFont (lookAndFeel.getMonoFont (14.0f));
+    g.drawText (returnIndex == 0 ? "DELAY" : "REVERB", headerArea.reduced (4, 0), juce::Justification::centred);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (headerArea.getBottom() - 1, static_cast<float> (bounds.getX()),
+                          static_cast<float> (bounds.getRight()));
+
+    // EQ section
+    auto eqLabelArea = r.removeFromTop (kSectionLabelHeight);
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
+    g.drawText ("EQ", eqLabelArea, juce::Justification::centred);
+
+    auto eqArea = r.removeFromTop (kEqSectionHeight);
+    paintGenericEqSection (g, sr.eqLowGain, sr.eqMidGain, sr.eqHighGain, sr.eqMidFreq,
+                           eqArea, isSelected, (isSelected && currentSection == Section::EQ) ? currentParam : -1);
+
+    // Separator
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (r.getY(), static_cast<float> (bounds.getX()),
+                          static_cast<float> (bounds.getRight()));
+    r.removeFromTop (1);
+
+    // Pan
+    auto panArea = r.removeFromTop (kPanSectionHeight);
+    paintGenericPanSection (g, sr.pan, panArea, isSelected && currentSection == Section::Pan);
+
+    // Separator
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (r.getY(), static_cast<float> (bounds.getX()),
+                          static_cast<float> (bounds.getRight()));
+    r.removeFromTop (1);
+
+    // Mute button (no solo for send returns)
+    auto muteSoloArea = r.removeFromBottom (kMuteSoloHeight);
+    paintGenericMuteSolo (g, sr.muted, false, muteSoloArea, false);
+
+    // Volume fader fills the rest
+    paintGenericVolumeFader (g, sr.volume, r, isSelected && currentSection == Section::Volume);
+}
+
+//==============================================================================
+// Group Bus Strip
+//==============================================================================
+
+void MixerComponent::paintGroupBusStrip (juce::Graphics& g, int groupIndex,
+                                          juce::Rectangle<int> bounds, bool isSelected)
+{
+    if (groupIndex < 0 || groupIndex >= trackLayout.getNumGroups())
+        return;
+
+    auto& gb = mixerState.groupBuses[static_cast<size_t> (groupIndex)];
+    auto& group = trackLayout.getGroup (groupIndex);
+
+    // Strip background
+    auto stripBg = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId).brighter (0.04f);
+    if (isSelected)
+        stripBg = stripBg.brighter (0.06f);
+    g.setColour (stripBg);
+    g.fillRect (bounds);
+
+    // Strip border
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getHeight()));
+
+    auto r = bounds;
+
+    // Header with group colour
+    auto headerArea = r.removeFromTop (kHeaderHeight);
+    g.setColour (group.colour.withAlpha (0.4f));
+    g.fillRect (headerArea);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
+    g.setFont (lookAndFeel.getMonoFont (14.0f));
+    juce::String name = group.name.isNotEmpty() ? group.name : ("GRP " + juce::String (groupIndex + 1));
+    g.drawText (name, headerArea.reduced (4, 0), juce::Justification::centred);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (headerArea.getBottom() - 1, static_cast<float> (bounds.getX()),
+                          static_cast<float> (bounds.getRight()));
+
+    // EQ section
+    auto eqLabelArea = r.removeFromTop (kSectionLabelHeight);
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
+    g.drawText ("EQ", eqLabelArea, juce::Justification::centred);
+
+    auto eqArea = r.removeFromTop (kEqSectionHeight);
+    paintGenericEqSection (g, gb.eqLowGain, gb.eqMidGain, gb.eqHighGain, gb.eqMidFreq,
+                           eqArea, isSelected, (isSelected && currentSection == Section::EQ) ? currentParam : -1);
+
+    // Comp section
+    auto compLabelArea = r.removeFromTop (kSectionLabelHeight);
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
+    g.drawText ("COMP", compLabelArea, juce::Justification::centred);
+
+    auto compArea = r.removeFromTop (kCompSectionHeight);
+    paintGenericCompSection (g, gb.compThreshold, gb.compRatio, gb.compAttack, gb.compRelease,
+                             compArea, isSelected, (isSelected && currentSection == Section::Comp) ? currentParam : -1);
+
+    // Separator
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (r.getY(), static_cast<float> (bounds.getX()),
+                          static_cast<float> (bounds.getRight()));
+    r.removeFromTop (1);
+
+    // Pan
+    auto panArea = r.removeFromTop (kPanSectionHeight);
+    paintGenericPanSection (g, gb.pan, panArea, isSelected && currentSection == Section::Pan);
+
+    // Separator
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (r.getY(), static_cast<float> (bounds.getX()),
+                          static_cast<float> (bounds.getRight()));
+    r.removeFromTop (1);
+
+    // Mute/Solo at bottom
+    auto muteSoloArea = r.removeFromBottom (kMuteSoloHeight);
+    paintGenericMuteSolo (g, gb.muted, gb.soloed, muteSoloArea, true);
+
+    // Volume fader fills the rest
+    paintGenericVolumeFader (g, gb.volume, r, isSelected && currentSection == Section::Volume);
+}
+
+//==============================================================================
+// Master Strip
+//==============================================================================
+
+void MixerComponent::paintMasterStrip (juce::Graphics& g, juce::Rectangle<int> bounds, bool isSelected)
+{
+    auto& master = mixerState.master;
+
+    // Strip background - slightly brighter for master
+    auto stripBg = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId).brighter (0.06f);
+    if (isSelected)
+        stripBg = stripBg.brighter (0.06f);
+    g.setColour (stripBg);
+    g.fillRect (bounds);
+
+    // Strip border
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getHeight()));
+
+    auto r = bounds;
+
+    // Header
+    auto headerArea = r.removeFromTop (kHeaderHeight);
+    g.setColour (juce::Colour (0xffcc8833).withAlpha (0.4f));
+    g.fillRect (headerArea);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
+    g.setFont (lookAndFeel.getMonoFont (14.0f));
+    g.drawText ("MASTER", headerArea.reduced (4, 0), juce::Justification::centred);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (headerArea.getBottom() - 1, static_cast<float> (bounds.getX()),
+                          static_cast<float> (bounds.getRight()));
+
+    // EQ section
+    auto eqLabelArea = r.removeFromTop (kSectionLabelHeight);
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
+    g.drawText ("EQ", eqLabelArea, juce::Justification::centred);
+
+    auto eqArea = r.removeFromTop (kEqSectionHeight);
+    paintGenericEqSection (g, master.eqLowGain, master.eqMidGain, master.eqHighGain, master.eqMidFreq,
+                           eqArea, isSelected, (isSelected && currentSection == Section::EQ) ? currentParam : -1);
+
+    // Comp section
+    auto compLabelArea = r.removeFromTop (kSectionLabelHeight);
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
+    g.drawText ("COMP", compLabelArea, juce::Justification::centred);
+
+    auto compArea = r.removeFromTop (kCompSectionHeight);
+    paintGenericCompSection (g, master.compThreshold, master.compRatio, master.compAttack, master.compRelease,
+                             compArea, isSelected, (isSelected && currentSection == Section::Comp) ? currentParam : -1);
+
+    // Inserts section
+    int insertHeight = getMasterInsertsSectionHeight();
+    if (insertHeight > 0)
+    {
+        auto insertLabelArea = r.removeFromTop (kSectionLabelHeight);
+        g.setFont (lookAndFeel.getMonoFont (12.0f));
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
+        g.drawText ("INSERTS", insertLabelArea, juce::Justification::centred);
+
+        auto insertsArea = r.removeFromTop (insertHeight);
+        paintMasterInsertsSection (g, insertsArea, isSelected,
+                                   (isSelected && currentSection == Section::Inserts) ? currentParam : -1);
+    }
+
+    // Limiter section
+    auto limLabelArea = r.removeFromTop (kSectionLabelHeight);
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setColour (juce::Colour (0xffcc3333).withAlpha (0.7f));
+    g.drawText ("LIMITER", limLabelArea, juce::Justification::centred);
+
+    auto limArea = r.removeFromTop (kLimiterSectionHeight);
+    paintLimiterSection (g, master.limiterThreshold, master.limiterRelease,
+                         limArea, isSelected, (isSelected && currentSection == Section::Limiter) ? currentParam : -1);
+
+    // Separator
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (r.getY(), static_cast<float> (bounds.getX()),
+                          static_cast<float> (bounds.getRight()));
+    r.removeFromTop (1);
+
+    // Pan
+    auto panArea = r.removeFromTop (kPanSectionHeight);
+    paintGenericPanSection (g, master.pan, panArea, isSelected && currentSection == Section::Pan);
+
+    // Separator
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (r.getY(), static_cast<float> (bounds.getX()),
+                          static_cast<float> (bounds.getRight()));
+    r.removeFromTop (1);
+
+    // Volume fader fills the rest
+    paintGenericVolumeFader (g, master.volume, r, isSelected && currentSection == Section::Volume);
+}
+
+//==============================================================================
+// Generic section painting (shared by special strips)
+//==============================================================================
+
+void MixerComponent::paintGenericEqSection (juce::Graphics& g, double eqLow, double eqMid,
+                                             double eqHigh, double midFreq,
+                                             juce::Rectangle<int> bounds, bool /*isSelected*/,
+                                             int selectedParam)
+{
+    auto inner = bounds.reduced (4, 2);
+    int barWidth = (inner.getWidth() - 8) / 3;
+    auto volumeCol = lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
+    auto selCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+
+    struct EqBand { const char* label; double value; int idx; };
+    EqBand bands[] = {
+        { "L", eqLow,  0 },
+        { "M", eqMid,  1 },
+        { "H", eqHigh, 2 }
+    };
+
+    for (int i = 0; i < 3; ++i)
+    {
+        int x = inner.getX() + i * (barWidth + 4);
+        auto barArea = juce::Rectangle<int> (x, inner.getY(), barWidth, inner.getHeight() - 18);
+
+        bool paramSelected = (selectedParam == i);
+        auto col = paramSelected ? selCol : volumeCol;
+        paintVerticalBar (g, barArea, bands[i].value, -12.0, 12.0, col, true);
+
+        g.setFont (lookAndFeel.getMonoFont (10.0f));
+        g.setColour (paramSelected ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.6f));
+        juce::String valStr = (bands[i].value >= 0.0 ? "+" : "") + juce::String (bands[i].value, 1);
+        g.drawText (bands[i].label + juce::String (" ") + valStr, x, barArea.getBottom() + 1, barWidth, 16, juce::Justification::centred);
+    }
+
+    if (selectedParam == 3)
+    {
+        g.setFont (lookAndFeel.getMonoFont (10.0f));
+        g.setColour (selCol);
+        juce::String freqStr = juce::String (static_cast<int> (midFreq)) + "Hz";
+        g.drawText (freqStr, inner.getX(), inner.getBottom() - 12, inner.getWidth(), 10,
+                    juce::Justification::centred);
+    }
+}
+
+void MixerComponent::paintGenericCompSection (juce::Graphics& g, double threshold, double ratio,
+                                               double attack, double release,
+                                               juce::Rectangle<int> bounds, bool /*isSelected*/,
+                                               int selectedParam)
+{
+    auto inner = bounds.reduced (2, 2);
+    auto selCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto textCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+
+    int knobSize = (inner.getWidth() - 6) / 2;
+    int knobH = (inner.getHeight() - 2) / 2;
+
+    struct CompParam { const char* label; double value; double minV; double maxV; int idx; };
+    CompParam params[] = {
+        { "THR", threshold, -60.0, 0.0, 0 },
+        { "RAT", ratio,     1.0,   20.0, 1 },
+        { "ATT", attack,    0.1,   100.0, 2 },
+        { "REL", release,   10.0,  1000.0, 3 }
+    };
+
+    for (int i = 0; i < 4; ++i)
+    {
+        int col = i % 2;
+        int row = i / 2;
+        int x = inner.getX() + col * (knobSize + 3);
+        int y = inner.getY() + row * knobH;
+
+        auto area = juce::Rectangle<int> (x, y, knobSize, knobH);
+        bool sel = (selectedParam == i);
+        auto colour = sel ? selCol : textCol.withAlpha (0.5f);
+
+        juce::String valueStr;
+        switch (i)
+        {
+            case 0: valueStr = juce::String (static_cast<int> (params[i].value)) + "dB"; break;
+            case 1: valueStr = juce::String (params[i].value, 1) + ":1"; break;
+            case 2: valueStr = juce::String (params[i].value, 1) + "ms"; break;
+            case 3: valueStr = juce::String (static_cast<int> (params[i].value)) + "ms"; break;
+        }
+
+        paintKnob (g, area, params[i].value, params[i].minV, params[i].maxV, colour, valueStr);
+    }
+}
+
+void MixerComponent::paintGenericVolumeFader (juce::Graphics& g, double volume,
+                                               juce::Rectangle<int> bounds, bool isSelected,
+                                               float peakLinear)
+{
+    auto inner = bounds.reduced (6, 4);
+    auto selCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto volCol = lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
+
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setColour (isSelected ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.7f));
+
+    juce::String volText;
+    if (volume <= -99.0)
+        volText = "-inf";
+    else
+        volText = juce::String (volume, 1) + "dB";
+    g.drawText (volText, inner.getX(), inner.getY(), inner.getWidth(), 12, juce::Justification::centred);
+
+    auto faderArea = inner.withTrimmedTop (14).withTrimmedBottom (2);
+    auto trackArea = faderArea.reduced (faderArea.getWidth() / 2 - 6, 0);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId).brighter (0.1f));
+    g.fillRect (trackArea);
+
+    if (peakLinear > 0.0f)
+    {
+        float peakDb = juce::Decibels::gainToDecibels (peakLinear, -100.0f);
+        double peakNorm = (static_cast<double> (peakDb) - (-100.0)) / (12.0 - (-100.0));
+        peakNorm = juce::jlimit (0.0, 1.0, peakNorm);
+        int meterHeight = static_cast<int> (peakNorm * static_cast<double> (faderArea.getHeight()));
+
+        juce::Colour meterCol;
+        if (peakDb > 0.0f)
+            meterCol = juce::Colour (0xffcc3333);
+        else if (peakDb > -6.0f)
+            meterCol = juce::Colour (0xffccaa33);
+        else
+            meterCol = juce::Colour (0xff33aa55);
+
+        g.setColour (meterCol.withAlpha (0.25f));
+        g.fillRect (juce::Rectangle<int> (faderArea.getX() + 1, faderArea.getBottom() - meterHeight,
+                                           faderArea.getWidth() - 2, meterHeight));
+        g.setColour (meterCol.withAlpha (0.6f));
+        g.drawHorizontalLine (faderArea.getBottom() - meterHeight,
+                              static_cast<float> (faderArea.getX() + 1),
+                              static_cast<float> (faderArea.getRight() - 1));
+    }
+
+    // dB scale markings
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.3f));
+    double markings[] = { 12.0, 6.0, 0.0, -6.0, -12.0, -24.0, -48.0 };
+    for (auto dB : markings)
+    {
+        double norm2 = (dB - (-100.0)) / (12.0 - (-100.0));
+        int y = faderArea.getBottom() - static_cast<int> (norm2 * static_cast<double> (faderArea.getHeight()));
+        g.drawHorizontalLine (y, static_cast<float> (faderArea.getX()),
+                              static_cast<float> (faderArea.getX() + 3));
+        g.drawHorizontalLine (y, static_cast<float> (faderArea.getRight() - 3),
+                              static_cast<float> (faderArea.getRight()));
+    }
+
+    double norm = (volume - (-100.0)) / (12.0 - (-100.0));
+    norm = juce::jlimit (0.0, 1.0, norm);
+    int fillHeight = static_cast<int> (norm * static_cast<double> (faderArea.getHeight()));
+
+    auto fillCol = isSelected ? selCol : volCol;
+    g.setColour (fillCol.withAlpha (0.7f));
+    g.fillRect (trackArea.getX(), faderArea.getBottom() - fillHeight,
+                trackArea.getWidth(), fillHeight);
+
+    int handleY = faderArea.getBottom() - fillHeight;
+    g.setColour (fillCol);
+    g.fillRect (faderArea.getX(), handleY - 2, faderArea.getWidth(), 4);
+}
+
+void MixerComponent::paintGenericPanSection (juce::Graphics& g, int pan,
+                                              juce::Rectangle<int> bounds, bool isSelected)
+{
+    auto inner = bounds.reduced (4, 3);
+    auto selCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto panCol = lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
+
+    juce::String panLabel;
+    if (pan == 0)
+        panLabel = "PAN C";
+    else if (pan < 0)
+        panLabel = "PAN L" + juce::String (-pan);
+    else
+        panLabel = "PAN R" + juce::String (pan);
+
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.setColour (isSelected ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.5f));
+    g.drawText (panLabel, inner.getX(), inner.getY(), 44, inner.getHeight(), juce::Justification::centredLeft);
+
+    auto barArea = juce::Rectangle<int> (inner.getX() + 44, inner.getY() + 2,
+                                          inner.getWidth() - 46, inner.getHeight() - 4);
+    paintHorizontalBar (g, barArea, static_cast<double> (pan), -50.0, 50.0,
+                        isSelected ? selCol : panCol, true);
+}
+
+void MixerComponent::paintGenericMuteSolo (juce::Graphics& g, bool muted, bool soloed,
+                                            juce::Rectangle<int> bounds, bool hasSolo)
+{
+    // Top separator
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.drawHorizontalLine (bounds.getY(), static_cast<float> (bounds.getX()),
+                          static_cast<float> (bounds.getRight()));
+
+    if (hasSolo)
+    {
+        int halfW = bounds.getWidth() / 2;
+
+        auto muteArea = juce::Rectangle<int> (bounds.getX() + 2, bounds.getY() + 2,
+                                               halfW - 3, bounds.getHeight() - 4);
+        auto muteCol = lookAndFeel.findColour (TrackerLookAndFeel::muteColourId);
+        g.setColour (muted ? muteCol : muteCol.withAlpha (0.15f));
+        g.fillRoundedRectangle (muteArea.toFloat(), 2.0f);
+        g.setColour (muted ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.4f));
+        g.setFont (lookAndFeel.getMonoFont (13.0f));
+        g.drawText ("M", muteArea, juce::Justification::centred);
+
+        auto soloArea = juce::Rectangle<int> (bounds.getX() + halfW + 1, bounds.getY() + 2,
+                                               halfW - 3, bounds.getHeight() - 4);
+        auto soloCol = lookAndFeel.findColour (TrackerLookAndFeel::soloColourId);
+        g.setColour (soloed ? soloCol : soloCol.withAlpha (0.15f));
+        g.fillRoundedRectangle (soloArea.toFloat(), 2.0f);
+        g.setColour (soloed ? juce::Colours::black : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.4f));
+        g.setFont (lookAndFeel.getMonoFont (13.0f));
+        g.drawText ("S", soloArea, juce::Justification::centred);
+    }
+    else
+    {
+        // Mute only (full width)
+        auto muteArea = bounds.reduced (2);
+        auto muteCol = lookAndFeel.findColour (TrackerLookAndFeel::muteColourId);
+        g.setColour (muted ? muteCol : muteCol.withAlpha (0.15f));
+        g.fillRoundedRectangle (muteArea.toFloat(), 2.0f);
+        g.setColour (muted ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.4f));
+        g.setFont (lookAndFeel.getMonoFont (13.0f));
+        g.drawText ("M", muteArea, juce::Justification::centred);
+    }
+}
+
+void MixerComponent::paintLimiterSection (juce::Graphics& g, double threshold, double release,
+                                           juce::Rectangle<int> bounds, bool /*isSelected*/, int selectedParam)
+{
+    auto inner = bounds.reduced (2, 2);
+    auto selCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto textCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+
+    int knobSize = (inner.getWidth() - 6) / 2;
+    int knobH = inner.getHeight();
+
+    // Threshold knob
+    {
+        auto area = juce::Rectangle<int> (inner.getX(), inner.getY(), knobSize, knobH);
+        bool sel = (selectedParam == 0);
+        auto colour = sel ? selCol : textCol.withAlpha (0.5f);
+        juce::String valueStr = juce::String (threshold, 1) + "dB";
+        paintKnob (g, area, threshold, -24.0, 0.0, colour, valueStr);
+    }
+
+    // Release knob
+    {
+        auto area = juce::Rectangle<int> (inner.getX() + knobSize + 3, inner.getY(), knobSize, knobH);
+        bool sel = (selectedParam == 1);
+        auto colour = sel ? selCol : textCol.withAlpha (0.5f);
+        juce::String valueStr = juce::String (static_cast<int> (release)) + "ms";
+        paintKnob (g, area, release, 1.0, 500.0, colour, valueStr);
+    }
+}
+
+void MixerComponent::paintMasterInsertsSection (juce::Graphics& g, juce::Rectangle<int> bounds,
+                                                 bool isSelected, int selectedParam)
+{
+    auto inner = bounds.reduced (2, 1);
+    auto selCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto textCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+    auto bgCol = lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId).brighter (0.05f);
+
+    auto& slots = mixerState.masterInsertSlots;
+    int numSlots = static_cast<int> (slots.size());
+
+    for (int i = 0; i < numSlots; ++i)
+    {
+        auto& slot = slots[static_cast<size_t> (i)];
+        auto rowArea = juce::Rectangle<int> (inner.getX(), inner.getY() + i * kInsertRowHeight,
+                                              inner.getWidth(), kInsertRowHeight);
+        bool isSel = isSelected && (selectedParam == i);
+
+        g.setColour (isSel ? bgCol.brighter (0.1f) : bgCol);
+        g.fillRect (rowArea);
+
+        auto bypassArea = rowArea.removeFromLeft (14);
+        g.setColour (slot.bypassed ? textCol.withAlpha (0.2f) : juce::Colour (0xff33aa55));
+        g.fillEllipse (bypassArea.getCentreX() - 3.0f, bypassArea.getCentreY() - 3.0f, 6.0f, 6.0f);
+
+        auto removeArea = rowArea.removeFromRight (16);
+        g.setFont (lookAndFeel.getMonoFont (10.0f));
+        g.setColour (textCol.withAlpha (0.5f));
+        g.drawText ("x", removeArea, juce::Justification::centred);
+
+        g.setFont (lookAndFeel.getMonoFont (9.0f));
+        g.setColour (isSel ? selCol : textCol.withAlpha (slot.bypassed ? 0.3f : 0.7f));
+        auto nameText = slot.pluginName;
+        if (nameText.length() > 10)
+            nameText = nameText.substring (0, 9) + "~";
+        g.drawText (nameText, rowArea.reduced (1, 0), juce::Justification::centredLeft);
+
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+        g.drawHorizontalLine (inner.getY() + (i + 1) * kInsertRowHeight - 1,
+                              static_cast<float> (inner.getX()),
+                              static_cast<float> (inner.getRight()));
+    }
+
+    int addY = inner.getY() + numSlots * kInsertRowHeight;
+    auto addArea = juce::Rectangle<int> (inner.getX(), addY, inner.getWidth(), kInsertAddButtonHeight);
+
+    bool canAdd = numSlots < kMaxInsertSlots;
+    g.setColour (canAdd ? selCol.withAlpha (0.3f) : bgCol);
+    g.fillRect (addArea);
+
+    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setColour (canAdd ? selCol : textCol.withAlpha (0.2f));
+    g.drawText ("+", addArea, juce::Justification::centred);
+}
+
+//==============================================================================
 // Generic bar/knob painting
 //==============================================================================
 
@@ -734,153 +1403,232 @@ MixerComponent::HitResult MixerComponent::hitTestStrip (juce::Point<int> pos) co
 {
     HitResult result;
 
-    // Determine which strip
-    int vi = scrollOffset + pos.x / (kStripWidth + kStripGap);
-    if (vi < 0 || vi >= kNumTracks)
+    // Determine which strip by searching through visible strips
+    int totalStrips = getTotalStripCount();
+    int vi = -1;
+    for (int i = scrollOffset; i < totalStrips; ++i)
+    {
+        auto stripBounds = getStripBounds (i);
+        if (pos.x >= stripBounds.getX() && pos.x < stripBounds.getRight())
+        {
+            vi = i;
+            break;
+        }
+        if (stripBounds.getX() > getWidth())
+            break;
+    }
+    if (vi < 0 || vi >= totalStrips)
         return result;
 
     result.visualTrack = vi;
     auto bounds = getStripBounds (vi);
+    auto info = getStripInfo (vi);
 
     int relY = pos.y;
     int y = 0;
 
-    // Header
+    // Header (all strip types)
     y += kHeaderHeight;
     if (relY < y)
         return result;
 
-    // EQ label + section
-    y += kSectionLabelHeight;
-    int eqStart = y;
-    y += kEqSectionHeight;
-    if (relY < y)
+    // Helper lambdas for common hit-test sections
+    auto hitTestEq = [&] () -> bool
     {
-        result.section = Section::EQ;
-        int relEqY = relY - eqStart;
-
-        // Bottom readout area controls mid frequency (param 3).
-        if (relEqY >= (kEqSectionHeight - 18))
+        y += kSectionLabelHeight;
+        int eqStart = y;
+        y += kEqSectionHeight;
+        if (relY < y)
         {
-            result.param = 3;
-            return result;
+            result.section = Section::EQ;
+            int relEqY = relY - eqStart;
+            if (relEqY >= (kEqSectionHeight - 18))
+            {
+                result.param = 3;
+                return true;
+            }
+            int relX = pos.x - bounds.getX();
+            int barWidth = (bounds.getWidth() - 16) / 3;
+            result.param = juce::jlimit (0, 2, (relX - 4) / (barWidth + 4));
+            return true;
         }
+        return false;
+    };
 
-        // Upper area controls the 3 EQ gain bands.
-        int relX = pos.x - bounds.getX();
-        int barWidth = (bounds.getWidth() - 16) / 3;
-        result.param = juce::jlimit (0, 2, (relX - 4) / (barWidth + 4));
-        return result;
-    }
-
-    // Comp label + section
-    y += kSectionLabelHeight;
-    int compStart = y;
-    y += kCompSectionHeight;
-    if (relY < y)
+    auto hitTestComp = [&] () -> bool
     {
-        result.section = Section::Comp;
-        int relX = pos.x - bounds.getX();
-        int relCY = relY - compStart;
-        int col = (relX < bounds.getWidth() / 2) ? 0 : 1;
-        int row = (relCY < kCompSectionHeight / 2) ? 0 : 1;
-        result.param = row * 2 + col;
-        return result;
-    }
+        y += kSectionLabelHeight;
+        int compStart = y;
+        y += kCompSectionHeight;
+        if (relY < y)
+        {
+            result.section = Section::Comp;
+            int relX = pos.x - bounds.getX();
+            int relCY = relY - compStart;
+            int col2 = (relX < bounds.getWidth() / 2) ? 0 : 1;
+            int row2 = (relCY < kCompSectionHeight / 2) ? 0 : 1;
+            result.param = row2 * 2 + col2;
+            return true;
+        }
+        return false;
+    };
 
-    // Inserts label + section (dynamic height)
+    auto hitTestInserts = [&] (int insertHeight, const std::vector<InsertSlotState>& slots) -> bool
     {
-        int physTrack = trackLayout.visualToPhysical (vi);
-        int insertHeight = getInsertsSectionHeight (physTrack);
         if (insertHeight > 0)
         {
-            y += kSectionLabelHeight; // "INSERTS" label
+            y += kSectionLabelHeight;
             int insertsStart = y;
             y += insertHeight;
             if (relY < y)
             {
                 result.section = Section::Inserts;
                 int relInsertY = relY - insertsStart;
-                auto& slots = mixerState.insertSlots[static_cast<size_t> (physTrack)];
                 int numSlots = static_cast<int> (slots.size());
-
-                // Check if hitting an insert row
                 int slotIdx = relInsertY / kInsertRowHeight;
                 if (slotIdx < numSlots)
                 {
                     result.hitInsertSlot = slotIdx;
                     result.param = slotIdx;
-
-                    // Check sub-areas within the row
                     int relX = pos.x - bounds.getX();
-                    int innerLeft = bounds.getX() + 2;
                     int innerRight = bounds.getRight() - 2;
-                    juce::ignoreUnused (innerLeft);
-
                     if (relX < 16)
-                    {
-                        // Bypass dot area
                         result.hitInsertBypass = true;
-                    }
                     else if (relX > innerRight - bounds.getX() - 18)
-                    {
-                        // Remove (x) area
                         result.hitInsertRemove = true;
-                    }
                     else
-                    {
-                        // Name area -> open editor
                         result.hitInsertOpen = true;
-                    }
                 }
                 else
                 {
-                    // + button
                     result.hitInsertAdd = true;
                     result.param = -1;
                 }
-                return result;
+                return true;
             }
         }
-    }
+        return false;
+    };
 
-    // Sends label + section
-    y += kSectionLabelHeight;
-    int sendsStart = y;
-    y += kSendsSectionHeight;
-    if (relY < y)
+    auto hitTestPan = [&] () -> bool
     {
-        result.section = Section::Sends;
-        result.param = (relY - sendsStart < kSendsSectionHeight / 2) ? 0 : 1;
+        y += kPanSectionHeight;
+        if (relY < y)
+        {
+            result.section = Section::Pan;
+            result.param = 0;
+            return true;
+        }
+        return false;
+    };
+
+    auto hitTestMuteSolo = [&] (bool hasSolo) -> bool
+    {
+        int muteSoloTop = getHeight() - kMuteSoloHeight;
+        if (relY >= muteSoloTop)
+        {
+            int relX = pos.x - bounds.getX();
+            if (hasSolo && relX >= bounds.getWidth() / 2)
+                result.hitSolo = true;
+            else
+                result.hitMute = true;
+            return true;
+        }
+        return false;
+    };
+
+    if (info.type == StripType::Track)
+    {
+        // Regular track: EQ -> Comp -> Inserts -> Sends -> Sep -> Pan -> Sep -> Volume (Mute/Solo at bottom)
+        if (hitTestEq()) return result;
+        if (hitTestComp()) return result;
+
+        int physTrack = info.index;
+        int insertHeight = getInsertsSectionHeight (physTrack);
+        auto& slots = mixerState.insertSlots[static_cast<size_t> (physTrack)];
+        if (hitTestInserts (insertHeight, slots)) return result;
+
+        // Sends
+        y += kSectionLabelHeight;
+        int sendsStart = y;
+        y += kSendsSectionHeight;
+        if (relY < y)
+        {
+            result.section = Section::Sends;
+            result.param = (relY - sendsStart < kSendsSectionHeight / 2) ? 0 : 1;
+            return result;
+        }
+
+        y += 1; // separator
+        if (hitTestPan()) return result;
+        y += 1; // separator
+
+        if (hitTestMuteSolo (true)) return result;
+
+        result.section = Section::Volume;
+        result.param = 0;
         return result;
     }
-
-    y += 1; // separator
-
-    // Pan
-    y += kPanSectionHeight;
-    if (relY < y)
+    else if (info.type == StripType::DelayReturn || info.type == StripType::ReverbReturn)
     {
-        result.section = Section::Pan;
+        // Send return: EQ -> Sep -> Pan -> Sep -> Volume (Mute at bottom)
+        if (hitTestEq()) return result;
+        y += 1; // separator
+        if (hitTestPan()) return result;
+        y += 1; // separator
+
+        if (hitTestMuteSolo (false)) return result;
+
+        result.section = Section::Volume;
+        result.param = 0;
+        return result;
+    }
+    else if (info.type == StripType::GroupBus)
+    {
+        // Group bus: EQ -> Comp -> Sep -> Pan -> Sep -> Volume (Mute/Solo at bottom)
+        if (hitTestEq()) return result;
+        if (hitTestComp()) return result;
+        y += 1; // separator
+        if (hitTestPan()) return result;
+        y += 1; // separator
+
+        if (hitTestMuteSolo (true)) return result;
+
+        result.section = Section::Volume;
+        result.param = 0;
+        return result;
+    }
+    else if (info.type == StripType::Master)
+    {
+        // Master: EQ -> Comp -> Inserts -> Limiter -> Sep -> Pan -> Sep -> Volume
+        if (hitTestEq()) return result;
+        if (hitTestComp()) return result;
+
+        int insertHeight = getMasterInsertsSectionHeight();
+        if (hitTestInserts (insertHeight, mixerState.masterInsertSlots)) return result;
+
+        // Limiter
+        y += kSectionLabelHeight;
+        int limStart = y;
+        y += kLimiterSectionHeight;
+        if (relY < y)
+        {
+            result.section = Section::Limiter;
+            int relX = pos.x - bounds.getX();
+            result.param = (relX < bounds.getWidth() / 2) ? 0 : 1;
+            juce::ignoreUnused (limStart);
+            return result;
+        }
+
+        y += 1; // separator
+        if (hitTestPan()) return result;
+        y += 1; // separator
+
+        result.section = Section::Volume;
         result.param = 0;
         return result;
     }
 
-    y += 1; // separator
-
-    // Check mute/solo at bottom
-    int muteSoloTop = getHeight() - kMuteSoloHeight;
-    if (relY >= muteSoloTop)
-    {
-        int relX = pos.x - bounds.getX();
-        if (relX < bounds.getWidth() / 2)
-            result.hitMute = true;
-        else
-            result.hitSolo = true;
-        return result;
-    }
-
-    // Volume (everything between pan and mute/solo)
     result.section = Section::Volume;
     result.param = 0;
     return result;
@@ -890,89 +1638,295 @@ MixerComponent::HitResult MixerComponent::hitTestStrip (juce::Point<int> pos) co
 // Parameter access
 //==============================================================================
 
-double MixerComponent::getParamValue (int physTrack, Section section, int param) const
+double MixerComponent::getParamValue (int visualTrack, Section section, int param) const
 {
-    auto& state = mixerState.tracks[static_cast<size_t> (physTrack)];
+    auto info = getStripInfo (visualTrack);
 
-    switch (section)
+    switch (info.type)
     {
-        case Section::EQ:
-            switch (param)
+        case StripType::Track:
+        {
+            auto& state = mixerState.tracks[static_cast<size_t> (info.index)];
+            switch (section)
             {
-                case 0: return state.eqLowGain;
-                case 1: return state.eqMidGain;
-                case 2: return state.eqHighGain;
-                case 3: return state.eqMidFreq;
+                case Section::EQ:
+                    switch (param)
+                    {
+                        case 0: return state.eqLowGain;
+                        case 1: return state.eqMidGain;
+                        case 2: return state.eqHighGain;
+                        case 3: return state.eqMidFreq;
+                        default: return 0.0;
+                    }
+                case Section::Comp:
+                    switch (param)
+                    {
+                        case 0: return state.compThreshold;
+                        case 1: return state.compRatio;
+                        case 2: return state.compAttack;
+                        case 3: return state.compRelease;
+                        default: return 0.0;
+                    }
+                case Section::Inserts: return 0.0;
+                case Section::Sends:
+                    switch (param)
+                    {
+                        case 0: return state.reverbSend;
+                        case 1: return state.delaySend;
+                        default: return 0.0;
+                    }
+                case Section::Pan: return static_cast<double> (state.pan);
+                case Section::Volume: return state.volume;
+                case Section::Limiter: return 0.0;
+            }
+            break;
+        }
+        case StripType::DelayReturn:
+        case StripType::ReverbReturn:
+        {
+            auto& sr = mixerState.sendReturns[static_cast<size_t> (info.index)];
+            switch (section)
+            {
+                case Section::EQ:
+                    switch (param)
+                    {
+                        case 0: return sr.eqLowGain;
+                        case 1: return sr.eqMidGain;
+                        case 2: return sr.eqHighGain;
+                        case 3: return sr.eqMidFreq;
+                        default: return 0.0;
+                    }
+                case Section::Pan: return static_cast<double> (sr.pan);
+                case Section::Volume: return sr.volume;
                 default: return 0.0;
             }
-        case Section::Comp:
-            switch (param)
+            break;
+        }
+        case StripType::GroupBus:
+        {
+            auto& gb = mixerState.groupBuses[static_cast<size_t> (info.index)];
+            switch (section)
             {
-                case 0: return state.compThreshold;
-                case 1: return state.compRatio;
-                case 2: return state.compAttack;
-                case 3: return state.compRelease;
+                case Section::EQ:
+                    switch (param)
+                    {
+                        case 0: return gb.eqLowGain;
+                        case 1: return gb.eqMidGain;
+                        case 2: return gb.eqHighGain;
+                        case 3: return gb.eqMidFreq;
+                        default: return 0.0;
+                    }
+                case Section::Comp:
+                    switch (param)
+                    {
+                        case 0: return gb.compThreshold;
+                        case 1: return gb.compRatio;
+                        case 2: return gb.compAttack;
+                        case 3: return gb.compRelease;
+                        default: return 0.0;
+                    }
+                case Section::Pan: return static_cast<double> (gb.pan);
+                case Section::Volume: return gb.volume;
                 default: return 0.0;
             }
-        case Section::Inserts:
-            return 0.0;  // Inserts don't have traditional params
-        case Section::Sends:
-            switch (param)
+            break;
+        }
+        case StripType::Master:
+        {
+            auto& m = mixerState.master;
+            switch (section)
             {
-                case 0: return state.reverbSend;
-                case 1: return state.delaySend;
+                case Section::EQ:
+                    switch (param)
+                    {
+                        case 0: return m.eqLowGain;
+                        case 1: return m.eqMidGain;
+                        case 2: return m.eqHighGain;
+                        case 3: return m.eqMidFreq;
+                        default: return 0.0;
+                    }
+                case Section::Comp:
+                    switch (param)
+                    {
+                        case 0: return m.compThreshold;
+                        case 1: return m.compRatio;
+                        case 2: return m.compAttack;
+                        case 3: return m.compRelease;
+                        default: return 0.0;
+                    }
+                case Section::Limiter:
+                    switch (param)
+                    {
+                        case 0: return m.limiterThreshold;
+                        case 1: return m.limiterRelease;
+                        default: return 0.0;
+                    }
+                case Section::Inserts: return 0.0;
+                case Section::Pan: return static_cast<double> (m.pan);
+                case Section::Volume: return m.volume;
                 default: return 0.0;
             }
-        case Section::Pan:
-            return static_cast<double> (state.pan);
-        case Section::Volume:
-            return state.volume;
+            break;
+        }
     }
     return 0.0;
 }
 
-void MixerComponent::setParamValue (int physTrack, Section section, int param, double value)
+void MixerComponent::setParamValue (int visualTrack, Section section, int param, double value)
 {
-    auto& state = mixerState.tracks[static_cast<size_t> (physTrack)];
+    auto info = getStripInfo (visualTrack);
 
-    switch (section)
+    switch (info.type)
     {
-        case Section::EQ:
-            switch (param)
+        case StripType::Track:
+        {
+            auto& state = mixerState.tracks[static_cast<size_t> (info.index)];
+            switch (section)
             {
-                case 0: state.eqLowGain  = juce::jlimit (-12.0, 12.0, value); break;
-                case 1: state.eqMidGain  = juce::jlimit (-12.0, 12.0, value); break;
-                case 2: state.eqHighGain = juce::jlimit (-12.0, 12.0, value); break;
-                case 3: state.eqMidFreq  = juce::jlimit (200.0, 8000.0, value); break;
+                case Section::EQ:
+                    switch (param)
+                    {
+                        case 0: state.eqLowGain  = juce::jlimit (-12.0, 12.0, value); break;
+                        case 1: state.eqMidGain  = juce::jlimit (-12.0, 12.0, value); break;
+                        case 2: state.eqHighGain = juce::jlimit (-12.0, 12.0, value); break;
+                        case 3: state.eqMidFreq  = juce::jlimit (200.0, 8000.0, value); break;
+                        default: break;
+                    }
+                    break;
+                case Section::Comp:
+                    switch (param)
+                    {
+                        case 0: state.compThreshold = juce::jlimit (-60.0, 0.0, value); break;
+                        case 1: state.compRatio     = juce::jlimit (1.0, 20.0, value); break;
+                        case 2: state.compAttack    = juce::jlimit (0.1, 100.0, value); break;
+                        case 3: state.compRelease   = juce::jlimit (10.0, 1000.0, value); break;
+                        default: break;
+                    }
+                    break;
+                case Section::Inserts: break;
+                case Section::Sends:
+                    switch (param)
+                    {
+                        case 0: state.reverbSend = juce::jlimit (-100.0, 0.0, value); break;
+                        case 1: state.delaySend  = juce::jlimit (-100.0, 0.0, value); break;
+                        default: break;
+                    }
+                    break;
+                case Section::Pan:
+                    state.pan = juce::jlimit (-50, 50, static_cast<int> (value));
+                    break;
+                case Section::Volume:
+                    state.volume = juce::jlimit (-100.0, 12.0, value);
+                    break;
+                case Section::Limiter: break;
+            }
+            break;
+        }
+        case StripType::DelayReturn:
+        case StripType::ReverbReturn:
+        {
+            auto& sr = mixerState.sendReturns[static_cast<size_t> (info.index)];
+            switch (section)
+            {
+                case Section::EQ:
+                    switch (param)
+                    {
+                        case 0: sr.eqLowGain  = juce::jlimit (-12.0, 12.0, value); break;
+                        case 1: sr.eqMidGain  = juce::jlimit (-12.0, 12.0, value); break;
+                        case 2: sr.eqHighGain = juce::jlimit (-12.0, 12.0, value); break;
+                        case 3: sr.eqMidFreq  = juce::jlimit (200.0, 8000.0, value); break;
+                        default: break;
+                    }
+                    break;
+                case Section::Pan:
+                    sr.pan = juce::jlimit (-50, 50, static_cast<int> (value));
+                    break;
+                case Section::Volume:
+                    sr.volume = juce::jlimit (-100.0, 12.0, value);
+                    break;
                 default: break;
             }
             break;
-        case Section::Comp:
-            switch (param)
+        }
+        case StripType::GroupBus:
+        {
+            auto& gb = mixerState.groupBuses[static_cast<size_t> (info.index)];
+            switch (section)
             {
-                case 0: state.compThreshold = juce::jlimit (-60.0, 0.0, value); break;
-                case 1: state.compRatio     = juce::jlimit (1.0, 20.0, value); break;
-                case 2: state.compAttack    = juce::jlimit (0.1, 100.0, value); break;
-                case 3: state.compRelease   = juce::jlimit (10.0, 1000.0, value); break;
+                case Section::EQ:
+                    switch (param)
+                    {
+                        case 0: gb.eqLowGain  = juce::jlimit (-12.0, 12.0, value); break;
+                        case 1: gb.eqMidGain  = juce::jlimit (-12.0, 12.0, value); break;
+                        case 2: gb.eqHighGain = juce::jlimit (-12.0, 12.0, value); break;
+                        case 3: gb.eqMidFreq  = juce::jlimit (200.0, 8000.0, value); break;
+                        default: break;
+                    }
+                    break;
+                case Section::Comp:
+                    switch (param)
+                    {
+                        case 0: gb.compThreshold = juce::jlimit (-60.0, 0.0, value); break;
+                        case 1: gb.compRatio     = juce::jlimit (1.0, 20.0, value); break;
+                        case 2: gb.compAttack    = juce::jlimit (0.1, 100.0, value); break;
+                        case 3: gb.compRelease   = juce::jlimit (10.0, 1000.0, value); break;
+                        default: break;
+                    }
+                    break;
+                case Section::Pan:
+                    gb.pan = juce::jlimit (-50, 50, static_cast<int> (value));
+                    break;
+                case Section::Volume:
+                    gb.volume = juce::jlimit (-100.0, 12.0, value);
+                    break;
                 default: break;
             }
             break;
-        case Section::Inserts:
-            break;  // Inserts don't have traditional params
-        case Section::Sends:
-            switch (param)
+        }
+        case StripType::Master:
+        {
+            auto& m = mixerState.master;
+            switch (section)
             {
-                case 0: state.reverbSend = juce::jlimit (-100.0, 0.0, value); break;
-                case 1: state.delaySend  = juce::jlimit (-100.0, 0.0, value); break;
+                case Section::EQ:
+                    switch (param)
+                    {
+                        case 0: m.eqLowGain  = juce::jlimit (-12.0, 12.0, value); break;
+                        case 1: m.eqMidGain  = juce::jlimit (-12.0, 12.0, value); break;
+                        case 2: m.eqHighGain = juce::jlimit (-12.0, 12.0, value); break;
+                        case 3: m.eqMidFreq  = juce::jlimit (200.0, 8000.0, value); break;
+                        default: break;
+                    }
+                    break;
+                case Section::Comp:
+                    switch (param)
+                    {
+                        case 0: m.compThreshold = juce::jlimit (-60.0, 0.0, value); break;
+                        case 1: m.compRatio     = juce::jlimit (1.0, 20.0, value); break;
+                        case 2: m.compAttack    = juce::jlimit (0.1, 100.0, value); break;
+                        case 3: m.compRelease   = juce::jlimit (10.0, 1000.0, value); break;
+                        default: break;
+                    }
+                    break;
+                case Section::Limiter:
+                    switch (param)
+                    {
+                        case 0: m.limiterThreshold = juce::jlimit (-24.0, 0.0, value); break;
+                        case 1: m.limiterRelease   = juce::jlimit (1.0, 500.0, value); break;
+                        default: break;
+                    }
+                    break;
+                case Section::Inserts: break;
+                case Section::Pan:
+                    m.pan = juce::jlimit (-50, 50, static_cast<int> (value));
+                    break;
+                case Section::Volume:
+                    m.volume = juce::jlimit (-100.0, 12.0, value);
+                    break;
                 default: break;
             }
             break;
-        case Section::Pan:
-            state.pan = juce::jlimit (-50, 50, static_cast<int> (value));
-            break;
-        case Section::Volume:
-            state.volume = juce::jlimit (-100.0, 12.0, value);
-            break;
+        }
     }
 
     if (onMixStateChanged)
@@ -991,6 +1945,13 @@ double MixerComponent::getParamMin (Section section, int param) const
                 case 1: return 1.0;
                 case 2: return 0.1;
                 case 3: return 10.0;
+                default: return 0.0;
+            }
+        case Section::Limiter:
+            switch (param)
+            {
+                case 0: return -24.0;
+                case 1: return 1.0;
                 default: return 0.0;
             }
         case Section::Inserts: return 0.0;
@@ -1015,6 +1976,13 @@ double MixerComponent::getParamMax (Section section, int param) const
                 case 3: return 1000.0;
                 default: return 1.0;
             }
+        case Section::Limiter:
+            switch (param)
+            {
+                case 0: return 0.0;
+                case 1: return 500.0;
+                default: return 1.0;
+            }
         case Section::Inserts: return 1.0;
         case Section::Sends:   return 0.0;
         case Section::Pan:     return 50.0;
@@ -1037,6 +2005,13 @@ double MixerComponent::getParamStep (Section section, int param) const
                 case 3: return 10.0;
                 default: return 0.1;
             }
+        case Section::Limiter:
+            switch (param)
+            {
+                case 0: return 0.5;
+                case 1: return 5.0;
+                default: return 0.1;
+            }
         case Section::Inserts: return 1.0;
         case Section::Sends:   return 2.0;
         case Section::Pan:     return 1.0;
@@ -1051,11 +2026,18 @@ int MixerComponent::getParamCountForSection (Section section) const
     {
         case Section::EQ:      return 4;  // Low, Mid, High, MidFreq
         case Section::Comp:    return 4;  // Threshold, Ratio, Attack, Release
+        case Section::Limiter: return 2;  // Threshold, Release
         case Section::Inserts:
         {
-            int physTrack = trackLayout.visualToPhysical (selectedTrack);
-            auto& slots = mixerState.insertSlots[static_cast<size_t> (physTrack)];
-            return juce::jmax (1, static_cast<int> (slots.size()));
+            auto info = getStripInfo (selectedTrack);
+            if (info.type == StripType::Master)
+                return juce::jmax (1, static_cast<int> (mixerState.masterInsertSlots.size()));
+            if (info.type == StripType::Track)
+            {
+                auto& slots = mixerState.insertSlots[static_cast<size_t> (info.index)];
+                return juce::jmax (1, static_cast<int> (slots.size()));
+            }
+            return 1;
         }
         case Section::Sends:   return 2;  // Reverb, Delay
         case Section::Pan:     return 1;
@@ -1110,6 +2092,7 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
     // Tab/Shift+Tab: select track
     if (keyCode == juce::KeyPress::tabKey)
     {
+        int totalStrips = getTotalStripCount();
         if (shift)
         {
             if (selectedTrack > 0)
@@ -1117,7 +2100,7 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
         }
         else
         {
-            if (selectedTrack < kNumTracks - 1)
+            if (selectedTrack < totalStrips - 1)
                 selectedTrack++;
         }
         ensureTrackVisible();
@@ -1128,11 +2111,31 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
     // M: toggle mute
     if (key.getTextCharacter() == 'm' || key.getTextCharacter() == 'M')
     {
-        int physTrack = trackLayout.visualToPhysical (selectedTrack);
-        auto& state = mixerState.tracks[static_cast<size_t> (physTrack)];
-        state.muted = ! state.muted;
-        if (onMuteChanged)
-            onMuteChanged (physTrack, state.muted);
+        auto info = getStripInfo (selectedTrack);
+        switch (info.type)
+        {
+            case StripType::Track:
+            {
+                auto& state = mixerState.tracks[static_cast<size_t> (info.index)];
+                state.muted = ! state.muted;
+                if (onMuteChanged)
+                    onMuteChanged (info.index, state.muted);
+                break;
+            }
+            case StripType::DelayReturn:
+            case StripType::ReverbReturn:
+                mixerState.sendReturns[static_cast<size_t> (info.index)].muted =
+                    ! mixerState.sendReturns[static_cast<size_t> (info.index)].muted;
+                if (onMixStateChanged) onMixStateChanged();
+                break;
+            case StripType::GroupBus:
+                mixerState.groupBuses[static_cast<size_t> (info.index)].muted =
+                    ! mixerState.groupBuses[static_cast<size_t> (info.index)].muted;
+                if (onMixStateChanged) onMixStateChanged();
+                break;
+            case StripType::Master:
+                break;  // no mute on master
+        }
         repaint();
         return true;
     }
@@ -1140,11 +2143,25 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
     // S: toggle solo
     if (key.getTextCharacter() == 's' || key.getTextCharacter() == 'S')
     {
-        int physTrack = trackLayout.visualToPhysical (selectedTrack);
-        auto& state = mixerState.tracks[static_cast<size_t> (physTrack)];
-        state.soloed = ! state.soloed;
-        if (onSoloChanged)
-            onSoloChanged (physTrack, state.soloed);
+        auto info = getStripInfo (selectedTrack);
+        switch (info.type)
+        {
+            case StripType::Track:
+            {
+                auto& state = mixerState.tracks[static_cast<size_t> (info.index)];
+                state.soloed = ! state.soloed;
+                if (onSoloChanged)
+                    onSoloChanged (info.index, state.soloed);
+                break;
+            }
+            case StripType::GroupBus:
+                mixerState.groupBuses[static_cast<size_t> (info.index)].soloed =
+                    ! mixerState.groupBuses[static_cast<size_t> (info.index)].soloed;
+                if (onMixStateChanged) onMixStateChanged();
+                break;
+            default:
+                break;
+        }
         repaint();
         return true;
     }
@@ -1165,21 +2182,53 @@ void MixerComponent::mouseDown (const juce::MouseEvent& event)
     // Handle mute/solo clicks
     if (hit.hitMute)
     {
-        int physTrack = trackLayout.visualToPhysical (hit.visualTrack);
-        auto& state = mixerState.tracks[static_cast<size_t> (physTrack)];
-        state.muted = ! state.muted;
-        if (onMuteChanged)
-            onMuteChanged (physTrack, state.muted);
+        auto info = getStripInfo (hit.visualTrack);
+        switch (info.type)
+        {
+            case StripType::Track:
+            {
+                auto& state = mixerState.tracks[static_cast<size_t> (info.index)];
+                state.muted = ! state.muted;
+                if (onMuteChanged)
+                    onMuteChanged (info.index, state.muted);
+                break;
+            }
+            case StripType::DelayReturn:
+            case StripType::ReverbReturn:
+                mixerState.sendReturns[static_cast<size_t> (info.index)].muted =
+                    ! mixerState.sendReturns[static_cast<size_t> (info.index)].muted;
+                if (onMixStateChanged) onMixStateChanged();
+                break;
+            case StripType::GroupBus:
+                mixerState.groupBuses[static_cast<size_t> (info.index)].muted =
+                    ! mixerState.groupBuses[static_cast<size_t> (info.index)].muted;
+                if (onMixStateChanged) onMixStateChanged();
+                break;
+            case StripType::Master: break;
+        }
         repaint();
         return;
     }
     if (hit.hitSolo)
     {
-        int physTrack = trackLayout.visualToPhysical (hit.visualTrack);
-        auto& state = mixerState.tracks[static_cast<size_t> (physTrack)];
-        state.soloed = ! state.soloed;
-        if (onSoloChanged)
-            onSoloChanged (physTrack, state.soloed);
+        auto info = getStripInfo (hit.visualTrack);
+        switch (info.type)
+        {
+            case StripType::Track:
+            {
+                auto& state = mixerState.tracks[static_cast<size_t> (info.index)];
+                state.soloed = ! state.soloed;
+                if (onSoloChanged)
+                    onSoloChanged (info.index, state.soloed);
+                break;
+            }
+            case StripType::GroupBus:
+                mixerState.groupBuses[static_cast<size_t> (info.index)].soloed =
+                    ! mixerState.groupBuses[static_cast<size_t> (info.index)].soloed;
+                if (onMixStateChanged) onMixStateChanged();
+                break;
+            default: break;
+        }
         repaint();
         return;
     }
@@ -1187,40 +2236,79 @@ void MixerComponent::mouseDown (const juce::MouseEvent& event)
     // Handle insert-specific clicks
     if (hit.section == Section::Inserts)
     {
-        int physTrack = trackLayout.visualToPhysical (hit.visualTrack);
+        auto info = getStripInfo (hit.visualTrack);
 
-        if (hit.hitInsertAdd)
+        if (info.type == StripType::Master)
         {
-            if (onAddInsertClicked)
-                onAddInsertClicked (physTrack);
-            repaint();
-            return;
-        }
-        if (hit.hitInsertRemove && hit.hitInsertSlot >= 0)
-        {
-            if (onRemoveInsertClicked)
-                onRemoveInsertClicked (physTrack, hit.hitInsertSlot);
-            repaint();
-            return;
-        }
-        if (hit.hitInsertBypass && hit.hitInsertSlot >= 0)
-        {
-            auto& slots = mixerState.insertSlots[static_cast<size_t> (physTrack)];
-            if (hit.hitInsertSlot < static_cast<int> (slots.size()))
+            if (hit.hitInsertAdd)
             {
-                bool newState = ! slots[static_cast<size_t> (hit.hitInsertSlot)].bypassed;
-                if (onInsertBypassToggled)
-                    onInsertBypassToggled (physTrack, hit.hitInsertSlot, newState);
+                if (onAddMasterInsertClicked)
+                    onAddMasterInsertClicked();
+                repaint();
+                return;
             }
-            repaint();
-            return;
+            if (hit.hitInsertRemove && hit.hitInsertSlot >= 0)
+            {
+                if (onRemoveMasterInsertClicked)
+                    onRemoveMasterInsertClicked (hit.hitInsertSlot);
+                repaint();
+                return;
+            }
+            if (hit.hitInsertBypass && hit.hitInsertSlot >= 0)
+            {
+                auto& slots = mixerState.masterInsertSlots;
+                if (hit.hitInsertSlot < static_cast<int> (slots.size()))
+                {
+                    bool newState = ! slots[static_cast<size_t> (hit.hitInsertSlot)].bypassed;
+                    if (onMasterInsertBypassToggled)
+                        onMasterInsertBypassToggled (hit.hitInsertSlot, newState);
+                }
+                repaint();
+                return;
+            }
+            if (hit.hitInsertOpen && hit.hitInsertSlot >= 0)
+            {
+                if (onOpenMasterInsertEditor)
+                    onOpenMasterInsertEditor (hit.hitInsertSlot);
+                repaint();
+                return;
+            }
         }
-        if (hit.hitInsertOpen && hit.hitInsertSlot >= 0)
+        else if (info.type == StripType::Track)
         {
-            if (onOpenInsertEditor)
-                onOpenInsertEditor (physTrack, hit.hitInsertSlot);
-            repaint();
-            return;
+            if (hit.hitInsertAdd)
+            {
+                if (onAddInsertClicked)
+                    onAddInsertClicked (info.index);
+                repaint();
+                return;
+            }
+            if (hit.hitInsertRemove && hit.hitInsertSlot >= 0)
+            {
+                if (onRemoveInsertClicked)
+                    onRemoveInsertClicked (info.index, hit.hitInsertSlot);
+                repaint();
+                return;
+            }
+            if (hit.hitInsertBypass && hit.hitInsertSlot >= 0)
+            {
+                auto& slots = mixerState.insertSlots[static_cast<size_t> (info.index)];
+                if (hit.hitInsertSlot < static_cast<int> (slots.size()))
+                {
+                    bool newState = ! slots[static_cast<size_t> (hit.hitInsertSlot)].bypassed;
+                    if (onInsertBypassToggled)
+                        onInsertBypassToggled (info.index, hit.hitInsertSlot, newState);
+                }
+                repaint();
+                return;
+            }
+            if (hit.hitInsertOpen && hit.hitInsertSlot >= 0)
+            {
+                if (onOpenInsertEditor)
+                    onOpenInsertEditor (info.index, hit.hitInsertSlot);
+                repaint();
+                return;
+            }
         }
 
         // Fallthrough: select insert section
@@ -1252,8 +2340,7 @@ void MixerComponent::mouseDown (const juce::MouseEvent& event)
     dragParam = (hit.param >= 0) ? hit.param : 0;
     dragStartY = event.getPosition().y;
 
-    int physTrack = trackLayout.visualToPhysical (dragTrack);
-    dragStartValue = getParamValue (physTrack, dragSection, dragParam);
+    dragStartValue = getParamValue (dragTrack, dragSection, dragParam);
 
     repaint();
 }
@@ -1263,7 +2350,6 @@ void MixerComponent::mouseDrag (const juce::MouseEvent& event)
     if (! dragging || dragTrack < 0)
         return;
 
-    int physTrack = trackLayout.visualToPhysical (dragTrack);
     double minVal = getParamMin (dragSection, dragParam);
     double maxVal = getParamMax (dragSection, dragParam);
     double range = maxVal - minVal;
@@ -1275,7 +2361,7 @@ void MixerComponent::mouseDrag (const juce::MouseEvent& event)
     double newValue = dragStartValue + delta;
     newValue = juce::jlimit (minVal, maxVal, newValue);
 
-    setParamValue (physTrack, dragSection, dragParam, newValue);
+    setParamValue (dragTrack, dragSection, dragParam, newValue);
     repaint();
 }
 
@@ -1291,7 +2377,8 @@ void MixerComponent::mouseWheelMove (const juce::MouseEvent& event, const juce::
     if (hit.visualTrack < 0)
     {
         // Horizontal scroll if no strip hit
-        scrollOffset = juce::jlimit (0, juce::jmax (0, kNumTracks - getVisibleStripCount()),
+        int totalStrips = getTotalStripCount();
+        scrollOffset = juce::jlimit (0, juce::jmax (0, totalStrips - getVisibleStripCount()),
                                       scrollOffset - static_cast<int> (wheel.deltaY * 3.0f));
         repaint();
         return;
@@ -1303,17 +2390,16 @@ void MixerComponent::mouseWheelMove (const juce::MouseEvent& event, const juce::
     if (hit.param >= 0)
         currentParam = hit.param;
 
-    int physTrack = trackLayout.visualToPhysical (hit.visualTrack);
     double step = getParamStep (hit.section, (hit.param >= 0) ? hit.param : 0);
     double delta = (wheel.deltaY > 0.0f ? 1.0 : -1.0) * step;
 
     int paramIdx = (hit.param >= 0) ? hit.param : 0;
-    double current = getParamValue (physTrack, hit.section, paramIdx);
+    double current = getParamValue (hit.visualTrack, hit.section, paramIdx);
     double minVal = getParamMin (hit.section, paramIdx);
     double maxVal = getParamMax (hit.section, paramIdx);
     double newVal = juce::jlimit (minVal, maxVal, current + delta);
 
-    setParamValue (physTrack, hit.section, paramIdx, newVal);
+    setParamValue (hit.visualTrack, hit.section, paramIdx, newVal);
     repaint();
 }
 
@@ -1323,51 +2409,135 @@ void MixerComponent::mouseWheelMove (const juce::MouseEvent& event, const juce::
 
 void MixerComponent::adjustCurrentParam (double direction)
 {
-    int physTrack = trackLayout.visualToPhysical (selectedTrack);
     double step = getParamStep (currentSection, currentParam) * direction;
-    double current = getParamValue (physTrack, currentSection, currentParam);
+    double current = getParamValue (selectedTrack, currentSection, currentParam);
     double minVal = getParamMin (currentSection, currentParam);
     double maxVal = getParamMax (currentSection, currentParam);
     double newVal = juce::jlimit (minVal, maxVal, current + step);
-    setParamValue (physTrack, currentSection, currentParam, newVal);
+    setParamValue (selectedTrack, currentSection, currentParam, newVal);
 }
 
 void MixerComponent::nextSection()
 {
-    switch (currentSection)
+    auto info = getStripInfo (selectedTrack);
+
+    if (info.type == StripType::Master)
     {
-        case Section::EQ:      currentSection = Section::Comp;    break;
-        case Section::Comp:    currentSection = Section::Inserts; break;
-        case Section::Inserts: currentSection = Section::Sends;   break;
-        case Section::Sends:   currentSection = Section::Pan;     break;
-        case Section::Pan:     currentSection = Section::Volume;  break;
-        case Section::Volume:  currentSection = Section::EQ;      break;
+        // Master: EQ -> Comp -> Inserts -> Limiter -> Pan -> Volume -> EQ
+        switch (currentSection)
+        {
+            case Section::EQ:      currentSection = Section::Comp;    break;
+            case Section::Comp:    currentSection = Section::Inserts; break;
+            case Section::Inserts: currentSection = Section::Limiter; break;
+            case Section::Limiter: currentSection = Section::Pan;     break;
+            case Section::Pan:     currentSection = Section::Volume;  break;
+            case Section::Volume:  currentSection = Section::EQ;      break;
+            default:               currentSection = Section::EQ;      break;
+        }
+    }
+    else if (info.type == StripType::DelayReturn || info.type == StripType::ReverbReturn)
+    {
+        // Send returns: EQ -> Pan -> Volume -> EQ
+        switch (currentSection)
+        {
+            case Section::EQ:     currentSection = Section::Pan;    break;
+            case Section::Pan:    currentSection = Section::Volume; break;
+            case Section::Volume: currentSection = Section::EQ;     break;
+            default:              currentSection = Section::EQ;     break;
+        }
+    }
+    else if (info.type == StripType::GroupBus)
+    {
+        // Group bus: EQ -> Comp -> Pan -> Volume -> EQ
+        switch (currentSection)
+        {
+            case Section::EQ:     currentSection = Section::Comp;   break;
+            case Section::Comp:   currentSection = Section::Pan;    break;
+            case Section::Pan:    currentSection = Section::Volume;  break;
+            case Section::Volume: currentSection = Section::EQ;      break;
+            default:              currentSection = Section::EQ;      break;
+        }
+    }
+    else
+    {
+        // Regular track: EQ -> Comp -> Inserts -> Sends -> Pan -> Volume -> EQ
+        switch (currentSection)
+        {
+            case Section::EQ:      currentSection = Section::Comp;    break;
+            case Section::Comp:    currentSection = Section::Inserts; break;
+            case Section::Inserts: currentSection = Section::Sends;   break;
+            case Section::Sends:   currentSection = Section::Pan;     break;
+            case Section::Pan:     currentSection = Section::Volume;  break;
+            case Section::Volume:  currentSection = Section::EQ;      break;
+            default:               currentSection = Section::EQ;      break;
+        }
     }
     currentParam = 0;
 }
 
 void MixerComponent::prevSection()
 {
-    switch (currentSection)
+    auto info = getStripInfo (selectedTrack);
+
+    if (info.type == StripType::Master)
     {
-        case Section::EQ:      currentSection = Section::Volume;  break;
-        case Section::Comp:    currentSection = Section::EQ;      break;
-        case Section::Inserts: currentSection = Section::Comp;    break;
-        case Section::Sends:   currentSection = Section::Inserts; break;
-        case Section::Pan:     currentSection = Section::Sends;   break;
-        case Section::Volume:  currentSection = Section::Pan;     break;
+        switch (currentSection)
+        {
+            case Section::EQ:      currentSection = Section::Volume;  break;
+            case Section::Comp:    currentSection = Section::EQ;      break;
+            case Section::Inserts: currentSection = Section::Comp;    break;
+            case Section::Limiter: currentSection = Section::Inserts; break;
+            case Section::Pan:     currentSection = Section::Limiter; break;
+            case Section::Volume:  currentSection = Section::Pan;     break;
+            default:               currentSection = Section::Volume;  break;
+        }
+    }
+    else if (info.type == StripType::DelayReturn || info.type == StripType::ReverbReturn)
+    {
+        switch (currentSection)
+        {
+            case Section::EQ:     currentSection = Section::Volume; break;
+            case Section::Pan:    currentSection = Section::EQ;     break;
+            case Section::Volume: currentSection = Section::Pan;    break;
+            default:              currentSection = Section::Volume;  break;
+        }
+    }
+    else if (info.type == StripType::GroupBus)
+    {
+        switch (currentSection)
+        {
+            case Section::EQ:     currentSection = Section::Volume; break;
+            case Section::Comp:   currentSection = Section::EQ;     break;
+            case Section::Pan:    currentSection = Section::Comp;   break;
+            case Section::Volume: currentSection = Section::Pan;    break;
+            default:              currentSection = Section::Volume;  break;
+        }
+    }
+    else
+    {
+        switch (currentSection)
+        {
+            case Section::EQ:      currentSection = Section::Volume;  break;
+            case Section::Comp:    currentSection = Section::EQ;      break;
+            case Section::Inserts: currentSection = Section::Comp;    break;
+            case Section::Sends:   currentSection = Section::Inserts; break;
+            case Section::Pan:     currentSection = Section::Sends;   break;
+            case Section::Volume:  currentSection = Section::Pan;     break;
+            default:               currentSection = Section::Volume;  break;
+        }
     }
     currentParam = getParamCountForSection (currentSection) - 1;
 }
 
 void MixerComponent::ensureTrackVisible()
 {
+    int totalStrips = getTotalStripCount();
     int visCount = getVisibleStripCount();
     if (selectedTrack < scrollOffset)
         scrollOffset = selectedTrack;
     else if (selectedTrack >= scrollOffset + visCount)
         scrollOffset = selectedTrack - visCount + 1;
-    scrollOffset = juce::jlimit (0, juce::jmax (0, kNumTracks - visCount), scrollOffset);
+    scrollOffset = juce::jlimit (0, juce::jmax (0, totalStrips - visCount), scrollOffset);
 }
 
 //==============================================================================
