@@ -2,8 +2,9 @@
 
 #include <JuceHeader.h>
 #include "Arrangement.h"
-#include "PatternData.h"
 #include "TrackerLookAndFeel.h"
+
+class PatternData;
 
 class ArrangementComponent : public juce::Component
 {

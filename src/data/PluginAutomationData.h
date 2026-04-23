@@ -1,8 +1,7 @@
 #pragma once
 
-#include <JuceHeader.h>
-#include <map>
 #include <vector>
+#include <juce_core/juce_core.h>
 
 //==============================================================================
 // Automation curve interpolation type

@@ -7,8 +7,10 @@ PluginCatalogService::PluginCatalogService (te::Engine& e)
 
 juce::File PluginCatalogService::getDeadPluginsFile()
 {
-    auto dataDir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-                       .getChildFile ("Tracker Adjust");
+    auto dataRoot = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+    auto dataDir = dataRoot.getChildFile ("VCTracker");
+    if (! dataDir.exists() && dataRoot.getChildFile ("Tracker Adjust").exists())
+        dataDir = dataRoot.getChildFile ("Tracker Adjust");
     dataDir.createDirectory();
     return dataDir.getChildFile ("dead-plugins.txt");
 }

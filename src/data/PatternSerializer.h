@@ -1,7 +1,9 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PatternData.h"
+
+class PatternData;
+struct Pattern;
 
 namespace PatternSerializer
 {

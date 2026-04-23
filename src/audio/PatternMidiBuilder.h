@@ -2,7 +2,9 @@
 
 #include <JuceHeader.h>
 #include <tracktion_engine/tracktion_engine.h>
-#include "PatternData.h"
+
+struct FxSlot;
+struct Pattern;
 
 namespace te = tracktion;
 

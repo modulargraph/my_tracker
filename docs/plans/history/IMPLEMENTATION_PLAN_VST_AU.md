@@ -166,7 +166,7 @@ Primary files:
 - `/Users/mhidding/Desktop/my_tracker/src/ui/TrackerGrid.cpp`
 - `/Users/mhidding/Desktop/my_tracker/src/audio/TrackerEngine.cpp`
 - `/Users/mhidding/Desktop/my_tracker/src/ui/ProjectSerializer.cpp`
-- `/Users/mhidding/Desktop/my_tracker/tests/TrackerAdjustTests.cpp`
+- `/Users/mhidding/Desktop/my_tracker/tests/VCTrackerTests.cpp`
 
 Detailed implementation:
 1. Extend track layout with note lane counts:

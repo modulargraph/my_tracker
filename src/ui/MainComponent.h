@@ -2,24 +2,23 @@
 
 #include <JuceHeader.h>
 #include "PatternData.h"
-#include "TrackerGrid.h"
 #include "TrackerEngine.h"
 #include "TrackerLookAndFeel.h"
-#include "ToolbarComponent.h"
-#include "Clipboard.h"
-#include "ProjectSerializer.h"
 #include "Arrangement.h"
-#include "ArrangementComponent.h"
-#include "InstrumentPanel.h"
-#include "SampleEditorComponent.h"
 #include "TrackLayout.h"
-#include "TabBarComponent.h"
-#include "FileBrowserComponent.h"
-#include "MixerComponent.h"
 #include "MixerState.h"
-#include "SendEffectsComponent.h"
-#include "AudioPluginSettingsComponent.h"
+#include "TabBarComponent.h"
 #include "PluginAutomationComponent.h"
+
+class ArrangementComponent;
+class InstrumentPanel;
+class MixerComponent;
+class PluginAutomationComponent;
+class SampleBrowserComponent;
+class SampleEditorComponent;
+class SendEffectsComponent;
+class ToolbarComponent;
+class TrackerGrid;
 
 class MainComponent : public juce::Component,
                       public juce::KeyListener,

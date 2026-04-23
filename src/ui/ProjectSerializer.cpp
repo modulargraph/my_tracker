@@ -1,5 +1,66 @@
 #include <set>
 #include "ProjectSerializer.h"
+#include "Pattern.h"
+#include "PatternData.h"
+#include "PluginAutomationData.h"
+
+namespace
+{
+constexpr auto kProjectRootName = "VCTrackerProject";
+constexpr auto kLegacyProjectRootName = "TrackerAdjustProject";
+constexpr auto kPrefsDirName = "VCTracker";
+constexpr auto kLegacyPrefsDirName = "TrackerAdjust";
+constexpr auto kPrefsRootName = "VCTrackerPrefs";
+constexpr auto kLegacyPrefsRootName = "TrackerAdjustPrefs";
+
+juce::File getCurrentGlobalPrefsFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+               .getChildFile (kPrefsDirName)
+               .getChildFile ("prefs.xml");
+}
+
+juce::File getLegacyGlobalPrefsFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+               .getChildFile (kLegacyPrefsDirName)
+               .getChildFile ("prefs.xml");
+}
+
+juce::File getGlobalPrefsFileForLoad()
+{
+    auto currentPrefsFile = getCurrentGlobalPrefsFile();
+    if (currentPrefsFile.existsAsFile())
+        return currentPrefsFile;
+
+    return getLegacyGlobalPrefsFile();
+}
+
+juce::ValueTree loadGlobalPrefsTree()
+{
+    juce::ValueTree root (kPrefsRootName);
+    auto prefsFile = getGlobalPrefsFileForLoad();
+
+    if (! prefsFile.existsAsFile())
+        return root;
+
+    auto xml = juce::XmlDocument::parse (prefsFile);
+    if (xml == nullptr)
+        return root;
+
+    auto loaded = juce::ValueTree::fromXml (*xml);
+    if (! loaded.isValid())
+        return root;
+
+    if (loaded.hasType (kLegacyPrefsRootName))
+    {
+        root.copyPropertiesAndChildrenFrom (loaded, nullptr);
+        return root;
+    }
+
+    return loaded;
+}
+} // namespace
 
 juce::String ProjectSerializer::saveToFile (const juce::File& file, const PatternData& patternData,
                                             double bpm, int rowsPerBeat,
@@ -14,7 +75,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
                                             const juce::String& browserDir,
                                             const std::map<int, InstrumentSlotInfo>* pluginSlots)
 {
-    juce::ValueTree root ("TrackerAdjustProject");
+    juce::ValueTree root (kProjectRootName);
     root.setProperty ("version", 9, nullptr);
 
     // Settings
@@ -529,8 +590,8 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
         return "Failed to parse XML file";
 
     auto root = juce::ValueTree::fromXml (*xml);
-    if (! root.hasType ("TrackerAdjustProject"))
-        return "Not a valid Tracker Adjust project file";
+    if (! (root.hasType (kProjectRootName) || root.hasType (kLegacyProjectRootName)))
+        return "Not a valid VCTracker project file";
 
     int version = root.getProperty ("version", 1);
 
@@ -1213,10 +1274,11 @@ juce::ValueTree ProjectSerializer::patternToValueTree (const Pattern& pattern, i
     }
 
     // Automation data (Phase 5)
-    if (! pattern.automationData.isEmpty())
+    const auto& automationData = pattern.getAutomationData();
+    if (! automationData.isEmpty())
     {
         juce::ValueTree autoTree ("Automation");
-        for (const auto& lane : pattern.automationData.lanes)
+        for (const auto& lane : automationData.lanes)
         {
             if (lane.isEmpty())
                 continue;
@@ -1327,7 +1389,8 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
     }
 
     // Automation data (Phase 5)
-    pattern.automationData = PatternAutomationData {};
+    pattern.clearAutomationData();
+    auto& automationData = pattern.getAutomationData();
     auto autoTree = tree.getChildWithName ("Automation");
     if (autoTree.isValid())
     {
@@ -1357,7 +1420,7 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
             }
 
             lane.sortPoints();
-            pattern.automationData.lanes.push_back (std::move (lane));
+            automationData.lanes.push_back (std::move (lane));
         }
     }
 }
@@ -1366,32 +1429,13 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
 // Global browser directory persistence
 //==============================================================================
 
-static juce::File getGlobalPrefsFile()
-{
-    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-               .getChildFile ("TrackerAdjust")
-               .getChildFile ("prefs.xml");
-}
-
 void ProjectSerializer::saveGlobalBrowserDir (const juce::String& dir)
 {
-    auto prefsFile = getGlobalPrefsFile();
+    auto prefsFile = getCurrentGlobalPrefsFile();
     if (! prefsFile.getParentDirectory().createDirectory())
         return;
 
-    juce::ValueTree root ("TrackerAdjustPrefs");
-
-    // Load existing prefs if any
-    if (prefsFile.existsAsFile())
-    {
-        auto xml = juce::XmlDocument::parse (prefsFile);
-        if (xml != nullptr)
-        {
-            auto loaded = juce::ValueTree::fromXml (*xml);
-            if (loaded.isValid())
-                root = loaded;
-        }
-    }
+    auto root = loadGlobalPrefsTree();
 
     root.setProperty ("browserDir", dir, nullptr);
 
@@ -1401,17 +1445,7 @@ void ProjectSerializer::saveGlobalBrowserDir (const juce::String& dir)
 
 juce::String ProjectSerializer::loadGlobalBrowserDir()
 {
-    auto prefsFile = getGlobalPrefsFile();
-    if (! prefsFile.existsAsFile())
-        return {};
-
-    auto xml = juce::XmlDocument::parse (prefsFile);
-    if (xml == nullptr)
-        return {};
-
-    auto root = juce::ValueTree::fromXml (*xml);
-    if (! root.isValid())
-        return {};
+    auto root = loadGlobalPrefsTree();
     return root.getProperty ("browserDir", "").toString();
 }
 
@@ -1421,23 +1455,11 @@ juce::String ProjectSerializer::loadGlobalBrowserDir()
 
 void ProjectSerializer::saveGlobalPluginScanPaths (const juce::StringArray& paths)
 {
-    auto prefsFile = getGlobalPrefsFile();
+    auto prefsFile = getCurrentGlobalPrefsFile();
     if (! prefsFile.getParentDirectory().createDirectory())
         return;
 
-    juce::ValueTree root ("TrackerAdjustPrefs");
-
-    // Load existing prefs if any
-    if (prefsFile.existsAsFile())
-    {
-        auto xml = juce::XmlDocument::parse (prefsFile);
-        if (xml != nullptr)
-        {
-            auto loaded = juce::ValueTree::fromXml (*xml);
-            if (loaded.isValid())
-                root = loaded;
-        }
-    }
+    auto root = loadGlobalPrefsTree();
 
     // Remove any existing scan paths child
     auto existing = root.getChildWithName ("PluginScanPaths");
@@ -1460,18 +1482,7 @@ void ProjectSerializer::saveGlobalPluginScanPaths (const juce::StringArray& path
 
 juce::StringArray ProjectSerializer::loadGlobalPluginScanPaths()
 {
-    auto prefsFile = getGlobalPrefsFile();
-    if (! prefsFile.existsAsFile())
-        return {};
-
-    auto xml = juce::XmlDocument::parse (prefsFile);
-    if (xml == nullptr)
-        return {};
-
-    auto root = juce::ValueTree::fromXml (*xml);
-    if (! root.isValid())
-        return {};
-
+    auto root = loadGlobalPrefsTree();
     auto scanPathsTree = root.getChildWithName ("PluginScanPaths");
     if (! scanPathsTree.isValid())
         return {};

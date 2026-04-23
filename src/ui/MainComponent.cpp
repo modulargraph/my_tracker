@@ -1,5 +1,19 @@
 #include <regex>
 #include "MainComponent.h"
+#include "Pattern.h"
+#include "PluginAutomationData.h"
+#include "ArrangementComponent.h"
+#include "AudioPluginSettingsComponent.h"
+#include "Clipboard.h"
+#include "FileBrowserComponent.h"
+#include "InstrumentPanel.h"
+#include "MixerComponent.h"
+#include "ProjectSerializer.h"
+#include "SampleEditorComponent.h"
+#include "SendEffectsComponent.h"
+#include "TabBarComponent.h"
+#include "ToolbarComponent.h"
+#include "TrackerGrid.h"
 
 namespace
 {
@@ -379,7 +393,7 @@ MainComponent::MainComponent()
                                     // Clear stale automation for this instrument slot (param indices change with new plugin)
                                     auto pluginId = "inst:" + juce::String (inst);
                                     for (int p = 0; p < patternData.getNumPatterns(); ++p)
-                                        patternData.getPattern (p).automationData.removeAllLanesForPlugin (pluginId);
+                                        patternData.getPattern (p).getAutomationData().removeAllLanesForPlugin (pluginId);
 
                                     trackerEngine.setPluginInstrument (inst, desc, cursorTrack);
                                     invalidateAutomationPluginCache (cursorTrack);
@@ -821,7 +835,7 @@ MainComponent::MainComponent()
     {
         // Remove automation lanes for this plugin from all patterns
         for (int p = 0; p < patternData.getNumPatterns(); ++p)
-            patternData.getPattern (p).automationData.removeAllLanesForPlugin (pluginId);
+            patternData.getPattern (p).getAutomationData().removeAllLanesForPlugin (pluginId);
 
         // Refresh automation panel if visible
         if (automationPanelVisible)
@@ -1600,7 +1614,7 @@ void MainComponent::timerCallback()
 
         if (playPatternIndex >= 0 && playPatternIndex < patternData.getNumPatterns() && playRow >= 0)
         {
-            const auto& automationData = patternData.getPattern (playPatternIndex).automationData;
+            const auto& automationData = patternData.getPattern (playPatternIndex).getAutomationData();
             trackerEngine.applyAutomationForPlaybackRow (automationData, playRow);
         }
 
@@ -2126,7 +2140,7 @@ void MainComponent::markDirty()
 void MainComponent::updateWindowTitle()
 {
     auto name = currentProjectFile.existsAsFile() ? currentProjectFile.getFileName() : "Untitled";
-    auto title = "Tracker Adjust - " + name + (isDirty ? " *" : "");
+    auto title = "VCTracker - " + name + (isDirty ? " *" : "");
     if (auto* window = findParentComponentOfClass<juce::DocumentWindow>())
         window->setName (title);
 }
@@ -2450,8 +2464,8 @@ void MainComponent::showHelpOverlay()
 
             auto area = getLocalBounds().reduced (16);
             int colWidth = area.getWidth() / 3;
-            auto font = juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain);
-            auto titleFont = juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold);
+            auto font = juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
+            auto titleFont = juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
 
             for (int c = 0; c < 3; ++c)
             {
@@ -3056,7 +3070,7 @@ void MainComponent::refreshAutomationPanel (bool forcePopulate)
         return;
 
     auto& pat = patternData.getCurrentPattern();
-    automationPanel->setAutomationData (&pat.automationData);
+    automationPanel->setAutomationData (&pat.getAutomationData());
     automationPanel->setPatternLength (pat.numRows);
 
     int curTrack = trackerGrid->getCursorTrack();
@@ -3124,7 +3138,7 @@ void MainComponent::populateAutomationPlugins()
     if (cacheIt != automationPluginCache.end())
     {
         auto& cachedPlugins = cacheIt->second;
-        const auto& cachedAutoData = patternData.getCurrentPattern().automationData;
+        const auto& cachedAutoData = patternData.getCurrentPattern().getAutomationData();
         for (auto& plugin : cachedPlugins)
             for (auto& param : plugin.parameters)
                 param.hasAutomation = cachedAutoData.findLane (plugin.pluginId, param.index) != nullptr;
@@ -3134,7 +3148,7 @@ void MainComponent::populateAutomationPlugins()
 
     // Get current automation data so we can mark already-automated parameters.
     auto& pat = patternData.getCurrentPattern();
-    const auto& automationData = pat.automationData;
+    const auto& automationData = pat.getAutomationData();
 
     // Helper: collect parameters from a JUCE AudioPluginInstance.
     // getName() is safe without the callback lock — it just reads stored strings,
@@ -3270,7 +3284,7 @@ void MainComponent::navigateToAutomationParam (const juce::String& pluginId, int
         if (automationPanel != nullptr)
         {
             auto& pat = patternData.getCurrentPattern();
-            automationPanel->setAutomationData (&pat.automationData);
+            automationPanel->setAutomationData (&pat.getAutomationData());
             automationPanel->setPatternLength (pat.numRows);
             automationPanel->setCurrentTrack (trackerGrid->getCursorTrack());
 

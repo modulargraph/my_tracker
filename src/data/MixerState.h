@@ -1,9 +1,10 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <vector>
-#include <JuceHeader.h>
-#include "PatternData.h"
+#include <juce_data_structures/juce_data_structures.h>
+#include "TrackerConstants.h"
 
 // Maximum number of insert plugin slots per track
 static constexpr int kMaxInsertSlots = 8;
@@ -25,6 +26,11 @@ struct InsertSlotState
 
 struct TrackMixState
 {
+    static bool approximatelyEqual (double lhs, double rhs)
+    {
+        return std::abs (lhs - rhs) < 1.0e-9;
+    }
+
     double volume = 0.0;       // dB, -inf (-100) to +12
     int pan = 0;               // -50 to +50
     bool muted = false;
@@ -48,13 +54,18 @@ struct TrackMixState
 
     bool isDefault() const
     {
-        return volume == 0.0 && pan == 0
+        return approximatelyEqual (volume, 0.0) && pan == 0
             && ! muted && ! soloed
-            && eqLowGain == 0.0 && eqMidGain == 0.0 && eqHighGain == 0.0
-            && eqMidFreq == 1000.0
-            && compThreshold == 0.0 && compRatio == 1.0
-            && compAttack == 10.0 && compRelease == 100.0
-            && reverbSend == -100.0 && delaySend == -100.0;
+            && approximatelyEqual (eqLowGain, 0.0)
+            && approximatelyEqual (eqMidGain, 0.0)
+            && approximatelyEqual (eqHighGain, 0.0)
+            && approximatelyEqual (eqMidFreq, 1000.0)
+            && approximatelyEqual (compThreshold, 0.0)
+            && approximatelyEqual (compRatio, 1.0)
+            && approximatelyEqual (compAttack, 10.0)
+            && approximatelyEqual (compRelease, 100.0)
+            && approximatelyEqual (reverbSend, -100.0)
+            && approximatelyEqual (delaySend, -100.0);
     }
 };
 

@@ -103,10 +103,13 @@ double getParamValue (const MixerState& state, StripType stripType, int stripInd
             auto& sr = state.sendReturns[static_cast<size_t> (stripIndex)];
             switch (section)
             {
-                case Section::EQ:     return getEqParam (sr, paramIndex);
-                case Section::Pan:    return static_cast<double> (sr.pan);
-                case Section::Volume: return sr.volume;
-                default:              return 0.0;
+                case Section::EQ:      return getEqParam (sr, paramIndex);
+                case Section::Comp:    return 0.0;
+                case Section::Inserts: return 0.0;
+                case Section::Sends:   return 0.0;
+                case Section::Pan:     return static_cast<double> (sr.pan);
+                case Section::Volume:  return sr.volume;
+                case Section::Limiter: return 0.0;
             }
             break;
         }
@@ -115,11 +118,13 @@ double getParamValue (const MixerState& state, StripType stripType, int stripInd
             auto& gb = state.groupBuses[static_cast<size_t> (stripIndex)];
             switch (section)
             {
-                case Section::EQ:     return getEqParam (gb, paramIndex);
-                case Section::Comp:   return getCompParam (gb, paramIndex);
-                case Section::Pan:    return static_cast<double> (gb.pan);
-                case Section::Volume: return gb.volume;
-                default:              return 0.0;
+                case Section::EQ:      return getEqParam (gb, paramIndex);
+                case Section::Comp:    return getCompParam (gb, paramIndex);
+                case Section::Inserts: return 0.0;
+                case Section::Sends:   return 0.0;
+                case Section::Pan:     return static_cast<double> (gb.pan);
+                case Section::Volume:  return gb.volume;
+                case Section::Limiter: return 0.0;
             }
             break;
         }
@@ -138,9 +143,9 @@ double getParamValue (const MixerState& state, StripType stripType, int stripInd
                         default: return 0.0;
                     }
                 case Section::Inserts: return 0.0;
+                case Section::Sends:   return 0.0;
                 case Section::Pan:     return static_cast<double> (m.pan);
                 case Section::Volume:  return m.volume;
-                default:               return 0.0;
             }
             break;
         }
@@ -187,16 +192,13 @@ void setParamValue (MixerState& state, StripType stripType, int stripIndex, Sect
             auto& sr = state.sendReturns[static_cast<size_t> (stripIndex)];
             switch (section)
             {
-                case Section::EQ:
-                    setEqParam (sr, paramIndex, value);
-                    break;
-                case Section::Pan:
-                    sr.pan = juce::jlimit (-50, 50, static_cast<int> (value));
-                    break;
-                case Section::Volume:
-                    sr.volume = juce::jlimit (-100.0, 12.0, value);
-                    break;
-                default: break;
+                case Section::EQ:      setEqParam (sr, paramIndex, value); break;
+                case Section::Comp:    break;
+                case Section::Inserts: break;
+                case Section::Sends:   break;
+                case Section::Pan:     sr.pan = juce::jlimit (-50, 50, static_cast<int> (value)); break;
+                case Section::Volume:  sr.volume = juce::jlimit (-100.0, 12.0, value); break;
+                case Section::Limiter: break;
             }
             break;
         }
@@ -205,15 +207,13 @@ void setParamValue (MixerState& state, StripType stripType, int stripIndex, Sect
             auto& gb = state.groupBuses[static_cast<size_t> (stripIndex)];
             switch (section)
             {
-                case Section::EQ:   setEqParam (gb, paramIndex, value);   break;
-                case Section::Comp: setCompParam (gb, paramIndex, value); break;
-                case Section::Pan:
-                    gb.pan = juce::jlimit (-50, 50, static_cast<int> (value));
-                    break;
-                case Section::Volume:
-                    gb.volume = juce::jlimit (-100.0, 12.0, value);
-                    break;
-                default: break;
+                case Section::EQ:      setEqParam (gb, paramIndex, value);   break;
+                case Section::Comp:    setCompParam (gb, paramIndex, value); break;
+                case Section::Inserts: break;
+                case Section::Sends:   break;
+                case Section::Pan:     gb.pan = juce::jlimit (-50, 50, static_cast<int> (value)); break;
+                case Section::Volume:  gb.volume = juce::jlimit (-100.0, 12.0, value); break;
+                case Section::Limiter: break;
             }
             break;
         }
@@ -233,13 +233,13 @@ void setParamValue (MixerState& state, StripType stripType, int stripIndex, Sect
                     }
                     break;
                 case Section::Inserts: break;
+                case Section::Sends:   break;
                 case Section::Pan:
                     m.pan = juce::jlimit (-50, 50, static_cast<int> (value));
                     break;
                 case Section::Volume:
                     m.volume = juce::jlimit (-100.0, 12.0, value);
                     break;
-                default: break;
             }
             break;
         }

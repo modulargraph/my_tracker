@@ -215,10 +215,10 @@ void SampleEditorComponent::setFilterTypeWithDefaultCutoff (InstrumentParams::Fi
     {
         switch (currentParams.filterType)
         {
+            case InstrumentParams::FilterType::Disabled:  break;
             case InstrumentParams::FilterType::HighPass:  currentParams.cutoff = 5;  break;
             case InstrumentParams::FilterType::BandPass:  currentParams.cutoff = 50; break;
             case InstrumentParams::FilterType::LowPass:   currentParams.cutoff = 100; break;
-            default: break;
         }
     }
 }
@@ -228,13 +228,13 @@ bool SampleEditorComponent::isRealtimeOnlyChange (const InstrumentParams& oldP, 
     // Structural params that require sample reload via applyParams()
     if (oldP.tune != newP.tune) return false;
     if (oldP.finetune != newP.finetune) return false;
-    if (oldP.startPos != newP.startPos) return false;
-    if (oldP.endPos != newP.endPos) return false;
+    if (! InstrumentParams::approximatelyEqual (oldP.startPos, newP.startPos)) return false;
+    if (! InstrumentParams::approximatelyEqual (oldP.endPos, newP.endPos)) return false;
     if (oldP.reversed != newP.reversed) return false;
     if (oldP.playMode != newP.playMode) return false;
-    if (oldP.loopStart != newP.loopStart) return false;
-    if (oldP.loopEnd != newP.loopEnd) return false;
-    if (oldP.granularPosition != newP.granularPosition) return false;
+    if (! InstrumentParams::approximatelyEqual (oldP.loopStart, newP.loopStart)) return false;
+    if (! InstrumentParams::approximatelyEqual (oldP.loopEnd, newP.loopEnd)) return false;
+    if (! InstrumentParams::approximatelyEqual (oldP.granularPosition, newP.granularPosition)) return false;
     if (oldP.granularLength != newP.granularLength) return false;
     if (oldP.granularShape != newP.granularShape) return false;
     if (oldP.granularLoop != newP.granularLoop) return false;
@@ -2610,7 +2610,9 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                             default: break;
                         }
                         break;
-                    default: break;
+                    case InstrumentParams::PlayMode::Slice:
+                    case InstrumentParams::PlayMode::BeatSlice:
+                        break;
                 }
                 notifyParamsChanged();
                 return;

@@ -1,10 +1,16 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <vector>
 
 struct InstrumentParams
 {
+    static bool approximatelyEqual (double lhs, double rhs)
+    {
+        return std::abs (lhs - rhs) < 1.0e-9;
+    }
+
     // === General ===
     double volume       = 0.0;     // dB, -inf to +24.0 (-100 = -inf)
     int    panning      = 0;       // -50 to +50
@@ -83,10 +89,10 @@ struct InstrumentParams
                 && lfoSpeedMode == LFOSpeedMode::Steps
                 && lfoSpeedMs == 500
                 && amount == 0
-                && attackS == 0.020
-                && decayS == 0.030
+                && InstrumentParams::approximatelyEqual (attackS, 0.020)
+                && InstrumentParams::approximatelyEqual (decayS, 0.030)
                 && sustain == 100
-                && releaseS == 0.050
+                && InstrumentParams::approximatelyEqual (releaseS, 0.050)
                 && modMode == ModMode::PerNote;
         }
     };
@@ -98,21 +104,21 @@ struct InstrumentParams
 
     bool isDefault() const
     {
-        if (volume != 0.0 || panning != 0 || tune != 0 || finetune != 0)
+        if (! approximatelyEqual (volume, 0.0) || panning != 0 || tune != 0 || finetune != 0)
             return false;
         if (filterType != FilterType::Disabled || cutoff != 100 || resonance != 0)
             return false;
         if (overdrive != 0 || bitDepth != 16)
             return false;
-        if (reverbSend != -100.0 || delaySend != -100.0)
+        if (! approximatelyEqual (reverbSend, -100.0) || ! approximatelyEqual (delaySend, -100.0))
             return false;
-        if (startPos != 0.0 || endPos != 1.0)
+        if (! approximatelyEqual (startPos, 0.0) || ! approximatelyEqual (endPos, 1.0))
             return false;
-        if (loopStart != 0.0 || loopEnd != 1.0)
+        if (! approximatelyEqual (loopStart, 0.0) || ! approximatelyEqual (loopEnd, 1.0))
             return false;
         if (playMode != PlayMode::OneShot || reversed)
             return false;
-        if (granularPosition != 0.0 || granularLength != 500)
+        if (! approximatelyEqual (granularPosition, 0.0) || granularLength != 500)
             return false;
         if (granularShape != GranShape::Triangle || granularLoop != GranLoop::Forward)
             return false;

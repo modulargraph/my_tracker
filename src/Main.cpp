@@ -1,12 +1,12 @@
 #include <JuceHeader.h>
 #include "MainComponent.h"
 
-class TrackerAdjustApplication : public juce::JUCEApplication
+class VCTrackerApplication : public juce::JUCEApplication
 {
 public:
-    TrackerAdjustApplication() {}
+    VCTrackerApplication() = default;
 
-    const juce::String getApplicationName() override { return "Tracker Adjust"; }
+    const juce::String getApplicationName() override { return "VCTracker"; }
     const juce::String getApplicationVersion() override { return "0.1.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
 
@@ -59,4 +59,4 @@ private:
     std::unique_ptr<MainWindow> mainWindow;
 };
 
-START_JUCE_APPLICATION (TrackerAdjustApplication)
+START_JUCE_APPLICATION (VCTrackerApplication)

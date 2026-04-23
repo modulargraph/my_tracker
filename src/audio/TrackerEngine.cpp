@@ -1,9 +1,13 @@
 #include <algorithm>
 #include "TrackerEngine.h"
+#include "Pattern.h"
+#include "PluginAutomationData.h"
+#include "PluginCatalogService.h"
 #include "InstrumentEffectsPlugin.h"
 #include "TrackerSamplerPlugin.h"
 #include "MetronomePlugin.h"
 #include "SendEffectsPlugin.h"
+#include "SendEffectsParams.h"
 #include "MixerPlugin.h"
 #include "ChannelStripPlugin.h"
 #include "TrackOutputPlugin.h"
@@ -156,7 +160,7 @@ TrackerEngine::~TrackerEngine()
 
 void TrackerEngine::initialise()
 {
-    engine = std::make_unique<te::Engine> ("TrackerAdjust");
+    engine = std::make_unique<te::Engine> ("VCTracker");
 
     // Register custom plugin types
     engine->getPluginManager().createBuiltInType<InstrumentEffectsPlugin>();
@@ -172,7 +176,7 @@ void TrackerEngine::initialise()
 
     // Create an edit
     auto editFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                        .getChildFile ("TrackerAdjust")
+                        .getChildFile ("VCTracker")
                         .getChildFile ("session.tracktionedit");
     editFile.getParentDirectory().createDirectory();
 
@@ -449,8 +453,10 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                     continue;
                 }
 
-                // Program change
-                if (noteSlot.instrument >= 0 && noteSlot.instrument != currentInst)
+                // Program change (sample instruments only — plugin presets are
+                // managed via the plugin state, not MIDI program changes)
+                if (noteSlot.instrument >= 0 && noteSlot.instrument != currentInst
+                    && getTrackContentMode (trackIdx) != TrackContentMode::PluginInstrument)
                 {
                     currentInst = InstrumentRouting::clampInstrumentIndex (noteSlot.instrument);
                     const double bankTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00012);
@@ -508,7 +514,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
     }
 
     // Apply plugin automation from pattern data (Phase 5)
-    applyPatternAutomation (pattern.automationData, pattern.numRows, rowsPerBeat);
+    applyPatternAutomation (pattern.getAutomationData(), pattern.numRows, rowsPerBeat);
 
     refreshTransportLoopRangeFromClip();
 }
@@ -712,8 +718,9 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                             continue;
                         }
 
-                        // Program change
-                        if (noteSlot.instrument >= 0 && noteSlot.instrument != currentInst)
+                        // Program change (sample instruments only)
+                        if (noteSlot.instrument >= 0 && noteSlot.instrument != currentInst
+                            && getTrackContentMode (trackIdx) != TrackContentMode::PluginInstrument)
                         {
                             currentInst = InstrumentRouting::clampInstrumentIndex (noteSlot.instrument);
                             const double bankTime = juce::jmax (0.0, rowTime.inSeconds() - 0.00012);
@@ -777,7 +784,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
 
     // Prime automation baselines and initial values for arrangement playback.
     if (! sequence.empty() && sequence.front().first != nullptr)
-        applyPatternAutomation (sequence.front().first->automationData, sequence.front().first->numRows, rpb);
+        applyPatternAutomation (sequence.front().first->getAutomationData(), sequence.front().first->numRows, rpb);
 
     refreshTransportLoopRangeFromClip();
 }

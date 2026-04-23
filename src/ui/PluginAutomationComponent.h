@@ -3,7 +3,6 @@
 #include <JuceHeader.h>
 #include "PluginAutomationData.h"
 #include "TrackerLookAndFeel.h"
-#include "PatternData.h"
 #include <set>
 
 //==============================================================================

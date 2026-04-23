@@ -1,9 +1,13 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PatternData.h"
+#include "TrackerConstants.h"
 #include "TrackerLookAndFeel.h"
 #include "TrackLayout.h"
+
+struct Cell;
+struct Pattern;
+class PatternData;
 
 enum class SubColumn { Note, Instrument, Volume, FX };
 

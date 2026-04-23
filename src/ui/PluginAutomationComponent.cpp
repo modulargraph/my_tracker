@@ -1407,10 +1407,10 @@ void PluginAutomationComponent::drawPoints (juce::Graphics& g, juce::Rectangle<i
         {
             switch (p.curveType)
             {
-                case AutomationCurveType::Step:   ptColour = juce::Colour (0xffff8844); break;
+                case AutomationCurveType::Linear:  ptColour = juce::Colour (0xff44aaff); break;
+                case AutomationCurveType::Step:    ptColour = juce::Colour (0xffff8844); break;
                 case AutomationCurveType::Smooth:  ptColour = juce::Colour (0xff44ff88); break;
                 case AutomationCurveType::SCurve:  ptColour = juce::Colour (0xffff44aa); break;
-                default:                           ptColour = juce::Colour (0xff44aaff); break;
             }
         }
 
@@ -1481,7 +1481,7 @@ void PluginAutomationComponent::drawHoverTooltip (juce::Graphics& g) const
         return;
 
     g.setFont (lookAndFeel.getMonoFont (10.0f));
-    int textWidth = static_cast<int> (g.getCurrentFont().getStringWidthFloat (text)) + 8;
+    int textWidth = juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), text) + 8;
     int textHeight = 14;
 
     float tooltipX = hoverScreenPos.x + 12.0f;

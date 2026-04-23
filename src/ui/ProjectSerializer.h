@@ -1,14 +1,15 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PatternData.h"
-#include "SimpleSampler.h"
 #include "InstrumentParams.h"
 #include "Arrangement.h"
 #include "TrackLayout.h"
 #include "MixerState.h"
 #include "SendEffectsParams.h"
 #include "InstrumentSlotInfo.h"
+
+class PatternData;
+struct Pattern;
 
 class ProjectSerializer
 {

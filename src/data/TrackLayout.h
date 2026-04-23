@@ -1,9 +1,9 @@
 #pragma once
 
-#include <JuceHeader.h>
-#include "PatternData.h"
 #include <algorithm>
 #include <numeric>
+#include <JuceHeader.h>
+#include "TrackerConstants.h"
 
 // Per-track note trigger mode
 enum class NoteMode { Kill, Release };

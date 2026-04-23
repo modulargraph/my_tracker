@@ -36,7 +36,7 @@ public:
     void setSendBuffers (SendBuffers* buffers) { sendBuffers = buffers; }
 
     // Mixer state pointer for send return and master processing
-    void setMixerState (MixerState* state) { mixerStatePtr = state; }
+    void setMixerState (MixerState* mixState) { mixerStatePtr = mixState; }
 
     // Thread-safe parameter setters (called from UI thread)
     void setDelayParams (const DelayParams& params)
@@ -130,12 +130,12 @@ private:
 
     // Send return processing
     void processSendReturnEQ (juce::AudioBuffer<float>& buffer, int numSamples,
-                              const SendReturnState& state,
+                              const SendReturnState& sendState,
                               juce::dsp::IIR::Filter<float>& eqLowL, juce::dsp::IIR::Filter<float>& eqLowR,
                               juce::dsp::IIR::Filter<float>& eqMidL, juce::dsp::IIR::Filter<float>& eqMidR,
                               juce::dsp::IIR::Filter<float>& eqHighL, juce::dsp::IIR::Filter<float>& eqHighR);
     void applySendReturnVolumePan (juce::AudioBuffer<float>& buffer, int numSamples,
-                                   const SendReturnState& state);
+                                   const SendReturnState& sendState);
 
     // Master processing
     void processMasterEQ (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);

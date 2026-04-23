@@ -869,7 +869,9 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
                     ! mixerState.groupBuses[static_cast<size_t> (info.index)].soloed;
                 if (onMixStateChanged) onMixStateChanged();
                 break;
-            default:
+            case StripType::DelayReturn:
+            case StripType::ReverbReturn:
+            case StripType::Master:
                 break;
         }
         repaint();
@@ -937,7 +939,10 @@ void MixerComponent::mouseDown (const juce::MouseEvent& event)
                     ! mixerState.groupBuses[static_cast<size_t> (info.index)].soloed;
                 if (onMixStateChanged) onMixStateChanged();
                 break;
-            default: break;
+            case StripType::DelayReturn:
+            case StripType::ReverbReturn:
+            case StripType::Master:
+                break;
         }
         repaint();
         return;

@@ -31,7 +31,7 @@ public:
     bool needsConstantBufferSize() override             { return false; }
 
     // --- Message-thread API ---
-    void setEnabled (bool enabled);
+    void setEnabled (bool enabled) override;
     bool isEnabled() const;
     void setVolume (float gainLinear); // 0.0 to 1.0
     float getVolume() const;

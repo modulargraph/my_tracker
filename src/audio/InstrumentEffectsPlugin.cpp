@@ -86,8 +86,8 @@ float InstrumentEffectsPlugin::resonancePercentToQ (int percent)
 // LFO computation
 //==============================================================================
 
-float InstrumentEffectsPlugin::computeLFO (LFOState& state, const InstrumentParams::Modulation& mod,
-                                            double bpm, int numSamples)
+float InstrumentEffectsPlugin::computeLFO (LFOState& lfoState, const InstrumentParams::Modulation& mod,
+                                           double bpm, int numSamples)
 {
     if (mod.type != InstrumentParams::Modulation::Type::LFO || mod.amount == 0)
         return 0.0f;
@@ -107,15 +107,15 @@ float InstrumentEffectsPlugin::computeLFO (LFOState& state, const InstrumentPara
     }
 
     double phaseInc = lfoHz / sampleRate * static_cast<double> (numSamples);
-    state.phase += phaseInc;
-    if (state.phase >= 1.0)
+    lfoState.phase += phaseInc;
+    if (lfoState.phase >= 1.0)
     {
-        state.phase -= std::floor (state.phase);
-        state.randomNeedsNew = true;
+        lfoState.phase -= std::floor (lfoState.phase);
+        lfoState.randomNeedsNew = true;
     }
 
     float value = 0.0f;
-    float p = static_cast<float> (state.phase);
+    float p = static_cast<float> (lfoState.phase);
 
     switch (mod.lfoShape)
     {
@@ -132,45 +132,45 @@ float InstrumentEffectsPlugin::computeLFO (LFOState& state, const InstrumentPara
             value = (p < 0.5f) ? 1.0f : -1.0f;
             break;
         case InstrumentParams::Modulation::LFOShape::Random:
-            if (state.randomNeedsNew)
+            if (lfoState.randomNeedsNew)
             {
-                state.randomHoldValue = juce::Random::getSystemRandom().nextFloat() * 2.0f - 1.0f;
-                state.randomNeedsNew = false;
+                lfoState.randomHoldValue = juce::Random::getSystemRandom().nextFloat() * 2.0f - 1.0f;
+                lfoState.randomNeedsNew = false;
             }
-            value = state.randomHoldValue;
+            value = lfoState.randomHoldValue;
             break;
     }
 
-    state.currentValue = value * (static_cast<float> (mod.amount) / 100.0f);
-    return state.currentValue;
+    lfoState.currentValue = value * (static_cast<float> (mod.amount) / 100.0f);
+    return lfoState.currentValue;
 }
 
 //==============================================================================
 // Envelope computation
 //==============================================================================
 
-float InstrumentEffectsPlugin::advanceEnvelope (EnvState& state, const InstrumentParams::Modulation& mod,
-                                                 int numSamples)
+float InstrumentEffectsPlugin::advanceEnvelope (EnvState& envState, const InstrumentParams::Modulation& mod,
+                                                int numSamples)
 {
     if (mod.type != InstrumentParams::Modulation::Type::Envelope)
         return 0.0f;
 
     double blockDuration = static_cast<double> (numSamples) / sampleRate;
 
-    switch (state.stage)
+    switch (envState.stage)
     {
         case EnvState::Stage::Idle:
-            state.level = 0.0f;
+            envState.level = 0.0f;
             break;
 
         case EnvState::Stage::Attack:
         {
             double attackTime = juce::jmax (0.001, mod.attackS);
-            state.level += static_cast<float> (blockDuration / attackTime);
-            if (state.level >= 1.0f)
+            envState.level += static_cast<float> (blockDuration / attackTime);
+            if (envState.level >= 1.0f)
             {
-                state.level = 1.0f;
-                state.stage = EnvState::Stage::Decay;
+                envState.level = 1.0f;
+                envState.stage = EnvState::Stage::Decay;
             }
             break;
         }
@@ -179,33 +179,33 @@ float InstrumentEffectsPlugin::advanceEnvelope (EnvState& state, const Instrumen
         {
             double decayTime = juce::jmax (0.001, mod.decayS);
             float susLevel = static_cast<float> (mod.sustain) / 100.0f;
-            state.level -= static_cast<float> (blockDuration / decayTime) * (1.0f - susLevel);
-            if (state.level <= susLevel)
+            envState.level -= static_cast<float> (blockDuration / decayTime) * (1.0f - susLevel);
+            if (envState.level <= susLevel)
             {
-                state.level = susLevel;
-                state.stage = EnvState::Stage::Sustain;
+                envState.level = susLevel;
+                envState.stage = EnvState::Stage::Sustain;
             }
             break;
         }
 
         case EnvState::Stage::Sustain:
-            state.level = static_cast<float> (mod.sustain) / 100.0f;
+            envState.level = static_cast<float> (mod.sustain) / 100.0f;
             break;
 
         case EnvState::Stage::Release:
         {
             double releaseTime = juce::jmax (0.001, mod.releaseS);
-            state.level -= static_cast<float> (blockDuration / releaseTime) * state.level;
-            if (state.level < 0.001f)
+            envState.level -= static_cast<float> (blockDuration / releaseTime) * envState.level;
+            if (envState.level < 0.001f)
             {
-                state.level = 0.0f;
-                state.stage = EnvState::Stage::Idle;
+                envState.level = 0.0f;
+                envState.stage = EnvState::Stage::Idle;
             }
             break;
         }
     }
 
-    return state.level * (static_cast<float> (mod.amount) / 100.0f);
+    return envState.level * (static_cast<float> (mod.amount) / 100.0f);
 }
 
 void InstrumentEffectsPlugin::triggerEnvelopes()
@@ -420,24 +420,24 @@ float InstrumentEffectsPlugin::getModulationValue (int destIndex, const Instrume
     {
         switch (mod.type)
         {
+            case InstrumentParams::Modulation::Type::Off:
+                return 0.0f;
             case InstrumentParams::Modulation::Type::LFO:
                 return computeGlobalLFO (mod);
             case InstrumentParams::Modulation::Type::Envelope:
                 return readGlobalEnvelope (destIndex, mod);
-            default:
-                return 0.0f;
         }
     }
 
     // Per-note modulation (existing behavior)
     switch (mod.type)
     {
+        case InstrumentParams::Modulation::Type::Off:
+            return 0.0f;
         case InstrumentParams::Modulation::Type::LFO:
             return computeLFO (lfoStates[static_cast<size_t> (destIndex)], mod, bpm, numSamples);
         case InstrumentParams::Modulation::Type::Envelope:
             return advanceEnvelope (envStates[static_cast<size_t> (destIndex)], mod, numSamples);
-        default:
-            return 0.0f;
     }
 }
 
@@ -482,6 +482,8 @@ void InstrumentEffectsPlugin::processFilter (juce::AudioBuffer<float>& buffer, i
 
     switch (params.filterType)
     {
+        case InstrumentParams::FilterType::Disabled:
+            return;
         case InstrumentParams::FilterType::LowPass:
             svfFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
             break;
@@ -491,8 +493,6 @@ void InstrumentEffectsPlugin::processFilter (juce::AudioBuffer<float>& buffer, i
         case InstrumentParams::FilterType::BandPass:
             svfFilter.setType (juce::dsp::StateVariableTPTFilterType::bandpass);
             break;
-        default:
-            return;
     }
 
     // Process in sub-blocks of 32 samples, advancing smoothed cutoff between them

@@ -413,37 +413,37 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 //==============================================================================
 
 void SendEffectsPlugin::processSendReturnEQ (juce::AudioBuffer<float>& buffer, int numSamples,
-                                              const SendReturnState& state,
-                                              juce::dsp::IIR::Filter<float>& eqLowL,
-                                              juce::dsp::IIR::Filter<float>& eqLowR,
-                                              juce::dsp::IIR::Filter<float>& eqMidL,
-                                              juce::dsp::IIR::Filter<float>& eqMidR,
-                                              juce::dsp::IIR::Filter<float>& eqHighL,
-                                              juce::dsp::IIR::Filter<float>& eqHighR)
+                                             const SendReturnState& sendState,
+                                             juce::dsp::IIR::Filter<float>& eqLowL,
+                                             juce::dsp::IIR::Filter<float>& eqLowR,
+                                             juce::dsp::IIR::Filter<float>& eqMidL,
+                                             juce::dsp::IIR::Filter<float>& eqMidR,
+                                             juce::dsp::IIR::Filter<float>& eqHighL,
+                                             juce::dsp::IIR::Filter<float>& eqHighR)
 {
-    bool hasEQ = state.eqLowGain != 0.0 || state.eqMidGain != 0.0 || state.eqHighGain != 0.0;
+    bool hasEQ = sendState.eqLowGain != 0.0 || sendState.eqMidGain != 0.0 || sendState.eqHighGain != 0.0;
     if (! hasEQ) return;
 
     {
-        float gain = (state.eqLowGain != 0.0)
-                         ? juce::Decibels::decibelsToGain (static_cast<float> (state.eqLowGain))
+        float gain = (sendState.eqLowGain != 0.0)
+                         ? juce::Decibels::decibelsToGain (static_cast<float> (sendState.eqLowGain))
                          : 1.0f;
         auto coeffs = juce::dsp::IIR::Coefficients<float>::makeLowShelf (sampleRate, 200.0f, 0.707f, gain);
         eqLowL.coefficients = coeffs;
         eqLowR.coefficients = coeffs;
     }
     {
-        float gain = (state.eqMidGain != 0.0)
-                         ? juce::Decibels::decibelsToGain (static_cast<float> (state.eqMidGain))
+        float gain = (sendState.eqMidGain != 0.0)
+                         ? juce::Decibels::decibelsToGain (static_cast<float> (sendState.eqMidGain))
                          : 1.0f;
-        float freq = juce::jlimit (200.0f, 8000.0f, static_cast<float> (state.eqMidFreq));
+        float freq = juce::jlimit (200.0f, 8000.0f, static_cast<float> (sendState.eqMidFreq));
         auto coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sampleRate, freq, 1.0f, gain);
         eqMidL.coefficients = coeffs;
         eqMidR.coefficients = coeffs;
     }
     {
-        float gain = (state.eqHighGain != 0.0)
-                         ? juce::Decibels::decibelsToGain (static_cast<float> (state.eqHighGain))
+        float gain = (sendState.eqHighGain != 0.0)
+                         ? juce::Decibels::decibelsToGain (static_cast<float> (sendState.eqHighGain))
                          : 1.0f;
         auto coeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate, 4000.0f, 0.707f, gain);
         eqHighL.coefficients = coeffs;
@@ -477,15 +477,15 @@ void SendEffectsPlugin::processSendReturnEQ (juce::AudioBuffer<float>& buffer, i
 }
 
 void SendEffectsPlugin::applySendReturnVolumePan (juce::AudioBuffer<float>& buffer, int numSamples,
-                                                   const SendReturnState& state)
+                                                  const SendReturnState& sendState)
 {
     float gain;
-    if (state.volume <= -99.0)
+    if (sendState.volume <= -99.0)
         gain = 0.0f;
     else
-        gain = juce::Decibels::decibelsToGain (static_cast<float> (state.volume));
+        gain = juce::Decibels::decibelsToGain (static_cast<float> (sendState.volume));
 
-    float panNorm = (static_cast<float> (state.pan) + 50.0f) / 100.0f;
+    float panNorm = (static_cast<float> (sendState.pan) + 50.0f) / 100.0f;
     float gainL = gain * std::cos (panNorm * juce::MathConstants<float>::halfPi);
     float gainR = gain * std::sin (panNorm * juce::MathConstants<float>::halfPi);
 

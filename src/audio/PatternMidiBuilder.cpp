@@ -1,4 +1,5 @@
 #include "PatternMidiBuilder.h"
+#include "Pattern.h"
 #include "ChannelStripPlugin.h"
 #include "TrackOutputPlugin.h"
 #include "FxParamTransport.h"

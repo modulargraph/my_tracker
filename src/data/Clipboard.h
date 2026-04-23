@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PatternData.h"
+#include "Pattern.h"
 #include <vector>
 #include <array>
 

@@ -22,10 +22,10 @@ void MetronomePlugin::deinitialise()
     lastBeatPosition = -1.0;
 }
 
-void MetronomePlugin::setEnabled (bool enabled)
+void MetronomePlugin::setEnabled (bool shouldEnable)
 {
-    metronomeEnabled.store (enabled);
-    if (! enabled)
+    metronomeEnabled.store (shouldEnable);
+    if (! shouldEnable)
     {
         clickSamplesRemaining = 0;
         lastBeatPosition = -1.0;

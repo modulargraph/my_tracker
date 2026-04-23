@@ -1,4 +1,6 @@
 #include "ArrangementComponent.h"
+#include "PatternData.h"
+#include "Pattern.h"
 
 ArrangementComponent::ArrangementComponent (Arrangement& arr, PatternData& pd, TrackerLookAndFeel& lnf)
     : arrangement (arr), patternData (pd), lookAndFeel (lnf)

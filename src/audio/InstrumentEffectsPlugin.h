@@ -38,7 +38,7 @@ public:
 
     void setSamplerSource (SimpleSampler* s) { sampler = s; }
     void setInstrumentIndex (int index);
-    void setGlobalModState (GlobalModState* state) { globalModState = state; }
+    void setGlobalModState (GlobalModState* modState) { globalModState = modState; }
     void setGlobalModStates (const std::map<int, GlobalModState*>& states);
     void setRowsPerBeat (int rpb) { rowsPerBeat = rpb; }
     void setSendBuffers (SendBuffers* buffers) { sendBuffers = buffers; }

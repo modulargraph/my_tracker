@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(TrackerAdjust VERSION 0.1.0)
+project(VCTracker VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,22 +16,55 @@ set(TE_ADD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(TRACKTION_ENGINE_DIR "$ENV{HOME}/Libraries/tracktion_engine" CACHE PATH "Path to tracktion_engine")
 set(JUCE_DIR "$ENV{HOME}/Libraries/JUCE" CACHE PATH "Path to JUCE")
 
-# Load JUCE first so tracktion_engine finds it already available
-add_subdirectory(${JUCE_DIR} ${CMAKE_BINARY_DIR}/juce)
+set(TRACKER_APP_COMPILE_DEFINITIONS
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_MODULE_AVAILABLE_juce_audio_basics=1
+    JUCE_MODULE_AVAILABLE_juce_audio_devices=1
+    JUCE_MODULE_AVAILABLE_juce_audio_formats=1
+    JUCE_MODULE_AVAILABLE_juce_audio_processors=1
+    JUCE_MODULE_AVAILABLE_juce_audio_processors_headless=1
+    JUCE_MODULE_AVAILABLE_juce_audio_utils=1
+    JUCE_MODULE_AVAILABLE_juce_core=1
+    JUCE_MODULE_AVAILABLE_juce_data_structures=1
+    JUCE_MODULE_AVAILABLE_juce_dsp=1
+    JUCE_MODULE_AVAILABLE_juce_events=1
+    JUCE_MODULE_AVAILABLE_juce_graphics=1
+    JUCE_MODULE_AVAILABLE_juce_gui_basics=1
+    JUCE_MODULE_AVAILABLE_juce_gui_extra=1
+    JUCE_MODULE_AVAILABLE_juce_osc=1
+    JUCE_MODULE_AVAILABLE_tracktion_core=1
+    JUCE_MODULE_AVAILABLE_tracktion_engine=1
+    JUCE_MODULE_AVAILABLE_tracktion_graph=1
+    JUCE_PLUGINHOST_AU=1
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_STANDALONE_APPLICATION=1
+    JUCE_STRICT_REFCOUNTEDPOINTER=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0)
 
-# Load tracktion_engine (skips its own JUCE since juce::juce_core already exists)
-add_subdirectory(${TRACKTION_ENGINE_DIR} ${CMAKE_BINARY_DIR}/tracktion_engine)
+set(TRACKER_SOURCE_DIRS
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/data
+    ${CMAKE_SOURCE_DIR}/src/audio
+    ${CMAKE_SOURCE_DIR}/src/ui)
 
-juce_add_gui_app(TrackerAdjust
-    BUNDLE_ID "com.trackeradjust.app"
-    PRODUCT_NAME "Tracker Adjust"
-    MICROPHONE_PERMISSION_ENABLED TRUE
-    MICROPHONE_PERMISSION_TEXT "Audio output")
+set(TRACKER_MODULE_INCLUDE_DIRS
+    ${CMAKE_BINARY_DIR}/VCTracker_artefacts/JuceLibraryCode
+    ${TRACKTION_ENGINE_DIR}/modules
+    ${JUCE_DIR}/modules
+    ${JUCE_DIR}/modules/juce_audio_processors_headless/format_types/VST3_SDK
+    ${JUCE_DIR}/modules/juce_audio_processors_headless/format_types/LV2_SDK
+    ${JUCE_DIR}/modules/juce_audio_processors_headless/format_types/LV2_SDK/lv2
+    ${JUCE_DIR}/modules/juce_audio_processors_headless/format_types/LV2_SDK/serd
+    ${JUCE_DIR}/modules/juce_audio_processors_headless/format_types/LV2_SDK/sord
+    ${JUCE_DIR}/modules/juce_audio_processors_headless/format_types/LV2_SDK/sord/src
+    ${JUCE_DIR}/modules/juce_audio_processors_headless/format_types/LV2_SDK/sratom
+    ${JUCE_DIR}/modules/juce_audio_processors_headless/format_types/LV2_SDK/lilv
+    ${JUCE_DIR}/modules/juce_audio_processors_headless/format_types/LV2_SDK/lilv/src)
 
-juce_generate_juce_header(TrackerAdjust)
-
-target_sources(TrackerAdjust PRIVATE
-    src/Main.cpp
+set(TRACKER_CORE_SOURCES
+    src/data/Pattern.cpp
     src/data/PatternData.cpp
     src/audio/TrackerEngine.cpp
     src/audio/SimpleSampler.cpp
@@ -62,23 +95,62 @@ target_sources(TrackerAdjust PRIVATE
     src/ui/AudioPluginSettingsComponent.cpp
     src/ui/PluginAutomationComponent.cpp)
 
-target_include_directories(TrackerAdjust PRIVATE src src/data src/audio src/ui)
+# Load JUCE first so tracktion_engine finds it already available
+add_subdirectory(${JUCE_DIR} ${CMAKE_BINARY_DIR}/juce)
 
-target_compile_features(TrackerAdjust PRIVATE cxx_std_20)
+# Load tracktion_engine (skips its own JUCE since juce::juce_core already exists)
+add_subdirectory(${TRACKTION_ENGINE_DIR} ${CMAKE_BINARY_DIR}/tracktion_engine)
 
-set_target_properties(TrackerAdjust PROPERTIES
+juce_add_gui_app(VCTracker
+    BUNDLE_ID "com.vctracker.app"
+    PRODUCT_NAME "VCTracker"
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "Audio output")
+
+juce_generate_juce_header(VCTracker)
+
+add_library(VCTrackerCore OBJECT ${TRACKER_CORE_SOURCES})
+
+target_include_directories(VCTrackerCore PRIVATE
+    ${TRACKER_SOURCE_DIRS}
+    ${TRACKER_MODULE_INCLUDE_DIRS})
+
+target_compile_features(VCTrackerCore PRIVATE cxx_std_20)
+
+target_compile_definitions(VCTrackerCore PRIVATE ${TRACKER_APP_COMPILE_DEFINITIONS})
+target_compile_definitions(VCTrackerCore PRIVATE
+    $<$<CONFIG:Debug>:DEBUG=1>
+    $<$<CONFIG:Debug>:_DEBUG=1>
+    $<$<NOT:$<CONFIG:Debug>>:NDEBUG=1>)
+
+target_link_libraries(VCTrackerCore PRIVATE juce::juce_recommended_warning_flags)
+
+target_precompile_headers(VCTrackerCore PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_SOURCE_DIR}/src/Precompiled.h>")
+
+set_target_properties(VCTrackerCore PROPERTIES
     C_VISIBILITY_PRESET hidden
     CXX_VISIBILITY_PRESET hidden)
 
-target_compile_definitions(TrackerAdjust PRIVATE
-    JUCE_PLUGINHOST_AU=1
-    JUCE_PLUGINHOST_VST3=1
-    JUCE_USE_CURL=0
-    JUCE_WEB_BROWSER=0
-    JUCE_MODAL_LOOPS_PERMITTED=1
-    JUCE_STRICT_REFCOUNTEDPOINTER=1)
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    target_compile_options(VCTrackerCore PRIVATE "-fno-aligned-allocation")
+endif()
 
-target_link_libraries(TrackerAdjust PRIVATE
+target_sources(VCTracker PRIVATE
+    src/Main.cpp
+    $<TARGET_OBJECTS:VCTrackerCore>)
+
+target_include_directories(VCTracker PRIVATE ${TRACKER_SOURCE_DIRS})
+
+target_compile_features(VCTracker PRIVATE cxx_std_20)
+
+set_target_properties(VCTracker PROPERTIES
+    C_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden)
+
+target_compile_definitions(VCTracker PRIVATE ${TRACKER_APP_COMPILE_DEFINITIONS})
+
+target_link_libraries(VCTracker PRIVATE
     tracktion::tracktion_core
     tracktion::tracktion_engine
     tracktion::tracktion_graph
@@ -89,11 +161,12 @@ target_link_libraries(TrackerAdjust PRIVATE
     juce::juce_recommended_warning_flags)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    target_compile_options(TrackerAdjust PRIVATE "-fno-aligned-allocation")
+    target_compile_options(VCTracker PRIVATE "-fno-aligned-allocation")
 endif()
 
-add_executable(TrackerAdjustTests
-    tests/TrackerAdjustTests.cpp
+add_executable(VCTrackerTests
+    tests/VCTrackerTests.cpp
+    src/data/Pattern.cpp
     src/data/PatternData.cpp
     src/ui/ProjectSerializer.cpp
     src/ui/ArrangementComponent.cpp
@@ -101,13 +174,13 @@ add_executable(TrackerAdjustTests
     src/ui/TrackerGrid.cpp
     src/ui/PluginAutomationComponent.cpp)
 
-target_include_directories(TrackerAdjustTests PRIVATE
+target_include_directories(VCTrackerTests PRIVATE
     src src/data src/audio src/ui
-    ${CMAKE_BINARY_DIR}/TrackerAdjust_artefacts/JuceLibraryCode)
+    ${CMAKE_BINARY_DIR}/VCTracker_artefacts/JuceLibraryCode)
 
-target_compile_features(TrackerAdjustTests PRIVATE cxx_std_20)
+target_compile_features(VCTrackerTests PRIVATE cxx_std_20)
 
-target_compile_definitions(TrackerAdjustTests PRIVATE
+target_compile_definitions(VCTrackerTests PRIVATE
     JUCE_PLUGINHOST_AU=1
     JUCE_PLUGINHOST_VST3=1
     JUCE_USE_CURL=0
@@ -115,7 +188,7 @@ target_compile_definitions(TrackerAdjustTests PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     JUCE_STRICT_REFCOUNTEDPOINTER=1)
 
-target_link_libraries(TrackerAdjustTests PRIVATE
+target_link_libraries(VCTrackerTests PRIVATE
     tracktion::tracktion_core
     tracktion::tracktion_engine
     tracktion::tracktion_graph
@@ -126,35 +199,35 @@ target_link_libraries(TrackerAdjustTests PRIVATE
     juce::juce_recommended_warning_flags)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    target_compile_options(TrackerAdjustTests PRIVATE "-fno-aligned-allocation")
+    target_compile_options(VCTrackerTests PRIVATE "-fno-aligned-allocation")
 endif()
 
-add_test(NAME TrackerAdjustTests COMMAND TrackerAdjustTests)
+add_test(NAME VCTrackerTests COMMAND VCTrackerTests)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # --- Out-of-process plugin validator (tiny C binary) ---
     add_executable(PluginValidator src/audio/PluginValidator.c)
-    add_dependencies(TrackerAdjust PluginValidator)
+    add_dependencies(VCTracker PluginValidator)
 
     # Copy PluginValidator into app bundle (before codesigning)
-    add_custom_command(TARGET TrackerAdjust POST_BUILD
+    add_custom_command(TARGET VCTracker POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:PluginValidator>"
-            "$<TARGET_BUNDLE_DIR:TrackerAdjust>/Contents/MacOS/PluginValidator"
+            "$<TARGET_BUNDLE_DIR:VCTracker>/Contents/MacOS/PluginValidator"
         COMMENT "Copying PluginValidator into app bundle"
         VERBATIM)
 
-    option(TRACKER_CREATE_APP_SHORTCUT "Create fixed app symlink at run/Tracker Adjust.app" ON)
+    option(TRACKER_CREATE_APP_SHORTCUT "Create fixed app symlink at run/VCTracker.app" ON)
     option(TRACKER_ADHOC_CODESIGN "Ad-hoc sign app and test binaries after build on macOS" ON)
 
     if(TRACKER_CREATE_APP_SHORTCUT)
         set(TRACKER_APP_SHORTCUT_DIR "${CMAKE_SOURCE_DIR}/run")
-        set(TRACKER_APP_SHORTCUT_PATH "${TRACKER_APP_SHORTCUT_DIR}/Tracker Adjust.app")
+        set(TRACKER_APP_SHORTCUT_PATH "${TRACKER_APP_SHORTCUT_DIR}/VCTracker.app")
 
-        add_custom_command(TARGET TrackerAdjust POST_BUILD
+        add_custom_command(TARGET VCTracker POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "${TRACKER_APP_SHORTCUT_DIR}"
             COMMAND ${CMAKE_COMMAND} -E rm -f "${TRACKER_APP_SHORTCUT_PATH}"
-            COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_BUNDLE_DIR:TrackerAdjust>" "${TRACKER_APP_SHORTCUT_PATH}"
+            COMMAND ${CMAKE_COMMAND} -E create_symlink "$<TARGET_BUNDLE_DIR:VCTracker>" "${TRACKER_APP_SHORTCUT_PATH}"
             VERBATIM)
     endif()
 
@@ -164,21 +237,21 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
         if(CODESIGN_COMMAND)
             if(XATTR_COMMAND)
-                add_custom_command(TARGET TrackerAdjust POST_BUILD
-                    COMMAND ${XATTR_COMMAND} -cr "$<TARGET_BUNDLE_DIR:TrackerAdjust>"
-                    COMMAND ${CODESIGN_COMMAND} --force --deep --sign - "$<TARGET_BUNDLE_DIR:TrackerAdjust>"
+                add_custom_command(TARGET VCTracker POST_BUILD
+                    COMMAND ${XATTR_COMMAND} -cr "$<TARGET_BUNDLE_DIR:VCTracker>"
+                    COMMAND ${CODESIGN_COMMAND} --force --deep --sign - "$<TARGET_BUNDLE_DIR:VCTracker>"
                     VERBATIM)
             else()
-                add_custom_command(TARGET TrackerAdjust POST_BUILD
-                    COMMAND ${CODESIGN_COMMAND} --force --deep --sign - "$<TARGET_BUNDLE_DIR:TrackerAdjust>"
+                add_custom_command(TARGET VCTracker POST_BUILD
+                    COMMAND ${CODESIGN_COMMAND} --force --deep --sign - "$<TARGET_BUNDLE_DIR:VCTracker>"
                     VERBATIM)
             endif()
 
-            add_custom_command(TARGET TrackerAdjustTests POST_BUILD
-                COMMAND ${CODESIGN_COMMAND} --force --sign - "$<TARGET_FILE:TrackerAdjustTests>"
+            add_custom_command(TARGET VCTrackerTests POST_BUILD
+                COMMAND ${CODESIGN_COMMAND} --force --sign - "$<TARGET_FILE:VCTrackerTests>"
                 VERBATIM)
         else()
-            message(WARNING "codesign not found; TrackerAdjust targets will not be signed")
+            message(WARNING "codesign not found; VCTracker targets will not be signed")
         endif()
     endif()
 endif()

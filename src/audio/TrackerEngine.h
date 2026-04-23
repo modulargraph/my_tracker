@@ -1,22 +1,22 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include <tracktion_engine/tracktion_engine.h>
-#include "PatternData.h"
+#include <functional>
+#include <map>
+#include <memory>
+#include "TrackerConstants.h"
 #include "SimpleSampler.h"
-#include "InstrumentEffectsPlugin.h"
-#include "MetronomePlugin.h"
-#include "SendEffectsPlugin.h"
-#include "SendEffectsParams.h"
-#include "MixerPlugin.h"
-#include "ChannelStripPlugin.h"
-#include "TrackOutputPlugin.h"
 #include "MixerState.h"
-#include "PluginCatalogService.h"
 #include "InstrumentSlotInfo.h"
-#include "PluginAutomationData.h"
 
 namespace te = tracktion;
+
+class PluginCatalogService;
+class SendEffectsPlugin;
+struct Pattern;
+struct PatternAutomationData;
+struct DelayParams;
+struct ReverbParams;
 
 class TrackerEngine : private juce::ChangeListener,
                       private juce::Timer

@@ -12,6 +12,8 @@
 #include "FxParamTransport.h"
 #include "MixerState.h"
 #include "PatternData.h"
+#include "Pattern.h"
+#include "PluginAutomationData.h"
 #include "ProjectSerializer.h"
 #include "SamplePlaybackLayout.h"
 #include "SendBuffers.h"
@@ -2950,12 +2952,12 @@ bool testAutomationDataSerializationRoundTrip()
     auto& pat = source.getCurrentPattern();
 
     // Add automation data
-    auto& lane1 = pat.automationData.getOrCreateLane ("inst:0", 3, 0);
+    auto& lane1 = pat.getAutomationData().getOrCreateLane ("inst:0", 3, 0);
     lane1.setPoint (0, 0.0f);
     lane1.setPoint (16, 1.0f);
     lane1.setPoint (32, 0.5f);
 
-    auto& lane2 = pat.automationData.getOrCreateLane ("insert:0:1", 7, 0);
+    auto& lane2 = pat.getAutomationData().getOrCreateLane ("insert:0:1", 7, 0);
     lane2.setPoint (4, 0.25f, AutomationCurveType::Step);
     lane2.setPoint (12, 0.75f);
 
@@ -2996,7 +2998,7 @@ bool testAutomationDataSerializationRoundTrip()
     auto& loadedPat = loaded.getCurrentPattern();
 
     // Verify lane 1
-    auto* loadedLane1 = loadedPat.automationData.findLane ("inst:0", 3);
+    auto* loadedLane1 = loadedPat.getAutomationData().findLane ("inst:0", 3);
     if (loadedLane1 == nullptr)
     {
         std::cerr << "Lane 1 not found after round-trip\n";
@@ -3029,7 +3031,7 @@ bool testAutomationDataSerializationRoundTrip()
     }
 
     // Verify lane 2
-    auto* loadedLane2 = loadedPat.automationData.findLane ("insert:0:1", 7);
+    auto* loadedLane2 = loadedPat.getAutomationData().findLane ("insert:0:1", 7);
     if (loadedLane2 == nullptr)
     {
         std::cerr << "Lane 2 not found after round-trip\n";
@@ -3055,7 +3057,7 @@ bool testPatternDuplicateClonesAutomation()
 
     // Add automation to pattern 0
     auto& pat = patternData.getCurrentPattern();
-    auto& lane = pat.automationData.getOrCreateLane ("inst:0", 5, 0);
+    auto& lane = pat.getAutomationData().getOrCreateLane ("inst:0", 5, 0);
     lane.setPoint (0, 0.2f);
     lane.setPoint (32, 0.8f);
 
@@ -3071,7 +3073,7 @@ bool testPatternDuplicateClonesAutomation()
     auto& copy = patternData.getPattern (1);
 
     // Verify automation was cloned
-    auto* clonedLane = copy.automationData.findLane ("inst:0", 5);
+    auto* clonedLane = copy.getAutomationData().findLane ("inst:0", 5);
     if (clonedLane == nullptr)
     {
         std::cerr << "Cloned pattern does not have automation lane\n";
@@ -3093,7 +3095,7 @@ bool testPatternDuplicateClonesAutomation()
 
     // Modify the cloned pattern's automation and verify original is unaffected
     clonedLane->setPoint (16, 0.5f);
-    auto* origLane = patternData.getPattern (0).automationData.findLane ("inst:0", 5);
+    auto* origLane = patternData.getPattern (0).getAutomationData().findLane ("inst:0", 5);
     if (origLane == nullptr || origLane->points.size() != 2)
     {
         std::cerr << "Modifying cloned automation affected original\n";
@@ -3143,7 +3145,7 @@ bool testAutomationEmptySerializationRoundTrip()
         return false;
     }
 
-    if (! loaded.getCurrentPattern().automationData.isEmpty())
+    if (! loaded.getCurrentPattern().getAutomationData().isEmpty())
     {
         std::cerr << "Empty automation should remain empty after round-trip\n";
         return false;
@@ -3584,12 +3586,12 @@ bool testCombinedNoteLaneAutomationInsertRoundTrip()
     }
 
     // Set up automation data
-    auto& autoLane1 = source.getPattern (0).automationData.getOrCreateLane ("inst:0", 3, 0);
+    auto& autoLane1 = source.getPattern (0).getAutomationData().getOrCreateLane ("inst:0", 3, 0);
     autoLane1.setPoint (0, 0.1f);
     autoLane1.setPoint (16, 0.9f, AutomationCurveType::Step);
     autoLane1.setPoint (31, 0.5f);
 
-    auto& autoLane2 = source.getPattern (0).automationData.getOrCreateLane ("insert:3:0", 7, 3);
+    auto& autoLane2 = source.getPattern (0).getAutomationData().getOrCreateLane ("insert:3:0", 7, 3);
     autoLane2.setPoint (4, 0.25f);
     autoLane2.setPoint (28, 0.75f);
 
@@ -3748,7 +3750,7 @@ bool testCombinedNoteLaneAutomationInsertRoundTrip()
     }
 
     // Verify automation data
-    auto* loadedAutoLane1 = loaded.getPattern (0).automationData.findLane ("inst:0", 3);
+    auto* loadedAutoLane1 = loaded.getPattern (0).getAutomationData().findLane ("inst:0", 3);
     if (loadedAutoLane1 == nullptr || loadedAutoLane1->points.size() != 3)
     {
         std::cerr << "Combined: automation lane 1 missing or wrong point count\n";
@@ -3767,7 +3769,7 @@ bool testCombinedNoteLaneAutomationInsertRoundTrip()
         return false;
     }
 
-    auto* loadedAutoLane2 = loaded.getPattern (0).automationData.findLane ("insert:3:0", 7);
+    auto* loadedAutoLane2 = loaded.getPattern (0).getAutomationData().findLane ("insert:3:0", 7);
     if (loadedAutoLane2 == nullptr || loadedAutoLane2->points.size() != 2)
     {
         std::cerr << "Combined: automation lane 2 missing or wrong point count\n";
@@ -4024,7 +4026,7 @@ bool testVersionMigrationPreV6LoadsSafely()
     }
 
     // V8+ features: no automation data
-    if (! loaded.getPattern (0).automationData.isEmpty())
+    if (! loaded.getPattern (0).getAutomationData().isEmpty())
     {
         std::cerr << "V4 migration: should have no automation data\n";
         return false;
@@ -4133,16 +4135,16 @@ bool testMultiPatternAutomationRoundTrip()
     source.getPattern (1).name = "Pat1";
 
     // Pattern 0: one automation lane
-    auto& lane0 = source.getPattern (0).automationData.getOrCreateLane ("inst:0", 1, 0);
+    auto& lane0 = source.getPattern (0).getAutomationData().getOrCreateLane ("inst:0", 1, 0);
     lane0.setPoint (0, 0.0f);
     lane0.setPoint (15, 1.0f);
 
     // Pattern 1: two automation lanes
-    auto& lane1a = source.getPattern (1).automationData.getOrCreateLane ("inst:1", 0, 1);
+    auto& lane1a = source.getPattern (1).getAutomationData().getOrCreateLane ("inst:1", 0, 1);
     lane1a.setPoint (0, 0.5f);
     lane1a.setPoint (31, 0.5f);
 
-    auto& lane1b = source.getPattern (1).automationData.getOrCreateLane ("insert:0:0", 2, 0);
+    auto& lane1b = source.getPattern (1).getAutomationData().getOrCreateLane ("insert:0:0", 2, 0);
     lane1b.setPoint (8, 0.3f, AutomationCurveType::Step);
     lane1b.setPoint (24, 0.9f);
 
@@ -4190,7 +4192,7 @@ bool testMultiPatternAutomationRoundTrip()
     }
 
     // Verify pattern 0 automation
-    auto* loadedLane0 = loaded.getPattern (0).automationData.findLane ("inst:0", 1);
+    auto* loadedLane0 = loaded.getPattern (0).getAutomationData().findLane ("inst:0", 1);
     if (loadedLane0 == nullptr || loadedLane0->points.size() != 2)
     {
         std::cerr << "Pattern 0 automation lane missing or wrong point count\n";
@@ -4198,21 +4200,21 @@ bool testMultiPatternAutomationRoundTrip()
     }
 
     // Verify pattern 1 automation
-    if (loaded.getPattern (1).automationData.lanes.size() != 2)
+    if (loaded.getPattern (1).getAutomationData().lanes.size() != 2)
     {
         std::cerr << "Pattern 1 should have 2 automation lanes, got "
-                  << loaded.getPattern (1).automationData.lanes.size() << "\n";
+                  << loaded.getPattern (1).getAutomationData().lanes.size() << "\n";
         return false;
     }
 
-    auto* loadedLane1a = loaded.getPattern (1).automationData.findLane ("inst:1", 0);
+    auto* loadedLane1a = loaded.getPattern (1).getAutomationData().findLane ("inst:1", 0);
     if (loadedLane1a == nullptr || loadedLane1a->owningTrack != 1)
     {
         std::cerr << "Pattern 1 lane 1a missing or wrong owning track\n";
         return false;
     }
 
-    auto* loadedLane1b = loaded.getPattern (1).automationData.findLane ("insert:0:0", 2);
+    auto* loadedLane1b = loaded.getPattern (1).getAutomationData().findLane ("insert:0:0", 2);
     if (loadedLane1b == nullptr || loadedLane1b->points.size() != 2)
     {
         std::cerr << "Pattern 1 lane 1b missing or wrong point count\n";

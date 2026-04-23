@@ -1,4 +1,7 @@
 #include "PatternSerializer.h"
+#include "Pattern.h"
+#include "PatternData.h"
+#include "PluginAutomationData.h"
 
 juce::ValueTree PatternSerializer::patternToValueTree (const Pattern& pattern, int /*index*/)
 {
@@ -106,10 +109,11 @@ juce::ValueTree PatternSerializer::patternToValueTree (const Pattern& pattern, i
     }
 
     // Automation data (Phase 5)
-    if (! pattern.automationData.isEmpty())
+    const auto& automationData = pattern.getAutomationData();
+    if (! automationData.isEmpty())
     {
         juce::ValueTree autoTree ("Automation");
-        for (const auto& lane : pattern.automationData.lanes)
+        for (const auto& lane : automationData.lanes)
         {
             if (lane.isEmpty())
                 continue;
@@ -220,7 +224,8 @@ void PatternSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
     }
 
     // Automation data (Phase 5)
-    pattern.automationData = PatternAutomationData {};
+    pattern.clearAutomationData();
+    auto& automationData = pattern.getAutomationData();
     auto autoTree = tree.getChildWithName ("Automation");
     if (autoTree.isValid())
     {
@@ -250,7 +255,7 @@ void PatternSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
             }
 
             lane.sortPoints();
-            pattern.automationData.lanes.push_back (std::move (lane));
+            automationData.lanes.push_back (std::move (lane));
         }
     }
 }

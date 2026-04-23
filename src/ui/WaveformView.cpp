@@ -47,7 +47,7 @@ void WaveformView::setViewRange (double start, double end)
 
 void WaveformView::setPlaybackPosition (float normPos)
 {
-    if (currentPlaybackPos != normPos)
+    if (! InstrumentParams::approximatelyEqual (currentPlaybackPos, normPos))
     {
         currentPlaybackPos = normPos;
         repaint();

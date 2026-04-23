@@ -1,4 +1,6 @@
 #include "TrackerGrid.h"
+#include "PatternData.h"
+#include "Pattern.h"
 #include "NoteUtils.h"
 #include "PatternEditUtils.h"
 #include "Clipboard.h"

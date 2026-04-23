@@ -1,5 +1,61 @@
 #include "GlobalPreferences.h"
 
+namespace
+{
+constexpr auto kPrefsDirName = "VCTracker";
+constexpr auto kLegacyPrefsDirName = "TrackerAdjust";
+constexpr auto kPrefsRootName = "VCTrackerPrefs";
+constexpr auto kLegacyPrefsRootName = "TrackerAdjustPrefs";
+
+juce::File getCurrentPrefsFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+               .getChildFile (kPrefsDirName)
+               .getChildFile ("prefs.xml");
+}
+
+juce::File getLegacyPrefsFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+               .getChildFile (kLegacyPrefsDirName)
+               .getChildFile ("prefs.xml");
+}
+
+juce::File getPrefsFileForLoad()
+{
+    auto currentPrefsFile = getCurrentPrefsFile();
+    if (currentPrefsFile.existsAsFile())
+        return currentPrefsFile;
+
+    return getLegacyPrefsFile();
+}
+
+juce::ValueTree loadPrefsTree()
+{
+    juce::ValueTree root (kPrefsRootName);
+    auto prefsFile = getPrefsFileForLoad();
+
+    if (! prefsFile.existsAsFile())
+        return root;
+
+    auto xml = juce::XmlDocument::parse (prefsFile);
+    if (xml == nullptr)
+        return root;
+
+    auto loaded = juce::ValueTree::fromXml (*xml);
+    if (! loaded.isValid())
+        return root;
+
+    if (loaded.hasType (kLegacyPrefsRootName))
+    {
+        root.copyPropertiesAndChildrenFrom (loaded, nullptr);
+        return root;
+    }
+
+    return loaded;
+}
+} // namespace
+
 namespace GlobalPreferences
 {
 
@@ -9,9 +65,7 @@ namespace GlobalPreferences
 
 juce::File getPrefsFile()
 {
-    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-               .getChildFile ("TrackerAdjust")
-               .getChildFile ("prefs.xml");
+    return getCurrentPrefsFile();
 }
 
 void saveBrowserDir (const juce::String& dir)
@@ -20,19 +74,7 @@ void saveBrowserDir (const juce::String& dir)
     if (! prefsFile.getParentDirectory().createDirectory())
         return;
 
-    juce::ValueTree root ("TrackerAdjustPrefs");
-
-    // Load existing prefs if any
-    if (prefsFile.existsAsFile())
-    {
-        auto xml = juce::XmlDocument::parse (prefsFile);
-        if (xml != nullptr)
-        {
-            auto loaded = juce::ValueTree::fromXml (*xml);
-            if (loaded.isValid())
-                root = loaded;
-        }
-    }
+    auto root = loadPrefsTree();
 
     root.setProperty ("browserDir", dir, nullptr);
 
@@ -42,17 +84,7 @@ void saveBrowserDir (const juce::String& dir)
 
 juce::String loadBrowserDir()
 {
-    auto prefsFile = getPrefsFile();
-    if (! prefsFile.existsAsFile())
-        return {};
-
-    auto xml = juce::XmlDocument::parse (prefsFile);
-    if (xml == nullptr)
-        return {};
-
-    auto root = juce::ValueTree::fromXml (*xml);
-    if (! root.isValid())
-        return {};
+    auto root = loadPrefsTree();
     return root.getProperty ("browserDir", "").toString();
 }
 
@@ -66,19 +98,7 @@ void savePluginScanPaths (const juce::StringArray& paths)
     if (! prefsFile.getParentDirectory().createDirectory())
         return;
 
-    juce::ValueTree root ("TrackerAdjustPrefs");
-
-    // Load existing prefs if any
-    if (prefsFile.existsAsFile())
-    {
-        auto xml = juce::XmlDocument::parse (prefsFile);
-        if (xml != nullptr)
-        {
-            auto loaded = juce::ValueTree::fromXml (*xml);
-            if (loaded.isValid())
-                root = loaded;
-        }
-    }
+    auto root = loadPrefsTree();
 
     // Remove any existing scan paths child
     auto existing = root.getChildWithName ("PluginScanPaths");
@@ -101,18 +121,7 @@ void savePluginScanPaths (const juce::StringArray& paths)
 
 juce::StringArray loadPluginScanPaths()
 {
-    auto prefsFile = getPrefsFile();
-    if (! prefsFile.existsAsFile())
-        return {};
-
-    auto xml = juce::XmlDocument::parse (prefsFile);
-    if (xml == nullptr)
-        return {};
-
-    auto root = juce::ValueTree::fromXml (*xml);
-    if (! root.isValid())
-        return {};
-
+    auto root = loadPrefsTree();
     auto scanPathsTree = root.getChildWithName ("PluginScanPaths");
     if (! scanPathsTree.isValid())
         return {};
