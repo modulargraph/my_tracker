@@ -30,6 +30,29 @@ inline double getGranularCenterNorm (const InstrumentParams& params)
     return std::clamp (clampNorm (params.granularPosition), start, end);
 }
 
+inline double getGranularCenterNorm (const InstrumentParams& params, double positionOffsetByRegion)
+{
+    const double start = getRegionStartNorm (params);
+    const double end = getRegionEndNorm (params);
+    const double regionLen = end - start;
+    return std::clamp (getGranularCenterNorm (params) + positionOffsetByRegion * regionLen,
+                       start, end);
+}
+
+inline double getLoopStartNorm (const InstrumentParams& params)
+{
+    const double start = getRegionStartNorm (params);
+    const double end = getRegionEndNorm (params);
+    return std::clamp (clampNorm (params.loopStart), start, end);
+}
+
+inline double getLoopEndNorm (const InstrumentParams& params)
+{
+    const double loopStart = getLoopStartNorm (params);
+    const double end = getRegionEndNorm (params);
+    return std::clamp (clampNorm (params.loopEnd), loopStart, end);
+}
+
 inline std::vector<double> getSliceBoundariesNorm (const InstrumentParams& params)
 {
     constexpr double kDuplicateEps = 1.0e-6;

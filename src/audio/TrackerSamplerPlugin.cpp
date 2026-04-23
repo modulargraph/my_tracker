@@ -2,6 +2,7 @@
 #include "SimpleSampler.h"
 #include "InstrumentRouting.h"
 #include "FxParamTransport.h"
+#include "LoopRegion.h"
 #include "SamplePlaybackLayout.h"
 
 const char* TrackerSamplerPlugin::xmlTypeName = "TrackerSampler";
@@ -131,8 +132,8 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
     const auto& paramsRef = v.params;
 
     double totalSmp = static_cast<double> (bankRef.totalSamples);
-    double regionStart = paramsRef.startPos * totalSmp;
-    double regionEnd = paramsRef.endPos * totalSmp;
+    double regionStart = SamplePlaybackLayout::getRegionStartNorm (paramsRef) * totalSmp;
+    double regionEnd = SamplePlaybackLayout::getRegionEndNorm (paramsRef) * totalSmp;
 
     auto playMode = paramsRef.playMode;
 
@@ -194,13 +195,7 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
     // --- Granular ---
     if (playMode == InstrumentParams::PlayMode::Granular)
     {
-        int grainLenSamples = static_cast<int> (paramsRef.granularLength * 0.001 * bankRef.sampleRate);
-        grainLenSamples = juce::jmax (64, grainLenSamples);
-
-        double grainCenter = SamplePlaybackLayout::getGranularCenterNorm (paramsRef) * totalSmp;
-        v.grainStart = juce::jmax (regionStart, grainCenter - grainLenSamples / 2.0);
-        v.grainEnd = juce::jmin (regionEnd, v.grainStart + grainLenSamples);
-        v.grainLength = static_cast<int> (v.grainEnd - v.grainStart);
+        prepareGranularGrain (v, bankRef, paramsRef);
         v.grainPos = 0;
         const bool defaultForward = (paramsRef.granularLoop != InstrumentParams::GranLoop::Reverse);
         const bool useForward = directionOverride >= 0 ? directionOverride == 1 : defaultForward;
@@ -210,7 +205,9 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
     }
 
     // --- Standard modes (OneShot, ForwardLoop, BackwardLoop, PingpongLoop) ---
-    const bool defaultForward = ! paramsRef.reversed;
+    const bool defaultForward = (playMode == InstrumentParams::PlayMode::BackwardLoop)
+                                    ? false
+                                    : ! paramsRef.reversed;
     const bool useForward = directionOverride >= 0 ? directionOverride == 1 : defaultForward;
 
     if (! useForward)
@@ -235,8 +232,8 @@ void TrackerSamplerPlugin::renderOneShot (Voice& v, juce::AudioBuffer<float>& bu
 {
     double pitchRatio = getPitchRatio (v.midiNote, bank, params);
     double totalSmp = static_cast<double> (bank.totalSamples);
-    double regionStart = params.startPos * totalSmp;
-    double regionEnd = params.endPos * totalSmp;
+    double regionStart = SamplePlaybackLayout::getRegionStartNorm (params) * totalSmp;
+    double regionEnd = SamplePlaybackLayout::getRegionEndNorm (params) * totalSmp;
     double advance = v.playingForward ? pitchRatio : -pitchRatio;
     int numCh = buffer.getNumChannels();
 
@@ -268,22 +265,7 @@ void TrackerSamplerPlugin::renderForwardLoop (Voice& v, juce::AudioBuffer<float>
                                                const SampleBank& bank, const InstrumentParams& params)
 {
     double pitchRatio = getPitchRatio (v.midiNote, bank, params);
-    double totalSmp = static_cast<double> (bank.totalSamples);
-    double regionStart = params.startPos * totalSmp;
-    double regionEnd = params.endPos * totalSmp;
-    double regionLen = regionEnd - regionStart;
-
-    double loopStartPos = regionStart + params.loopStart * regionLen;
-    double loopEndPos = regionStart + params.loopEnd * regionLen;
-    if (loopEndPos <= loopStartPos) loopEndPos = loopStartPos + 1.0;
-    double loopLen = loopEndPos - loopStartPos;
-    auto wrapLoopPosition = [loopStartPos, loopLen] (double pos)
-    {
-        double wrapped = std::fmod (pos - loopStartPos, loopLen);
-        if (wrapped < 0.0)
-            wrapped += loopLen;
-        return loopStartPos + wrapped;
-    };
+    const auto loop = LoopRegion::fromParams (params, static_cast<double> (bank.totalSamples));
 
     int numCh = buffer.getNumChannels();
 
@@ -303,25 +285,25 @@ void TrackerSamplerPlugin::renderForwardLoop (Voice& v, juce::AudioBuffer<float>
             {
                 v.playbackPos += pitchRatio;
                 advancedInAttack = true;
-                if (v.playbackPos >= loopStartPos)
+                if (v.playbackPos >= loop.loopStart)
                 {
                     v.inLoopPhase = true;
-                    v.playbackPos = wrapLoopPosition (v.playbackPos);
+                    v.playbackPos = loop.wrapPosition (v.playbackPos);
                 }
             }
             else
             {
                 // Reverse command while in pre-loop attack: enter loop phase immediately.
                 v.inLoopPhase = true;
-                if (v.playbackPos < loopStartPos)
-                    v.playbackPos = loopStartPos;
+                if (v.playbackPos < loop.loopStart)
+                    v.playbackPos = loop.loopStart;
             }
         }
 
         if (v.inLoopPhase && ! advancedInAttack)
         {
             v.playbackPos += v.playingForward ? pitchRatio : -pitchRatio;
-            v.playbackPos = wrapLoopPosition (v.playbackPos);
+            v.playbackPos = loop.wrapPosition (v.playbackPos);
         }
     }
 }
@@ -331,22 +313,7 @@ void TrackerSamplerPlugin::renderBackwardLoop (Voice& v, juce::AudioBuffer<float
                                                 const SampleBank& bank, const InstrumentParams& params)
 {
     double pitchRatio = getPitchRatio (v.midiNote, bank, params);
-    double totalSmp = static_cast<double> (bank.totalSamples);
-    double regionStart = params.startPos * totalSmp;
-    double regionEnd = params.endPos * totalSmp;
-    double regionLen = regionEnd - regionStart;
-
-    double loopStartPos = regionStart + params.loopStart * regionLen;
-    double loopEndPos = regionStart + params.loopEnd * regionLen;
-    if (loopEndPos <= loopStartPos) loopEndPos = loopStartPos + 1.0;
-    double loopLen = loopEndPos - loopStartPos;
-    auto wrapLoopPosition = [loopStartPos, loopLen] (double pos)
-    {
-        double wrapped = std::fmod (pos - loopStartPos, loopLen);
-        if (wrapped < 0.0)
-            wrapped += loopLen;
-        return loopStartPos + wrapped;
-    };
+    const auto loop = LoopRegion::fromParams (params, static_cast<double> (bank.totalSamples));
 
     int numCh = buffer.getNumChannels();
 
@@ -360,18 +327,29 @@ void TrackerSamplerPlugin::renderBackwardLoop (Voice& v, juce::AudioBuffer<float
 
         if (! v.inLoopPhase)
         {
-            // Attack: play forward to loop start
-            v.playbackPos += pitchRatio;
-            if (v.playbackPos >= loopStartPos)
+            if (v.playingForward)
             {
-                v.inLoopPhase = true;
-                v.playbackPos = v.playingForward ? loopStartPos : (loopEndPos - 1.0);
+                v.playbackPos += pitchRatio;
+                if (v.playbackPos >= loop.loopEnd)
+                {
+                    v.inLoopPhase = true;
+                    v.playbackPos = loop.wrapPosition (v.playbackPos);
+                }
+            }
+            else
+            {
+                v.playbackPos -= pitchRatio;
+                if (v.playbackPos < loop.loopEnd)
+                {
+                    v.inLoopPhase = true;
+                    v.playbackPos = loop.wrapPosition (v.playbackPos);
+                }
             }
         }
         else
         {
             v.playbackPos += v.playingForward ? pitchRatio : -pitchRatio;
-            v.playbackPos = wrapLoopPosition (v.playbackPos);
+            v.playbackPos = loop.wrapPosition (v.playbackPos);
         }
     }
 }
@@ -381,14 +359,7 @@ void TrackerSamplerPlugin::renderPingpongLoop (Voice& v, juce::AudioBuffer<float
                                                 const SampleBank& bank, const InstrumentParams& params)
 {
     double pitchRatio = getPitchRatio (v.midiNote, bank, params);
-    double totalSmp = static_cast<double> (bank.totalSamples);
-    double regionStart = params.startPos * totalSmp;
-    double regionEnd = params.endPos * totalSmp;
-    double regionLen = regionEnd - regionStart;
-
-    double loopStartPos = regionStart + params.loopStart * regionLen;
-    double loopEndPos = regionStart + params.loopEnd * regionLen;
-    if (loopEndPos <= loopStartPos) loopEndPos = loopStartPos + 1.0;
+    const auto loop = LoopRegion::fromParams (params, static_cast<double> (bank.totalSamples));
 
     int numCh = buffer.getNumChannels();
 
@@ -404,11 +375,11 @@ void TrackerSamplerPlugin::renderPingpongLoop (Voice& v, juce::AudioBuffer<float
         {
             // Attack: play forward to loop end (first pass through loop region)
             v.playbackPos += pitchRatio;
-            if (v.playbackPos >= loopEndPos)
+            if (v.playbackPos >= loop.loopEnd)
             {
                 v.inLoopPhase = true;
                 v.playingForward = false;
-                v.playbackPos = 2.0 * loopEndPos - v.playbackPos;
+                v.playbackPos = 2.0 * loop.loopEnd - v.playbackPos;
             }
         }
         else
@@ -418,14 +389,14 @@ void TrackerSamplerPlugin::renderPingpongLoop (Voice& v, juce::AudioBuffer<float
             else
                 v.playbackPos -= pitchRatio;
 
-            if (v.playbackPos >= loopEndPos)
+            if (v.playbackPos >= loop.loopEnd)
             {
-                v.playbackPos = 2.0 * loopEndPos - v.playbackPos;
+                v.playbackPos = 2.0 * loop.loopEnd - v.playbackPos;
                 v.playingForward = false;
             }
-            else if (v.playbackPos < loopStartPos)
+            else if (v.playbackPos < loop.loopStart)
             {
-                v.playbackPos = 2.0 * loopStartPos - v.playbackPos;
+                v.playbackPos = 2.0 * loop.loopStart - v.playbackPos;
                 v.playingForward = true;
             }
         }
@@ -440,6 +411,9 @@ void TrackerSamplerPlugin::renderSlice (Voice& v, juce::AudioBuffer<float>& buff
     double pitchRatio = bank.sampleRate / outputSampleRate;
     pitchRatio *= std::pow (2.0, params.tune / 12.0);
     pitchRatio *= std::pow (2.0, params.finetune / 1200.0);
+    float fxPitch = pitchOffset.load (std::memory_order_relaxed);
+    if (std::abs (fxPitch) > 0.001f)
+        pitchRatio *= std::pow (2.0, static_cast<double> (fxPitch) / 12.0);
 
     int numCh = buffer.getNumChannels();
 
@@ -463,6 +437,48 @@ void TrackerSamplerPlugin::renderSlice (Voice& v, juce::AudioBuffer<float>& buff
             v.state = Voice::State::Idle;
         }
     }
+}
+
+void TrackerSamplerPlugin::prepareGranularGrain (Voice& v, const SampleBank& bank,
+                                                  const InstrumentParams& params)
+{
+    const double totalSmp = static_cast<double> (bank.totalSamples);
+    const double regionStart = SamplePlaybackLayout::getRegionStartNorm (params) * totalSmp;
+    const double regionEnd = SamplePlaybackLayout::getRegionEndNorm (params) * totalSmp;
+    if (regionEnd <= regionStart)
+    {
+        v.grainStart = regionStart;
+        v.grainEnd = regionStart;
+        v.grainLength = 1;
+        return;
+    }
+
+    const double regionLen = regionEnd - regionStart;
+
+    double grainLenSamples = static_cast<double> (params.granularLength) * 0.001 * bank.sampleRate;
+    grainLenSamples = juce::jlimit (1.0, regionLen, juce::jmax (64.0, grainLenSamples));
+
+    const double positionOffset = static_cast<double> (
+        granularPositionOffset.load (std::memory_order_relaxed));
+    double grainCenter = SamplePlaybackLayout::getGranularCenterNorm (params, positionOffset) * totalSmp;
+
+    double grainStart = grainCenter - grainLenSamples / 2.0;
+    double grainEnd = grainStart + grainLenSamples;
+
+    if (grainStart < regionStart)
+    {
+        grainEnd += regionStart - grainStart;
+        grainStart = regionStart;
+    }
+    if (grainEnd > regionEnd)
+    {
+        grainStart -= grainEnd - regionEnd;
+        grainEnd = regionEnd;
+    }
+
+    v.grainStart = juce::jlimit (regionStart, regionEnd - 1.0, grainStart);
+    v.grainEnd = juce::jlimit (v.grainStart + 1.0, regionEnd, grainEnd);
+    v.grainLength = juce::jmax (1, static_cast<int> (v.grainEnd - v.grainStart));
 }
 
 void TrackerSamplerPlugin::renderGranular (Voice& v, juce::AudioBuffer<float>& buffer,
@@ -492,6 +508,7 @@ void TrackerSamplerPlugin::renderGranular (Voice& v, juce::AudioBuffer<float>& b
         if (v.grainPos >= v.grainLength)
         {
             v.grainPos = 0;
+            prepareGranularGrain (v, bank, params);
 
             switch (params.granularLoop)
             {
@@ -524,8 +541,8 @@ void TrackerSamplerPlugin::applyPositionCommandToVoice (Voice& v, int positionBy
     const auto& params = v.params;
 
     double totalSmp = static_cast<double> (bank.totalSamples);
-    double regionStart = params.startPos * totalSmp;
-    double regionEnd = params.endPos * totalSmp;
+    double regionStart = SamplePlaybackLayout::getRegionStartNorm (params) * totalSmp;
+    double regionEnd = SamplePlaybackLayout::getRegionEndNorm (params) * totalSmp;
 
     if ((params.playMode == InstrumentParams::PlayMode::Slice
          || params.playMode == InstrumentParams::PlayMode::BeatSlice)
@@ -739,7 +756,12 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     pendingSampleOffset = -1;
                     hasPendingSampleOffsetHighBit = false;
                     if (voice.state == Voice::State::Playing)
-                        voice.playingForward = ! voice.params.reversed;
+                    {
+                        voice.playingForward =
+                            voice.params.playMode == InstrumentParams::PlayMode::BackwardLoop
+                                ? false
+                                : ! voice.params.reversed;
+                    }
                 }
                 else
                 {

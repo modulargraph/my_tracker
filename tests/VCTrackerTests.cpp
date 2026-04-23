@@ -10,6 +10,7 @@
 #include "ArrangementComponent.h"
 #include "InstrumentRouting.h"
 #include "FxParamTransport.h"
+#include "LoopRegion.h"
 #include "MixerState.h"
 #include "PatternData.h"
 #include "Pattern.h"
@@ -1973,6 +1974,66 @@ bool testGranularCenterClampsToRegion()
     if (! doublesClose (center, 0.25))
     {
         std::cerr << "granular center should clamp to region start; got " << center << "\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testGranularCenterOffsetClampsToRegion()
+{
+    InstrumentParams params;
+    params.startPos = 0.25;
+    params.endPos = 0.75;
+    params.granularPosition = 0.50;
+
+    if (! doublesClose (SamplePlaybackLayout::getGranularCenterNorm (params, 0.5), 0.75))
+    {
+        std::cerr << "positive granular offset should clamp to region end\n";
+        return false;
+    }
+
+    if (! doublesClose (SamplePlaybackLayout::getGranularCenterNorm (params, -0.5), 0.25))
+    {
+        std::cerr << "negative granular offset should clamp to region start\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testLoopRegionUsesAbsolutePositions()
+{
+    InstrumentParams params;
+    params.startPos = 0.20;
+    params.endPos = 0.80;
+    params.loopStart = 0.30;
+    params.loopEnd = 0.70;
+
+    const auto loop = LoopRegion::fromParams (params, 1000.0);
+
+    if (! doublesClose (loop.loopStart, 300.0) || ! doublesClose (loop.loopEnd, 700.0))
+    {
+        std::cerr << "loop markers should use absolute sample positions\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testLoopRegionDefaultsClampToPlaybackRegion()
+{
+    InstrumentParams params;
+    params.startPos = 0.20;
+    params.endPos = 0.80;
+    params.loopStart = 0.0;
+    params.loopEnd = 1.0;
+
+    const auto loop = LoopRegion::fromParams (params, 1000.0);
+
+    if (! doublesClose (loop.loopStart, 200.0) || ! doublesClose (loop.loopEnd, 800.0))
+    {
+        std::cerr << "default loop markers should clamp to trimmed playback region\n";
         return false;
     }
 
@@ -4603,6 +4664,9 @@ int main()
         { "ArrangementRemapPreservesRepeats", &testArrangementRemapPreservesRepeats },
         { "GranularCenterUsesAbsolutePosition", &testGranularCenterUsesAbsolutePosition },
         { "GranularCenterClampsToRegion", &testGranularCenterClampsToRegion },
+        { "GranularCenterOffsetClampsToRegion", &testGranularCenterOffsetClampsToRegion },
+        { "LoopRegionUsesAbsolutePositions", &testLoopRegionUsesAbsolutePositions },
+        { "LoopRegionDefaultsClampToPlaybackRegion", &testLoopRegionDefaultsClampToPlaybackRegion },
         { "SliceBoundariesUseAbsolutePositions", &testSliceBoundariesUseAbsolutePositions },
         { "SliceBoundariesClampAndDeduplicate", &testSliceBoundariesClampAndDeduplicate },
         { "EqualSlicePointGenerationUsesRegionCount", &testEqualSlicePointGenerationUsesRegionCount },

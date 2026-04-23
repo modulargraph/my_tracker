@@ -53,6 +53,10 @@ public:
         currentBankMsb = (instrumentIndex >> 7) & 0x7F;
     }
     void setPitchOffset (float semitones) { pitchOffset.store (semitones, std::memory_order_relaxed); }
+    void setGranularPositionOffset (float regionOffset)
+    {
+        granularPositionOffset.store (juce::jlimit (-1.0f, 1.0f, regionOffset), std::memory_order_relaxed);
+    }
 
     // Pre-load multiple banks for multi-instrument per track
     void preloadBanks (const std::map<int, std::shared_ptr<const SampleBank>>& banks)
@@ -146,6 +150,7 @@ private:
 
     // FX pitch offset (set by InstrumentEffectsPlugin for slides/arpeggio/etc.)
     std::atomic<float> pitchOffset { 0.0f };
+    std::atomic<float> granularPositionOffset { 0.0f };
 
     // Sample offset from 9xx effect (set via CC#9, consumed on next note-on)
     int pendingSampleOffset = -1;
@@ -180,6 +185,7 @@ private:
     void renderGranular (Voice& v, juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
                          const SampleBank& bank, const InstrumentParams& params);
     void applyPositionCommandToVoice (Voice& v, int positionByte);
+    void prepareGranularGrain (Voice& v, const SampleBank& bank, const InstrumentParams& params);
 
     double getPitchRatio (int midiNote, const SampleBank& bank, const InstrumentParams& params) const;
     float interpolateSample (const SampleBank& bank, int channel, double pos) const;

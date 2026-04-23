@@ -947,7 +947,10 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     {
         if (auto* track = dynamic_cast<te::AudioTrack*> (getOwnerTrack()))
             if (auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+            {
                 samplerPlugin->setPitchOffset (0.0f);
+                samplerPlugin->setGranularPositionOffset (0.0f);
+            }
         return;
     }
 
@@ -993,35 +996,33 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             cutoffMult = juce::jlimit (0.0f, 1.0f, 1.0f - cutAmount * 0.5f + cutScaled * 0.5f);
     }
 
-    // Advance other modulators even if not directly used here
-    getModulationValue (static_cast<int> (InstrumentParams::ModDest::GranularPos),
-                        params, bpm, numSamples);
-    getModulationValue (static_cast<int> (InstrumentParams::ModDest::Finetune),
-                        params, bpm, numSamples);
+    // --- Granular position: additive offset across the selected playback region ---
+    float granularPositionMod = getModulationValue (
+        static_cast<int> (InstrumentParams::ModDest::GranularPos),
+        params, bpm, numSamples);
+
+    // --- Finetune: full modulation amount spans one semitone (+/- 100 cents) ---
+    float finetunePitchMod = getModulationValue (
+        static_cast<int> (InstrumentParams::ModDest::Finetune),
+        params, bpm, numSamples);
 
     // Process FX commands (arpeggio, slides, vibrato, tremolo, volume slide)
     float fxPitchMod = 0.0f;
     float fxVolumeMod = 1.0f;
     processFxCommands (numSamples, fxPitchMod, fxVolumeMod);
+    fxPitchMod += finetunePitchMod;
 
-    // Apply pitch mod to sampler if present (pitch bend via sampler plugin)
-    if (std::abs (fxPitchMod) > 0.001f && sampler != nullptr)
+    // Apply realtime sampler offsets (pitch bend and granular position).
+    if (sampler != nullptr)
     {
-        // Apply pitch bend: find TrackerSamplerPlugin on same track and set pitch offset
         auto* track = dynamic_cast<te::AudioTrack*> (getOwnerTrack());
         if (track != nullptr)
         {
             if (auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+            {
                 samplerPlugin->setPitchOffset (fxPitchMod);
-        }
-    }
-    else if (sampler != nullptr)
-    {
-        auto* track = dynamic_cast<te::AudioTrack*> (getOwnerTrack());
-        if (track != nullptr)
-        {
-            if (auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
-                samplerPlugin->setPitchOffset (0.0f);
+                samplerPlugin->setGranularPositionOffset (granularPositionMod);
+            }
         }
     }
 

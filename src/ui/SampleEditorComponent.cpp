@@ -250,6 +250,10 @@ void SampleEditorComponent::constrainPlaybackMarkersToRegion()
 
     currentParams.startPos = juce::jlimit (0.0, 1.0, currentParams.startPos);
     currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0, currentParams.endPos);
+    currentParams.loopStart = juce::jlimit (currentParams.startPos, currentParams.endPos,
+                                             currentParams.loopStart);
+    currentParams.loopEnd = juce::jlimit (currentParams.loopStart, currentParams.endPos,
+                                           currentParams.loopEnd);
     currentParams.granularPosition = juce::jlimit (currentParams.startPos, currentParams.endPos,
                                                    currentParams.granularPosition);
 
@@ -1335,10 +1339,10 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                         currentParams.cutoff + direction * step);
                     break;
                 }
-                case 6: // Resonance (capped at 85 for speaker safety)
+                case 6: // Resonance
                 {
                     int step = fine ? 1 : (large ? 10 : 5);
-                    currentParams.resonance = juce::jlimit (0, 85,
+                    currentParams.resonance = juce::jlimit (0, 100,
                         currentParams.resonance + direction * step);
                     break;
                 }
@@ -1555,11 +1559,11 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                             currentParams.startPos + direction * step);
                         break;
                     case 1: // Loop Start
-                        currentParams.loopStart = juce::jlimit (0.0, currentParams.loopEnd,
+                        currentParams.loopStart = juce::jlimit (currentParams.startPos, currentParams.loopEnd,
                             currentParams.loopStart + direction * step);
                         break;
                     case 2: // Loop End
-                        currentParams.loopEnd = juce::jlimit (currentParams.loopStart, 1.0,
+                        currentParams.loopEnd = juce::jlimit (currentParams.loopStart, currentParams.endPos,
                             currentParams.loopEnd + direction * step);
                         break;
                     case 3: // End
@@ -1728,9 +1732,9 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                     currentParams.cutoff = juce::jlimit (0, 100,
                         currentParams.cutoff + juce::roundToInt (normDelta * 100.0));
                     break;
-                case 6: // Resonance 0-85
-                    currentParams.resonance = juce::jlimit (0, 85,
-                        currentParams.resonance + juce::roundToInt (normDelta * 85.0));
+                case 6: // Resonance 0-100
+                    currentParams.resonance = juce::jlimit (0, 100,
+                        currentParams.resonance + juce::roundToInt (normDelta * 100.0));
                     break;
                 case 7: // Overdrive 0-100
                     currentParams.overdrive = juce::jlimit (0, 100,
@@ -1892,11 +1896,11 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                             currentParams.startPos + normDelta);
                         break;
                     case 1:
-                        currentParams.loopStart = juce::jlimit (0.0, currentParams.loopEnd,
+                        currentParams.loopStart = juce::jlimit (currentParams.startPos, currentParams.loopEnd,
                             currentParams.loopStart + normDelta);
                         break;
                     case 2:
-                        currentParams.loopEnd = juce::jlimit (currentParams.loopStart, 1.0,
+                        currentParams.loopEnd = juce::jlimit (currentParams.loopStart, currentParams.endPos,
                             currentParams.loopEnd + normDelta);
                         break;
                     case 3:
@@ -2595,8 +2599,8 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                         switch (playbackColumn)
                         {
                             case 0: currentParams.startPos = juce::jlimit (0.0, currentParams.endPos, normPos); break;
-                            case 1: currentParams.loopStart = juce::jlimit (0.0, currentParams.loopEnd, normPos); break;
-                            case 2: currentParams.loopEnd = juce::jlimit (currentParams.loopStart, 1.0, normPos); break;
+                            case 1: currentParams.loopStart = juce::jlimit (currentParams.startPos, currentParams.loopEnd, normPos); break;
+                            case 2: currentParams.loopEnd = juce::jlimit (currentParams.loopStart, currentParams.endPos, normPos); break;
                             case 3: currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0, normPos); break;
                             default: break;
                         }
@@ -2749,7 +2753,7 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                         case 2: currentParams.tune      = static_cast<int> (-24.0 + norm * 48.0); break;
                         case 3: currentParams.finetune  = static_cast<int> (-100.0 + norm * 200.0); break;
                         case 5: currentParams.cutoff    = static_cast<int> (norm * 100.0); break;
-                        case 6: currentParams.resonance = static_cast<int> (norm * 85.0); break;
+                        case 6: currentParams.resonance = static_cast<int> (norm * 100.0); break;
                         case 7: currentParams.overdrive = static_cast<int> (norm * 100.0); break;
                         case 8: currentParams.bitDepth  = 4 + static_cast<int> (norm * 12.0); break;
                         case 9: currentParams.reverbSend = -100.0 + norm * 100.0; break;
@@ -2834,10 +2838,10 @@ void SampleEditorComponent::mouseDrag (const juce::MouseEvent& event)
                 currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0, normPos);
                 break;
             case MarkerType::LoopStart:
-                currentParams.loopStart = juce::jlimit (0.0, currentParams.loopEnd, normPos);
+                currentParams.loopStart = juce::jlimit (currentParams.startPos, currentParams.loopEnd, normPos);
                 break;
             case MarkerType::LoopEnd:
-                currentParams.loopEnd = juce::jlimit (currentParams.loopStart, 1.0, normPos);
+                currentParams.loopEnd = juce::jlimit (currentParams.loopStart, currentParams.endPos, normPos);
                 break;
             case MarkerType::GranPos:
                 currentParams.granularPosition = juce::jlimit (0.0, 1.0, normPos);

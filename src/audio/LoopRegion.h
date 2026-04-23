@@ -1,6 +1,7 @@
 #pragma once
 
 #include "InstrumentParams.h"
+#include "SamplePlaybackLayout.h"
 
 /**
  * Helper for computing loop region boundaries from InstrumentParams.
@@ -14,12 +15,8 @@ struct LoopRegion
 
     static LoopRegion fromParams (const InstrumentParams& params, double totalSamples)
     {
-        double regionStart = params.startPos * totalSamples;
-        double regionEnd = params.endPos * totalSamples;
-        double regionLen = regionEnd - regionStart;
-
-        double ls = regionStart + params.loopStart * regionLen;
-        double le = regionStart + params.loopEnd * regionLen;
+        double ls = SamplePlaybackLayout::getLoopStartNorm (params) * totalSamples;
+        double le = SamplePlaybackLayout::getLoopEndNorm (params) * totalSamples;
         if (le <= ls) le = ls + 1.0;
 
         return { ls, le, le - ls };
