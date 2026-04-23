@@ -60,6 +60,21 @@ juce::ValueTree loadGlobalPrefsTree()
 
     return loaded;
 }
+
+juce::String getEmbeddedSampleFileName (int instrumentIndex, const juce::String& originalFileName)
+{
+    auto safeName = juce::File::createLegalFileName (originalFileName);
+    if (safeName.isEmpty())
+        safeName = "sample";
+
+    return "instrument_" + juce::String (instrumentIndex) + "_" + safeName;
+}
+
+juce::File getEmbeddedSamplesDir (const juce::File& projectFile)
+{
+    return projectFile.getParentDirectory().getChildFile (
+        projectFile.getFileNameWithoutExtension() + "_samples");
+}
 } // namespace
 
 juce::String ProjectSerializer::saveToFile (const juce::File& file, const PatternData& patternData,
@@ -99,10 +114,20 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         sample.setProperty ("absPath", sampleFile.getFullPathName(), nullptr);
         sample.setProperty ("filename", sampleFile.getFileName(), nullptr);
 
-        // Embed sample data as base64 for self-contained projects
+        if (! sampleFile.existsAsFile())
+            return "Sample file not found for instrument "
+                   + juce::String::formatted ("%02X", index)
+                   + ": " + sampleFile.getFullPathName();
+
+        // Embed sample data as base64 for self-contained projects.
         juce::MemoryBlock fileData;
-        if (sampleFile.existsAsFile() && sampleFile.loadFileAsData (fileData))
-            sample.setProperty ("data", fileData.toBase64Encoding(), nullptr);
+        if (! sampleFile.loadFileAsData (fileData) || fileData.getSize() == 0)
+            return "Failed to embed sample for instrument "
+                   + juce::String::formatted ("%02X", index)
+                   + ": " + sampleFile.getFullPathName();
+
+        sample.setProperty ("data", fileData.toBase64Encoding(), nullptr);
+        sample.setProperty ("dataSize", static_cast<juce::int64> (fileData.getSize()), nullptr);
 
         samples.addChild (sample, -1, nullptr);
     }
@@ -618,39 +643,51 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
         {
             auto sample = samples.getChild (i);
             int index = sample.getProperty ("index", -1);
+            if (index < 0)
+                continue;
+
             juce::String absPath = sample.getProperty ("absPath", "");
             juce::String relPath = sample.getProperty ("path", "");
+            juce::String base64Data = sample.getProperty ("data", "").toString();
 
-            juce::File sampleFile (absPath);
-            if (! sampleFile.existsAsFile())
-                sampleFile = file.getParentDirectory().getChildFile (relPath);
+            juce::File sampleFile;
 
-            // If file not found on disk, extract from embedded data
-            if (! sampleFile.existsAsFile())
+            // Prefer embedded bytes when present so the project file is the
+            // authoritative sample source even if the original path still exists
+            // but has since changed.
+            if (base64Data.isNotEmpty())
             {
-                juce::String base64Data = sample.getProperty ("data", "").toString();
-                if (base64Data.isNotEmpty())
+                juce::MemoryBlock fileData;
+                if (fileData.fromBase64Encoding (base64Data) && fileData.getSize() > 0)
                 {
-                    juce::MemoryBlock fileData;
-                    if (fileData.fromBase64Encoding (base64Data))
-                    {
-                        juce::String filename = sample.getProperty ("filename", "").toString();
-                        if (filename.isEmpty())
-                            filename = "sample_" + juce::String (index) + ".wav";
+                    juce::String filename = sample.getProperty ("filename", "").toString();
+                    if (filename.isEmpty())
+                        filename = "sample.wav";
 
-                        // Extract to a directory next to the project file
-                        auto samplesDir = file.getParentDirectory().getChildFile (
-                            file.getFileNameWithoutExtension() + "_samples");
-                        samplesDir.createDirectory();
-                        sampleFile = samplesDir.getChildFile (filename);
+                    auto samplesDir = getEmbeddedSamplesDir (file);
+                    if (! samplesDir.createDirectory())
+                        return "Failed to create embedded samples directory: "
+                               + samplesDir.getFullPathName();
 
-                        if (! sampleFile.existsAsFile())
-                            sampleFile.replaceWithData (fileData.getData(), fileData.getSize());
-                    }
+                    sampleFile = samplesDir.getChildFile (getEmbeddedSampleFileName (index, filename));
+                    if (! sampleFile.replaceWithData (fileData.getData(), fileData.getSize()))
+                        return "Failed to extract embedded sample: " + sampleFile.getFullPathName();
+                }
+                else
+                {
+                    return "Failed to decode embedded sample for instrument "
+                           + juce::String::formatted ("%02X", index);
                 }
             }
 
-            if (sampleFile.existsAsFile() && index >= 0)
+            if (! sampleFile.existsAsFile())
+            {
+                sampleFile = juce::File (absPath);
+                if (! sampleFile.existsAsFile())
+                    sampleFile = file.getParentDirectory().getChildFile (relPath);
+            }
+
+            if (sampleFile.existsAsFile())
                 loadedSamples[index] = sampleFile;
         }
     }

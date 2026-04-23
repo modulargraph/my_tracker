@@ -1,5 +1,6 @@
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <map>
 #include <vector>
@@ -737,6 +738,176 @@ bool testProjectRoundTripKeepsFollowModeAndBrowserDir()
     if (loadedBrowserDir != browserDir)
     {
         std::cerr << "browser directory mismatch after round-trip\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testEmbeddedSampleDataPreferredOverExternalPath()
+{
+    PatternData source;
+    source.getPattern (0).resize (8);
+
+    auto tempDir = juce::File::getSpecialLocation (juce::File::tempDirectory);
+    auto projectFile = tempDir.getNonexistentChildFile ("embedded_sample_roundtrip", ".tkadj", false);
+    auto sampleFile = tempDir.getNonexistentChildFile ("embedded_sample_source", ".wav", false);
+
+    const char originalData[] = "VCTracker embedded sample payload v1";
+    const char mutatedData[] = "external sample payload changed after save";
+
+    if (! sampleFile.replaceWithData (originalData, sizeof (originalData) - 1))
+    {
+        std::cerr << "failed to create source sample file\n";
+        return false;
+    }
+
+    std::map<int, juce::File> samples;
+    samples[3] = sampleFile;
+
+    std::map<int, InstrumentParams> params;
+    Arrangement arrangement;
+    TrackLayout trackLayout;
+    MixerState mixerState;
+    DelayParams delayParams;
+    ReverbParams reverbParams;
+
+    auto saveErr = ProjectSerializer::saveToFile (projectFile, source, 120.0, 4,
+                                                   samples, params, arrangement, trackLayout,
+                                                   mixerState, delayParams, reverbParams);
+    if (saveErr.isNotEmpty())
+    {
+        std::cerr << "embedded sample save failed: " << saveErr << "\n";
+        sampleFile.deleteFile();
+        projectFile.deleteFile();
+        return false;
+    }
+
+    auto projectText = projectFile.loadFileAsString();
+    if (! projectText.contains ("data="))
+    {
+        std::cerr << "saved project does not contain embedded sample data\n";
+        sampleFile.deleteFile();
+        projectFile.deleteFile();
+        return false;
+    }
+
+    if (! sampleFile.replaceWithData (mutatedData, sizeof (mutatedData) - 1))
+    {
+        std::cerr << "failed to mutate source sample file\n";
+        sampleFile.deleteFile();
+        projectFile.deleteFile();
+        return false;
+    }
+
+    PatternData loaded;
+    double bpm = 0.0;
+    int rowsPerBeat = 0;
+    std::map<int, juce::File> loadedSamples;
+    std::map<int, InstrumentParams> loadedParams;
+    Arrangement loadedArrangement;
+    TrackLayout loadedTrackLayout;
+    MixerState loadedMixerState;
+    DelayParams loadedDelayParams;
+    ReverbParams loadedReverbParams;
+
+    auto loadErr = ProjectSerializer::loadFromFile (projectFile, loaded, bpm, rowsPerBeat,
+                                                     loadedSamples, loadedParams,
+                                                     loadedArrangement, loadedTrackLayout,
+                                                     loadedMixerState, loadedDelayParams,
+                                                     loadedReverbParams);
+
+    auto extractedSamplesDir = projectFile.getParentDirectory().getChildFile (
+        projectFile.getFileNameWithoutExtension() + "_samples");
+
+    if (loadErr.isNotEmpty())
+    {
+        std::cerr << "embedded sample load failed: " << loadErr << "\n";
+        sampleFile.deleteFile();
+        projectFile.deleteFile();
+        extractedSamplesDir.deleteRecursively();
+        return false;
+    }
+
+    auto sampleIt = loadedSamples.find (3);
+    if (sampleIt == loadedSamples.end())
+    {
+        std::cerr << "embedded sample instrument missing after load\n";
+        sampleFile.deleteFile();
+        projectFile.deleteFile();
+        extractedSamplesDir.deleteRecursively();
+        return false;
+    }
+
+    if (sampleIt->second == sampleFile)
+    {
+        std::cerr << "load used mutable external sample path instead of embedded data\n";
+        sampleFile.deleteFile();
+        projectFile.deleteFile();
+        extractedSamplesDir.deleteRecursively();
+        return false;
+    }
+
+    juce::MemoryBlock loadedData;
+    if (! sampleIt->second.loadFileAsData (loadedData))
+    {
+        std::cerr << "failed to read extracted embedded sample\n";
+        sampleFile.deleteFile();
+        projectFile.deleteFile();
+        extractedSamplesDir.deleteRecursively();
+        return false;
+    }
+
+    const bool matchesOriginal = loadedData.getSize() == sizeof (originalData) - 1
+        && std::memcmp (loadedData.getData(), originalData, sizeof (originalData) - 1) == 0;
+
+    sampleFile.deleteFile();
+    projectFile.deleteFile();
+    extractedSamplesDir.deleteRecursively();
+
+    if (! matchesOriginal)
+    {
+        std::cerr << "embedded sample data did not survive round-trip\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testSaveFailsWhenSampleCannotBeEmbedded()
+{
+    PatternData source;
+    source.getPattern (0).resize (8);
+
+    auto tempDir = juce::File::getSpecialLocation (juce::File::tempDirectory);
+    auto projectFile = tempDir.getNonexistentChildFile ("missing_sample_save", ".tkadj", false);
+    auto missingSample = tempDir.getNonexistentChildFile ("missing_sample_source", ".wav", false);
+    missingSample.deleteFile();
+
+    std::map<int, juce::File> samples;
+    samples[7] = missingSample;
+
+    std::map<int, InstrumentParams> params;
+    Arrangement arrangement;
+    TrackLayout trackLayout;
+    MixerState mixerState;
+    DelayParams delayParams;
+    ReverbParams reverbParams;
+
+    auto saveErr = ProjectSerializer::saveToFile (projectFile, source, 120.0, 4,
+                                                   samples, params, arrangement, trackLayout,
+                                                   mixerState, delayParams, reverbParams);
+    projectFile.deleteFile();
+
+    if (saveErr.isEmpty())
+    {
+        std::cerr << "save succeeded even though sample could not be embedded\n";
+        return false;
+    }
+
+    if (! saveErr.contains ("Sample file not found"))
+    {
+        std::cerr << "unexpected missing sample save error: " << saveErr << "\n";
         return false;
     }
 
@@ -2536,6 +2707,12 @@ bool testPluginInstrumentSlotSerializationRoundTrip()
         desc.category = "Synth";
         desc.isInstrument = true;
         info.setPlugin (desc, 2);
+        juce::ValueTree state ("PluginState");
+        state.setProperty ("presetName", "Wide Pad", nullptr);
+        juce::ValueTree child ("Chunk");
+        child.setProperty ("bytes", "abc123", nullptr);
+        state.addChild (child, -1, nullptr);
+        info.pluginState = state;
         pluginSlots[5] = info;
     }
     {
@@ -2628,6 +2805,18 @@ bool testPluginInstrumentSlotSerializationRoundTrip()
     if (it5->second.pluginDescription.uniqueId != 1234)
     {
         std::cerr << "Slot 5 uniqueId should be 1234\n";
+        return false;
+    }
+    if (! it5->second.pluginState.isValid()
+        || it5->second.pluginState.getProperty ("presetName", "").toString() != "Wide Pad")
+    {
+        std::cerr << "Slot 5 plugin state did not round-trip\n";
+        return false;
+    }
+    auto stateChild = it5->second.pluginState.getChildWithName ("Chunk");
+    if (! stateChild.isValid() || stateChild.getProperty ("bytes", "").toString() != "abc123")
+    {
+        std::cerr << "Slot 5 plugin state child did not round-trip\n";
         return false;
     }
 
@@ -3317,6 +3506,86 @@ bool testInsertSlotStateRoundTrip()
         || ! mixerStateOut.insertSlots[2].empty())
     {
         std::cerr << "Tracks without inserts should have empty slot vectors\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testMasterInsertSlotStateRoundTrip()
+{
+    PatternData source;
+    source.getPattern (0).resize (8);
+
+    Arrangement arrangement;
+    TrackLayout trackLayout;
+    DelayParams delayParams;
+    ReverbParams reverbParams;
+    std::map<int, juce::File> loadedSamples;
+    std::map<int, InstrumentParams> instrumentParams;
+
+    MixerState mixerState;
+    InsertSlotState slot;
+    slot.pluginName = "MasterLimiter";
+    slot.pluginIdentifier = "com.test.masterlimiter";
+    slot.pluginFormatName = "VST3";
+    slot.bypassed = true;
+    juce::ValueTree state ("LimiterState");
+    state.setProperty ("threshold", -1.5, nullptr);
+    state.setProperty ("release", 125.0, nullptr);
+    slot.pluginState = state;
+    mixerState.masterInsertSlots.push_back (std::move (slot));
+
+    PatternData loaded;
+    double loadedBpm = 0.0;
+    int loadedRpb = 0;
+    std::map<int, juce::File> loadedSamplesOut;
+    std::map<int, InstrumentParams> instrumentParamsOut;
+    Arrangement arrangementOut;
+    TrackLayout trackLayoutOut;
+    MixerState mixerStateOut;
+    DelayParams delayOut;
+    ReverbParams reverbOut;
+
+    auto err = runProjectRoundTrip ("tracker_adjust_master_insert_rt",
+                                    source, 120.0, 4,
+                                    loadedSamples, instrumentParams,
+                                    arrangement, trackLayout, mixerState,
+                                    delayParams, reverbParams, 0, {},
+                                    loaded, loadedBpm, loadedRpb,
+                                    loadedSamplesOut, instrumentParamsOut,
+                                    arrangementOut, trackLayoutOut,
+                                    mixerStateOut, delayOut, reverbOut);
+    if (err.isNotEmpty())
+    {
+        std::cerr << "Master insert slot round-trip failed: " << err << "\n";
+        return false;
+    }
+
+    if (mixerStateOut.masterInsertSlots.size() != 1)
+    {
+        std::cerr << "Expected 1 master insert slot, got "
+                  << mixerStateOut.masterInsertSlots.size() << "\n";
+        return false;
+    }
+
+    const auto& loadedSlot = mixerStateOut.masterInsertSlots[0];
+    if (loadedSlot.pluginName != "MasterLimiter"
+        || loadedSlot.pluginIdentifier != "com.test.masterlimiter"
+        || loadedSlot.pluginFormatName != "VST3"
+        || ! loadedSlot.bypassed)
+    {
+        std::cerr << "Master insert slot metadata mismatch\n";
+        return false;
+    }
+
+    double threshold = loadedSlot.pluginState.getProperty ("threshold", 0.0);
+    double release = loadedSlot.pluginState.getProperty ("release", 0.0);
+    if (! loadedSlot.pluginState.isValid()
+        || std::abs (threshold - (-1.5)) > 1.0e-6
+        || std::abs (release - 125.0) > 1.0e-6)
+    {
+        std::cerr << "Master insert plugin state mismatch\n";
         return false;
     }
 
@@ -4579,6 +4848,8 @@ int main()
         { "ArrangementRemapNoOpWhenPatternCountInvalid", &testArrangementRemapNoOpWhenPatternCountInvalid },
         { "ProjectRoundTripKeepsHighInstrumentAndFxSlots", &testProjectRoundTripKeepsHighInstrumentAndFxSlots },
         { "ProjectRoundTripKeepsFollowModeAndBrowserDir", &testProjectRoundTripKeepsFollowModeAndBrowserDir },
+        { "EmbeddedSampleDataPreferredOverExternalPath", &testEmbeddedSampleDataPreferredOverExternalPath },
+        { "SaveFailsWhenSampleCannotBeEmbedded", &testSaveFailsWhenSampleCannotBeEmbedded },
         { "ProjectRoundTripKeepsMixerLayoutAndInstrumentParams", &testProjectRoundTripKeepsMixerLayoutAndInstrumentParams },
         { "ArrangementDeleteNotifiesChangeCallback", &testArrangementDeleteNotifiesChangeCallback },
         { "BpmBoundaryRoundTrip", &testBpmBoundaryRoundTrip },
@@ -4620,6 +4891,7 @@ int main()
         { "AutomationEmptySerializationRoundTrip", &testAutomationEmptySerializationRoundTrip },
         // Phase 6: Regression and stabilization tests
         { "InsertSlotStateRoundTrip", &testInsertSlotStateRoundTrip },
+        { "MasterInsertSlotStateRoundTrip", &testMasterInsertSlotStateRoundTrip },
         { "AutomationStepCurveInterpolation", &testAutomationStepCurveInterpolation },
         { "AutomationRemovePointNearBehavior", &testAutomationRemovePointNearBehavior },
         { "PatternAutomationDataOperations", &testPatternAutomationDataOperations },
