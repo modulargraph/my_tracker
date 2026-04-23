@@ -54,7 +54,10 @@ void TabBarComponent::mouseDown (const juce::MouseEvent& event)
     {
         if (tab.bounds.contains (event.getPosition()))
         {
+            bool wasActive = (tab.tab == activeTab);
             setActiveTab (tab.tab);
+            if (wasActive && onTabChanged)
+                onTabChanged (activeTab);
             return;
         }
     }
