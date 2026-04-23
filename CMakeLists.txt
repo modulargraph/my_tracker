@@ -269,7 +269,6 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
             if(XATTR_COMMAND)
                 add_custom_command(TARGET VCTracker POST_BUILD
                     COMMAND ${XATTR_COMMAND} -cr "$<TARGET_BUNDLE_DIR:VCTracker>"
-                    COMMAND ${XATTR_COMMAND} -wx com.apple.FinderInfo "0000000000000000000000000000000000000000000000000000000000000000" "$<TARGET_BUNDLE_DIR:VCTracker>"
                     COMMAND ${CODESIGN_COMMAND} --force --deep --sign - "$<TARGET_BUNDLE_DIR:VCTracker>"
                     VERBATIM)
             else()
