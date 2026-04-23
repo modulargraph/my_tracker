@@ -443,7 +443,7 @@ void PluginAutomationComponent::parameterSelectionChanged()
     auto pluginId = getSelectedPluginId();
     int paramIdx = getSelectedParameterIndex();
 
-    if (pluginId.isNotEmpty() && paramIdx >= 0 && onParameterSelected)
+    if (! suppressSelectionCallbacks && pluginId.isNotEmpty() && paramIdx >= 0 && onParameterSelected)
         onParameterSelected (pluginId, paramIdx);
 
     selectedPoints.clear();

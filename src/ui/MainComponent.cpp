@@ -1615,7 +1615,15 @@ void MainComponent::timerCallback()
         if (playPatternIndex >= 0 && playPatternIndex < patternData.getNumPatterns() && playRow >= 0)
         {
             const auto& automationData = patternData.getPattern (playPatternIndex).getAutomationData();
-            trackerEngine.applyAutomationForPlaybackRow (automationData, playRow);
+            juce::String recordingPluginId;
+            int recordingParamIdx = -1;
+            if (automationPanelVisible && automationPanel != nullptr && automationPanel->isRecording())
+            {
+                recordingPluginId = automationPanel->getSelectedPluginId();
+                recordingParamIdx = automationPanel->getSelectedParameterIndex();
+            }
+
+            trackerEngine.applyAutomationForPlaybackRow (automationData, playRow, recordingPluginId, recordingParamIdx);
         }
 
         trackerGrid->setPlaybackRow (playRow);
