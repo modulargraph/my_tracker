@@ -3209,6 +3209,19 @@ bool testInsertSlotStateRoundTrip()
         mixerState.insertSlots[5].push_back (std::move (slot));
     }
 
+    // Master: one insert slot with plugin state
+    {
+        InsertSlotState slot;
+        slot.pluginName = "MasterTape";
+        slot.pluginIdentifier = "com.test.mastertape";
+        slot.pluginFormatName = "VST3";
+        slot.bypassed = true;
+        juce::ValueTree state ("PluginState");
+        state.setProperty ("drive", 0.35, nullptr);
+        slot.pluginState = state;
+        mixerState.masterInsertSlots.push_back (std::move (slot));
+    }
+
     PatternData loaded;
     double loadedBpm = 0.0;
     int loadedRpb = 0;
@@ -3310,6 +3323,30 @@ bool testInsertSlotStateRoundTrip()
     {
         std::cerr << "Track 5 slot 0 name mismatch\n";
         return false;
+    }
+
+    if (mixerStateOut.masterInsertSlots.size() != 1)
+    {
+        std::cerr << "Master insert slot count mismatch\n";
+        return false;
+    }
+    {
+        auto& slot = mixerStateOut.masterInsertSlots[0];
+        if (slot.pluginName != "MasterTape"
+            || slot.pluginIdentifier != "com.test.mastertape"
+            || slot.pluginFormatName != "VST3"
+            || ! slot.bypassed)
+        {
+            std::cerr << "Master insert slot metadata mismatch\n";
+            return false;
+        }
+        double drive = slot.pluginState.getProperty ("drive", 0.0);
+        if (! slot.pluginState.isValid()
+            || std::abs (drive - 0.35) > 1.0e-6)
+        {
+            std::cerr << "Master insert slot plugin state mismatch\n";
+            return false;
+        }
     }
 
     // Tracks without inserts should remain empty
@@ -4244,6 +4281,15 @@ bool testInsertSlotMaxCapacity()
         mixerState.insertSlots[0].push_back (std::move (slot));
     }
 
+    for (int i = 0; i < kMaxInsertSlots; ++i)
+    {
+        InsertSlotState slot;
+        slot.pluginName = "MasterPlugin" + juce::String (i);
+        slot.pluginIdentifier = "com.test.masterplugin" + juce::String (i);
+        slot.pluginFormatName = "VST3";
+        mixerState.masterInsertSlots.push_back (std::move (slot));
+    }
+
     PatternData source;
     Arrangement arrangement;
     TrackLayout trackLayout;
@@ -4293,6 +4339,23 @@ bool testInsertSlotMaxCapacity()
             != "Plugin" + juce::String (i))
         {
             std::cerr << "Insert slot " << i << " name mismatch\n";
+            return false;
+        }
+    }
+
+    if (static_cast<int> (mixerStateOut.masterInsertSlots.size()) != kMaxInsertSlots)
+    {
+        std::cerr << "Expected " << kMaxInsertSlots << " master insert slots, got "
+                  << mixerStateOut.masterInsertSlots.size() << "\n";
+        return false;
+    }
+
+    for (int i = 0; i < kMaxInsertSlots; ++i)
+    {
+        if (mixerStateOut.masterInsertSlots[static_cast<size_t> (i)].pluginName
+            != "MasterPlugin" + juce::String (i))
+        {
+            std::cerr << "Master insert slot " << i << " name mismatch\n";
             return false;
         }
     }

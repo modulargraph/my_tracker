@@ -126,6 +126,60 @@ te::Plugin* findInsertPluginForSlot (te::AudioTrack& track, int slotIndex)
 
     return nullptr;
 }
+
+te::Plugin* findMasterInsertPluginForSlot (te::PluginList& pluginList, int slotIndex)
+{
+    if (slotIndex < 0)
+        return nullptr;
+
+    bool pastSendEffects = false;
+    int insertIdx = 0;
+
+    for (int i = 0; i < pluginList.size(); ++i)
+    {
+        auto* plugin = pluginList[i];
+        if (dynamic_cast<SendEffectsPlugin*> (plugin) != nullptr)
+        {
+            pastSendEffects = true;
+            continue;
+        }
+
+        if (! pastSendEffects)
+            continue;
+
+        if (dynamic_cast<te::ExternalPlugin*> (plugin) == nullptr)
+            continue;
+
+        if (insertIdx == slotIndex)
+            return plugin;
+
+        ++insertIdx;
+    }
+
+    return nullptr;
+}
+
+int getMasterInsertAppendPosition (te::PluginList& pluginList)
+{
+    int insertPos = pluginList.size();
+    bool pastSendEffects = false;
+
+    for (int i = 0; i < pluginList.size(); ++i)
+    {
+        auto* plugin = pluginList[i];
+        if (dynamic_cast<SendEffectsPlugin*> (plugin) != nullptr)
+        {
+            pastSendEffects = true;
+            insertPos = i + 1;
+            continue;
+        }
+
+        if (pastSendEffects && dynamic_cast<te::ExternalPlugin*> (plugin) != nullptr)
+            insertPos = i + 1;
+    }
+
+    return insertPos;
+}
 } // namespace
 
 TrackerEngine::TrackerEngine()
@@ -1417,20 +1471,29 @@ float TrackerEngine::getMetronomeVolume() const
 
 void TrackerEngine::setupSendEffectsTrack()
 {
-    auto* track = getTrack (kSendEffectsTrack);
-    if (track == nullptr) return;
+    sendEffectsPlugin = nullptr;
 
     // Prepare send buffers (default block size, stereo)
     sampler.getSendBuffers().prepare (8192, 2);
 
-    // Create and insert the SendEffectsPlugin on the bus track
-    auto* existing = track->pluginList.findFirstPluginOfType<SendEffectsPlugin>();
+    // Older builds hosted this on a silent bus track, which meant master
+    // processing could miss the real summed mix. Keep the final send/master
+    // processor on Tracktion's master plugin list instead.
+    if (auto* legacyBusTrack = getTrack (kSendEffectsTrack))
+        if (auto* legacy = legacyBusTrack->pluginList.findFirstPluginOfType<SendEffectsPlugin>())
+            legacy->removeFromParent();
+
+    if (edit == nullptr)
+        return;
+
+    auto& masterPlugins = edit->getMasterPluginList();
+    auto* existing = masterPlugins.findFirstPluginOfType<SendEffectsPlugin>();
     if (existing == nullptr)
     {
         if (auto plugin = dynamic_cast<SendEffectsPlugin*> (
-                track->edit.getPluginCache().createNewPlugin (SendEffectsPlugin::xmlTypeName, {}).get()))
+                edit->getPluginCache().createNewPlugin (SendEffectsPlugin::xmlTypeName, {}).get()))
         {
-            track->pluginList.insertPlugin (*plugin, 0, nullptr);
+            masterPlugins.insertPlugin (*plugin, 0, nullptr);
             existing = plugin;
         }
     }
@@ -1472,7 +1535,9 @@ ReverbParams TrackerEngine::getReverbParams() const
 void TrackerEngine::setMixerState (MixerState* state)
 {
     mixerStatePtr = state;
+    setupSendEffectsTrack();
     setupMixerPlugins();
+    rebuildMasterInsertChain();
 }
 
 void TrackerEngine::setupChannelStripAndOutput (int trackIndex)
@@ -1537,10 +1602,13 @@ void TrackerEngine::setupMixerPlugins()
 
 void TrackerEngine::refreshMixerPlugins()
 {
+    setupSendEffectsTrack();
     setupMixerPlugins();
 
     for (int t = 0; t < kNumTracks; ++t)
         rebuildInsertChain (t);
+
+    rebuildMasterInsertChain();
 }
 
 float TrackerEngine::getTrackPeakLevel (int trackIndex) const
@@ -1812,6 +1880,161 @@ void TrackerEngine::rebuildInsertChain (int trackIndex)
     }
 }
 
+bool TrackerEngine::addMasterInsertPlugin (const juce::PluginDescription& desc)
+{
+    if (edit == nullptr || mixerStatePtr == nullptr)
+        return false;
+
+    auto& slots = mixerStatePtr->masterInsertSlots;
+    if (static_cast<int> (slots.size()) >= kMaxInsertSlots)
+        return false;
+
+    setupSendEffectsTrack();
+
+    auto& formatManager = engine->getPluginManager().pluginFormatManager;
+    juce::String errorMessage;
+
+    auto instance = formatManager.createPluginInstance (desc, 44100.0, 512, errorMessage);
+    if (instance == nullptr)
+    {
+        DBG ("Failed to create master insert plugin: " + errorMessage);
+        return false;
+    }
+
+    auto externalPlugin = edit->getPluginCache().createNewPlugin (
+        te::ExternalPlugin::xmlTypeName, desc);
+
+    if (externalPlugin == nullptr)
+        return false;
+
+    auto& masterPlugins = edit->getMasterPluginList();
+    masterPlugins.insertPlugin (*externalPlugin, getMasterInsertAppendPosition (masterPlugins), nullptr);
+
+    InsertSlotState newSlot;
+    newSlot.pluginName = desc.name;
+    newSlot.pluginIdentifier = desc.createIdentifierString();
+    newSlot.pluginFormatName = desc.pluginFormatName;
+    newSlot.bypassed = false;
+    slots.push_back (std::move (newSlot));
+
+    if (onInsertStateChanged)
+        onInsertStateChanged();
+
+    return true;
+}
+
+void TrackerEngine::removeMasterInsertPlugin (int slotIndex)
+{
+    if (edit == nullptr || mixerStatePtr == nullptr)
+        return;
+
+    auto& slots = mixerStatePtr->masterInsertSlots;
+    if (slotIndex < 0 || slotIndex >= static_cast<int> (slots.size()))
+        return;
+
+    closeMasterPluginEditor (slotIndex);
+
+    auto& masterPlugins = edit->getMasterPluginList();
+    if (auto* plugin = findMasterInsertPluginForSlot (masterPlugins, slotIndex))
+        plugin->removeFromParent();
+
+    slots.erase (slots.begin() + slotIndex);
+
+    if (onInsertStateChanged)
+        onInsertStateChanged();
+}
+
+void TrackerEngine::setMasterInsertBypassed (int slotIndex, bool bypassed)
+{
+    if (edit == nullptr || mixerStatePtr == nullptr)
+        return;
+
+    auto& slots = mixerStatePtr->masterInsertSlots;
+    if (slotIndex < 0 || slotIndex >= static_cast<int> (slots.size()))
+        return;
+
+    slots[static_cast<size_t> (slotIndex)].bypassed = bypassed;
+
+    if (auto* plugin = getMasterInsertPlugin (slotIndex))
+        plugin->setEnabled (! bypassed);
+
+    if (onInsertStateChanged)
+        onInsertStateChanged();
+}
+
+te::Plugin* TrackerEngine::getMasterInsertPlugin (int slotIndex)
+{
+    if (edit == nullptr)
+        return nullptr;
+
+    return findMasterInsertPluginForSlot (edit->getMasterPluginList(), slotIndex);
+}
+
+void TrackerEngine::rebuildMasterInsertChain()
+{
+    if (edit == nullptr || mixerStatePtr == nullptr)
+        return;
+
+    setupSendEffectsTrack();
+
+    auto& masterPlugins = edit->getMasterPluginList();
+
+    std::vector<te::Plugin*> toRemove;
+    bool pastSendEffects = false;
+    for (int i = 0; i < masterPlugins.size(); ++i)
+    {
+        auto* plugin = masterPlugins[i];
+        if (dynamic_cast<SendEffectsPlugin*> (plugin) != nullptr)
+        {
+            pastSendEffects = true;
+            continue;
+        }
+
+        if (pastSendEffects && dynamic_cast<te::ExternalPlugin*> (plugin) != nullptr)
+            toRemove.push_back (plugin);
+    }
+
+    for (auto* p : toRemove)
+        p->removeFromParent();
+
+    for (auto& slot : mixerStatePtr->masterInsertSlots)
+    {
+        if (slot.isEmpty())
+            continue;
+
+        auto& knownList = engine->getPluginManager().knownPluginList;
+        const juce::PluginDescription* matchedDesc = nullptr;
+
+        for (auto& desc : knownList.getTypes())
+        {
+            if (desc.createIdentifierString() == slot.pluginIdentifier)
+            {
+                matchedDesc = &desc;
+                break;
+            }
+        }
+
+        if (matchedDesc == nullptr)
+            continue;
+
+        auto externalPlugin = edit->getPluginCache().createNewPlugin (
+            te::ExternalPlugin::xmlTypeName, *matchedDesc);
+
+        if (externalPlugin == nullptr)
+            continue;
+
+        masterPlugins.insertPlugin (*externalPlugin, getMasterInsertAppendPosition (masterPlugins), nullptr);
+
+        if (slot.pluginState.isValid())
+        {
+            if (auto* ext = dynamic_cast<te::ExternalPlugin*> (externalPlugin.get()))
+                ext->restorePluginStateFromValueTree (slot.pluginState);
+        }
+
+        externalPlugin->setEnabled (! slot.bypassed);
+    }
+}
+
 void TrackerEngine::snapshotInsertPluginStates()
 {
     if (edit == nullptr || mixerStatePtr == nullptr)
@@ -1835,6 +2058,23 @@ void TrackerEngine::snapshotInsertPluginStates()
             {
                 slot.pluginState = {};
             }
+        }
+    }
+
+    for (int slotIndex = 0; slotIndex < static_cast<int> (mixerStatePtr->masterInsertSlots.size()); ++slotIndex)
+    {
+        auto& slot = mixerStatePtr->masterInsertSlots[static_cast<size_t> (slotIndex)];
+        if (slot.isEmpty())
+            continue;
+
+        if (auto* ext = dynamic_cast<te::ExternalPlugin*> (getMasterInsertPlugin (slotIndex)))
+        {
+            ext->flushPluginStateToValueTree();
+            slot.pluginState = ext->state.createCopy();
+        }
+        else
+        {
+            slot.pluginState = {};
         }
     }
 }
@@ -1865,8 +2105,23 @@ void TrackerEngine::openPluginEditor (int trackIndex, int slotIndex)
         return;
 
     juce::String key = juce::String (trackIndex) + ":" + juce::String (slotIndex);
+    openExternalPluginEditor (plugin, key);
+}
 
-    // Check if window already exists
+void TrackerEngine::openMasterPluginEditor (int slotIndex)
+{
+    auto* plugin = getMasterInsertPlugin (slotIndex);
+    if (plugin == nullptr)
+        return;
+
+    openExternalPluginEditor (plugin, "master:" + juce::String (slotIndex));
+}
+
+void TrackerEngine::openExternalPluginEditor (te::Plugin* plugin, const juce::String& key)
+{
+    if (plugin == nullptr)
+        return;
+
     if (pluginEditorWindows.count (key) > 0 && pluginEditorWindows[key] != nullptr)
     {
         pluginEditorWindows[key]->toFront (true);
@@ -1922,6 +2177,11 @@ void TrackerEngine::closePluginEditor (int trackIndex, int slotIndex)
 {
     juce::String key = juce::String (trackIndex) + ":" + juce::String (slotIndex);
     pluginEditorWindows.erase (key);
+}
+
+void TrackerEngine::closeMasterPluginEditor (int slotIndex)
+{
+    pluginEditorWindows.erase ("master:" + juce::String (slotIndex));
 }
 
 void TrackerEngine::changeListenerCallback (juce::ChangeBroadcaster*)

@@ -565,6 +565,53 @@ MainComponent::MainComponent()
         trackerEngine.openPluginEditor (track, slotIndex);
     };
 
+    mixerComponent->onAddMasterInsertClicked = [this]
+    {
+        auto effects = trackerEngine.getPluginCatalog().getEffects();
+        if (effects.isEmpty())
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::InfoIcon,
+                "No Plugins", "No effect plugins found. Scan for plugins in Audio Plugin Settings first.");
+            return;
+        }
+
+        sortPluginsByManufacturerAndName (effects);
+        auto menu = buildPluginMenuByManufacturer (effects);
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (mixerComponent.get()),
+            [this, effects] (int result)
+            {
+                if (result > 0)
+                {
+                    auto desc = effects[result - 1];
+                    if (trackerEngine.addMasterInsertPlugin (desc))
+                    {
+                        mixerComponent->repaint();
+                        markDirty();
+                    }
+                }
+            });
+    };
+
+    mixerComponent->onRemoveMasterInsertClicked = [this] (int slotIndex)
+    {
+        trackerEngine.removeMasterInsertPlugin (slotIndex);
+        mixerComponent->repaint();
+        markDirty();
+    };
+
+    mixerComponent->onMasterInsertBypassToggled = [this] (int slotIndex, bool bypassed)
+    {
+        trackerEngine.setMasterInsertBypassed (slotIndex, bypassed);
+        mixerComponent->repaint();
+        markDirty();
+    };
+
+    mixerComponent->onOpenMasterInsertEditor = [this] (int slotIndex)
+    {
+        trackerEngine.openMasterPluginEditor (slotIndex);
+    };
+
     // Callback from engine when insert state changes (e.g. after addInsertPlugin modifies the state model)
     trackerEngine.onInsertStateChanged = [this]
     {

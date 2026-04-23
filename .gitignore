@@ -1,4 +1,5 @@
 build/
+build-ninja/
 cmake-build-*/
 run/
 .DS_Store

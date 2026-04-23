@@ -131,12 +131,19 @@ public:
     void setInsertBypassed (int trackIndex, int slotIndex, bool bypassed);
     te::Plugin* getInsertPlugin (int trackIndex, int slotIndex);
     void rebuildInsertChain (int trackIndex);
+    bool addMasterInsertPlugin (const juce::PluginDescription& desc);
+    void removeMasterInsertPlugin (int slotIndex);
+    void setMasterInsertBypassed (int slotIndex, bool bypassed);
+    te::Plugin* getMasterInsertPlugin (int slotIndex);
+    void rebuildMasterInsertChain();
     void snapshotInsertPluginStates();
     void snapshotPluginInstrumentStates();
 
     // Plugin editor window management
     void openPluginEditor (int trackIndex, int slotIndex);
     void closePluginEditor (int trackIndex, int slotIndex);
+    void openMasterPluginEditor (int slotIndex);
+    void closeMasterPluginEditor (int slotIndex);
 
     // Callback when inserts change (for UI refresh)
     std::function<void()> onInsertStateChanged;
@@ -233,6 +240,7 @@ private:
     void setupSendEffectsTrack();
     void setupMixerPlugins();
     void setupChannelStripAndOutput (int trackIndex);
+    void openExternalPluginEditor (te::Plugin* plugin, const juce::String& key);
 
     // Plugin editor windows (keyed by "track:slot")
     std::map<juce::String, std::unique_ptr<juce::DocumentWindow>> pluginEditorWindows;
