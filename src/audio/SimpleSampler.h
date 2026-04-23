@@ -46,6 +46,7 @@ public:
 
     // Preview a note on a specific track
     void playNote (te::AudioTrack& track, int midiNote, float velocity = 1.0f);
+    void playNotes (te::AudioTrack& track, const std::vector<int>& midiNotes, float velocity = 1.0f);
     void stopNote (te::AudioTrack& track);
 
     // Get all loaded samples for serialization

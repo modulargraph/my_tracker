@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include <tracktion_engine/tracktion_engine.h>
+#include <atomic>
 #include "MixerState.h"
 #include "SendBuffers.h"
 
@@ -48,8 +49,19 @@ public:
     void resetPeak() { peakLevel.store (0.0f, std::memory_order_relaxed); }
 
 private:
-    juce::SpinLock mixStateLock;
-    TrackMixState sharedMixState;
+    struct AtomicOutputState
+    {
+        std::atomic<uint32_t> sequence { 0 };
+        std::atomic<float> volume { 0.0f };
+        std::atomic<int> pan { 0 };
+        std::atomic<float> reverbSend { -100.0f };
+        std::atomic<float> delaySend { -100.0f };
+
+        void store (const TrackMixState& state);
+        bool loadConsistent (TrackMixState& state) const;
+    };
+
+    AtomicOutputState sharedMixState;
     TrackMixState localMixState;
     SendBuffers* sendBuffers = nullptr;
 

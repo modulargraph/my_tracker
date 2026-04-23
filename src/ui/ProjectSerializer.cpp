@@ -180,6 +180,8 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         // Granular
         paramTree.setProperty ("grainPos", params.granularPosition, nullptr);
         paramTree.setProperty ("grainLen", params.granularLength, nullptr);
+        paramTree.setProperty ("grainLenMode", static_cast<int> (params.granularLengthMode), nullptr);
+        paramTree.setProperty ("grainLenSteps", params.granularLengthSteps, nullptr);
         paramTree.setProperty ("grainShape", static_cast<int> (params.granularShape), nullptr);
         paramTree.setProperty ("grainLoop", static_cast<int> (params.granularLoop), nullptr);
 
@@ -754,6 +756,13 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
 
                 params.granularPosition = paramTree.getProperty ("grainPos", 0.0);
                 params.granularLength   = paramTree.getProperty ("grainLen", 500);
+                {
+                    int glm = static_cast<int> (paramTree.getProperty ("grainLenMode", 0));
+                    if (glm >= 0 && glm <= static_cast<int> (InstrumentParams::GranLengthMode::Steps))
+                        params.granularLengthMode = static_cast<InstrumentParams::GranLengthMode> (glm);
+                }
+                params.granularLengthSteps = paramTree.getProperty (
+                    "grainLenSteps", InstrumentParams::kDefaultGranularLengthSteps);
                 params.granularShape    = static_cast<InstrumentParams::GranShape> (
                     static_cast<int> (paramTree.getProperty ("grainShape", 1)));
                 params.granularLoop     = static_cast<InstrumentParams::GranLoop> (
@@ -1601,4 +1610,27 @@ bool ProjectSerializer::loadGlobalVelocityLanesVisible()
 {
     auto root = loadGlobalPrefsTree();
     return static_cast<bool> (root.getProperty ("velocityLanesVisible", true));
+}
+
+//==============================================================================
+// Global plugin picker display persistence
+//==============================================================================
+
+void ProjectSerializer::saveGlobalPluginMenuAudioUnitsVisible (bool visible)
+{
+    auto prefsFile = getCurrentGlobalPrefsFile();
+    if (! prefsFile.getParentDirectory().createDirectory())
+        return;
+
+    auto root = loadGlobalPrefsTree();
+    root.setProperty ("pluginMenuAudioUnitsVisible", visible, nullptr);
+
+    if (auto xml = root.createXml())
+        xml->writeTo (prefsFile);
+}
+
+bool ProjectSerializer::loadGlobalPluginMenuAudioUnitsVisible()
+{
+    auto root = loadGlobalPrefsTree();
+    return static_cast<bool> (root.getProperty ("pluginMenuAudioUnitsVisible", false));
 }

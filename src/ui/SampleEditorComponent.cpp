@@ -111,7 +111,13 @@ void SampleEditorComponent::setPluginInstrument (int instrumentIndex, const juce
     currentParams = InstrumentParams();
     lastCommittedParams = InstrumentParams();
     paramsDirty = false;
+    isDragging = false;
+    resetWaveformState();
+    hoveredMarker = MarkerType::None;
+    setMouseCursor (juce::MouseCursor::NormalCursor);
+
     waveformView.clearSample();
+    syncWaveformView();
     repaint();
 }
 
@@ -236,6 +242,8 @@ bool SampleEditorComponent::isRealtimeOnlyChange (const InstrumentParams& oldP, 
     if (! InstrumentParams::approximatelyEqual (oldP.loopEnd, newP.loopEnd)) return false;
     if (! InstrumentParams::approximatelyEqual (oldP.granularPosition, newP.granularPosition)) return false;
     if (oldP.granularLength != newP.granularLength) return false;
+    if (oldP.granularLengthMode != newP.granularLengthMode) return false;
+    if (! InstrumentParams::approximatelyEqual (oldP.granularLengthSteps, newP.granularLengthSteps)) return false;
     if (oldP.granularShape != newP.granularShape) return false;
     if (oldP.granularLoop != newP.granularLoop) return false;
     if (oldP.slicePoints != newP.slicePoints) return false;
@@ -290,6 +298,12 @@ void SampleEditorComponent::constrainPlaybackMarkersToRegion()
 
 void SampleEditorComponent::notifyParamsChanged()
 {
+    if (showingPlugin)
+    {
+        paramsDirty = false;
+        return;
+    }
+
     constrainPlaybackMarkersToRegion();
 
     if (currentInstrument >= 0 && isRealtimeOnlyChange (lastCommittedParams, currentParams))
@@ -375,6 +389,16 @@ juce::String SampleEditorComponent::getModDestFullName (int dest) const
     return "???";
 }
 
+juce::String SampleEditorComponent::getGranLengthModeName (InstrumentParams::GranLengthMode mode) const
+{
+    switch (mode)
+    {
+        case InstrumentParams::GranLengthMode::MS:     return "MS";
+        case InstrumentParams::GranLengthMode::Steps:  return "Steps";
+    }
+    return "???";
+}
+
 juce::String SampleEditorComponent::getGranShapeName (InstrumentParams::GranShape shape) const
 {
     switch (shape)
@@ -395,6 +419,18 @@ juce::String SampleEditorComponent::getGranLoopName (InstrumentParams::GranLoop 
         case InstrumentParams::GranLoop::Pingpong:  return "Pingpong";
     }
     return "???";
+}
+
+juce::String SampleEditorComponent::formatGranularLengthSteps (double steps) const
+{
+    steps = SamplePlaybackLayout::snapGranularLengthSteps (steps);
+    if (InstrumentParams::approximatelyEqual (steps, 1.0))
+        return "1 step";
+
+    if (InstrumentParams::approximatelyEqual (std::fmod (steps, 1.0), 0.0))
+        return juce::String (static_cast<int> (std::round (steps))) + " steps";
+
+    return juce::String (steps, 1) + " steps";
 }
 
 juce::String SampleEditorComponent::formatLfoSpeed (int speed) const
@@ -460,7 +496,7 @@ int SampleEditorComponent::getColumnCount() const
             case InstrumentParams::PlayMode::PingpongLoop:                  return 5;
             case InstrumentParams::PlayMode::Slice:                          return 7; // Start, End, Slices, Sel, AutoSlice, EqChop, PlayMode
             case InstrumentParams::PlayMode::BeatSlice:                     return 7; // Start, End, NumSlices, Sel, AutoSlice, EqChop, PlayMode
-            case InstrumentParams::PlayMode::Granular:                      return 7;
+            case InstrumentParams::PlayMode::Granular:                      return 8;
         }
         return 4;
     }
@@ -540,8 +576,8 @@ juce::String SampleEditorComponent::getColumnName (int col) const
             }
             case InstrumentParams::PlayMode::Granular:
             {
-                const char* n[] = { "Start", "End", "Grain Pos", "Grain Len", "Shape", "Loop" };
-                if (col < 6) return n[col];
+                const char* n[] = { "Start", "End", "Grain Pos", "Grain Len", "Len Mode", "Shape", "Loop" };
+                if (col < 7) return n[col];
                 break;
             }
         }
@@ -673,9 +709,13 @@ juce::String SampleEditorComponent::getColumnValue (int col) const
                     case 0: return formatPosSec (currentParams.startPos, totalLen);
                     case 1: return formatPosSec (currentParams.endPos, totalLen);
                     case 2: return formatPosSec (currentParams.granularPosition, totalLen);
-                    case 3: return juce::String (currentParams.granularLength) + "ms";
-                    case 4: return getGranShapeName (currentParams.granularShape);
-                    case 5: return getGranLoopName (currentParams.granularLoop);
+                    case 3:
+                        if (currentParams.granularLengthMode == InstrumentParams::GranLengthMode::Steps)
+                            return formatGranularLengthSteps (currentParams.granularLengthSteps);
+                        return juce::String (currentParams.granularLength) + "ms";
+                    case 4: return getGranLengthModeName (currentParams.granularLengthMode);
+                    case 5: return getGranShapeName (currentParams.granularShape);
+                    case 6: return getGranLoopName (currentParams.granularLoop);
                 }
                 break;
         }
@@ -1664,19 +1704,38 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     }
                     case 3: // Grain Len
                     {
-                        int step = fine ? 1 : (large ? 50 : 10);
-                        currentParams.granularLength = juce::jlimit (1, 1000,
-                            currentParams.granularLength + direction * step);
+                        if (currentParams.granularLengthMode == InstrumentParams::GranLengthMode::Steps)
+                        {
+                            double step = large ? 4.0 : 0.5;
+                            if (fine) step = 0.5;
+                            currentParams.granularLengthSteps = SamplePlaybackLayout::snapGranularLengthSteps (
+                                currentParams.granularLengthSteps + direction * step);
+                        }
+                        else
+                        {
+                            int step = fine ? 1 : (large ? 50 : 10);
+                            currentParams.granularLength = juce::jlimit (1, 1000,
+                                currentParams.granularLength + direction * step);
+                        }
                         break;
                     }
-                    case 4: // Shape
+                    case 4: // Length Mode
+                    {
+                        int v = static_cast<int> (currentParams.granularLengthMode);
+                        v = (v + direction + 2) % 2;
+                        currentParams.granularLengthMode = static_cast<InstrumentParams::GranLengthMode> (v);
+                        currentParams.granularLengthSteps = SamplePlaybackLayout::snapGranularLengthSteps (
+                            currentParams.granularLengthSteps);
+                        break;
+                    }
+                    case 5: // Shape
                     {
                         int v = static_cast<int> (currentParams.granularShape);
                         v = (v + direction + 3) % 3;
                         currentParams.granularShape = static_cast<InstrumentParams::GranShape> (v);
                         break;
                     }
-                    case 5: // Grain Loop
+                    case 6: // Grain Loop
                     {
                         int v = static_cast<int> (currentParams.granularLoop);
                         v = (v + direction + 3) % 3;
@@ -1978,10 +2037,26 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                             currentParams.granularPosition + normDelta);
                         break;
                     case 3:
-                        currentParams.granularLength = juce::jlimit (1, 1000,
-                            currentParams.granularLength + juce::roundToInt (normDelta * 999.0));
+                        if (currentParams.granularLengthMode == InstrumentParams::GranLengthMode::Steps)
+                        {
+                            currentParams.granularLengthSteps = SamplePlaybackLayout::snapGranularLengthSteps (
+                                currentParams.granularLengthSteps + normDelta * 64.0);
+                        }
+                        else
+                        {
+                            currentParams.granularLength = juce::jlimit (1, 1000,
+                                currentParams.granularLength + juce::roundToInt (normDelta * 999.0));
+                        }
                         break;
-                    case 4: // Shape (list)
+                    case 4: // Length Mode (list)
+                    {
+                        int v = static_cast<int> (currentParams.granularLengthMode)
+                                - juce::roundToInt (normDelta * 2.0);
+                        currentParams.granularLengthMode = static_cast<InstrumentParams::GranLengthMode> (
+                            juce::jlimit (0, 1, v));
+                        break;
+                    }
+                    case 5: // Shape (list)
                     {
                         int v = static_cast<int> (currentParams.granularShape)
                                 - juce::roundToInt (normDelta * 3.0);
@@ -1989,7 +2064,7 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                             juce::jlimit (0, 2, v));
                         break;
                     }
-                    case 5: // Loop (list)
+                    case 6: // Loop (list)
                     {
                         int v = static_cast<int> (currentParams.granularLoop)
                                 - juce::roundToInt (normDelta * 3.0);
@@ -2040,7 +2115,7 @@ bool SampleEditorComponent::isCurrentColumnDiscrete() const
             && playbackColumn >= 2)
             return true; // Slices count, Selected slice
         if (mode == InstrumentParams::PlayMode::Granular && playbackColumn >= 4)
-            return true; // Shape, Loop
+            return true; // Length mode, Shape, Loop
         return false;
     }
 }
@@ -2460,6 +2535,16 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
     if (currentInstrument < 0) return;
     grabKeyboardFocus();
 
+    if (showingPlugin)
+    {
+        if (event.getNumberOfClicks() >= 2 && event.mods.isLeftButtonDown())
+        {
+            if (onOpenPluginEditorRequested)
+                onOpenPluginEditorRequested (currentInstrument);
+        }
+        return;
+    }
+
     int contentTop = kHeaderHeight;
     int contentBottom = getHeight() - kBottomBarHeight;
 
@@ -2817,6 +2902,9 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
 
 void SampleEditorComponent::mouseDrag (const juce::MouseEvent& event)
 {
+    if (showingPlugin)
+        return;
+
     // ── Waveform panning ──
     if (isPanning)
     {
@@ -2909,6 +2997,16 @@ void SampleEditorComponent::mouseDrag (const juce::MouseEvent& event)
 
 void SampleEditorComponent::mouseUp (const juce::MouseEvent&)
 {
+    if (showingPlugin)
+    {
+        isPanning = false;
+        isWaveformDragging = false;
+        isDragging = false;
+        draggingMarker = MarkerType::None;
+        draggingSliceIndex = -1;
+        return;
+    }
+
     if (isPanning)
     {
         isPanning = false;
@@ -2946,6 +3044,7 @@ void SampleEditorComponent::mouseUp (const juce::MouseEvent&)
 void SampleEditorComponent::mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel)
 {
     if (currentInstrument < 0) return;
+    if (showingPlugin) return;
 
     float delta = wheel.deltaY;
     if (std::abs (delta) < 0.001f) return;
@@ -3010,7 +3109,7 @@ void SampleEditorComponent::mouseWheelMove (const juce::MouseEvent& event, const
 
 void SampleEditorComponent::mouseMove (const juce::MouseEvent& event)
 {
-    if (currentInstrument < 0 || displayMode != DisplayMode::InstrumentType)
+    if (currentInstrument < 0 || showingPlugin || displayMode != DisplayMode::InstrumentType)
     {
         if (hoveredMarker != MarkerType::None)
         {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include "InstrumentParams.h"
@@ -11,6 +12,47 @@ namespace SamplePlaybackLayout
 inline double clampNorm (double v)
 {
     return std::clamp (v, 0.0, 1.0);
+}
+
+inline double clampGranularLengthSteps (double steps)
+{
+    return std::clamp (steps,
+                       InstrumentParams::kMinGranularLengthSteps,
+                       InstrumentParams::kMaxGranularLengthSteps);
+}
+
+inline double snapGranularLengthSteps (double steps)
+{
+    return clampGranularLengthSteps (std::round (steps * 2.0) * 0.5);
+}
+
+inline double getGranularLengthFrequencyHz (const InstrumentParams& params,
+                                            int midiNote,
+                                            double pitchOffsetSemitones)
+{
+    constexpr double middleCHz = 261.6255653005986;
+    const double semitones = static_cast<double> (midiNote - 60)
+                           + static_cast<double> (params.tune)
+                           + static_cast<double> (params.finetune) / 100.0
+                           + pitchOffsetSemitones;
+    return middleCHz * std::pow (2.0, semitones / 12.0);
+}
+
+inline double getGranularRenderLengthSamples (const InstrumentParams& params,
+                                              int midiNote,
+                                              double outputSampleRate,
+                                              double pitchOffsetSemitones)
+{
+    const double safeSampleRate = std::max (1.0, outputSampleRate);
+
+    if (params.granularLengthMode == InstrumentParams::GranLengthMode::Steps)
+    {
+        const double frequency = std::max (1.0, getGranularLengthFrequencyHz (params, midiNote,
+                                                                               pitchOffsetSemitones));
+        return clampGranularLengthSteps (params.granularLengthSteps) * safeSampleRate / frequency;
+    }
+
+    return static_cast<double> (std::max (1, params.granularLength)) * 0.001 * safeSampleRate;
 }
 
 inline double getRegionStartNorm (const InstrumentParams& params)

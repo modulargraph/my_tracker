@@ -343,6 +343,38 @@ double getParamStep (Section section, int paramIndex)
 }
 
 //==============================================================================
+// getParamDefault
+//==============================================================================
+double getParamDefault (Section section, int paramIndex)
+{
+    switch (section)
+    {
+        case Section::EQ:      return paramIndex == 3 ? 1000.0 : 0.0;
+        case Section::Comp:
+            switch (paramIndex)
+            {
+                case 0:  return 0.0;
+                case 1:  return 1.0;
+                case 2:  return 10.0;
+                case 3:  return 100.0;
+                default: return 0.0;
+            }
+        case Section::Limiter:
+            switch (paramIndex)
+            {
+                case 0:  return 0.0;
+                case 1:  return 50.0;
+                default: return 0.0;
+            }
+        case Section::Inserts: return 0.0;
+        case Section::Sends:   return -100.0;
+        case Section::Pan:     return 0.0;
+        case Section::Volume:  return 0.0;
+    }
+    return 0.0;
+}
+
+//==============================================================================
 // getParamCountForSection
 //==============================================================================
 int getParamCountForSection (Section section, const MixerState& state, StripType stripType, int stripIndex)

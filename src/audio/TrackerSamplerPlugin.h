@@ -78,6 +78,7 @@ public:
 
     // Preview support (called from message thread, consumed on audio thread)
     void playNote (int note, float velocity);
+    void playNotes (const std::vector<int>& notes, float velocity);
     void stopAllNotes();
 
     // Playback position for UI cursor (normalized 0-1, -1 = idle)
@@ -132,6 +133,9 @@ private:
 
     Voice voice;
     Voice fadeOutVoice;
+    static constexpr int kMaxPreviewVoices = 8;
+    std::array<Voice, kMaxPreviewVoices> previewVoices {};
+    std::array<Voice, kMaxPreviewVoices> previewFadeOutVoices {};
 
     // Thread-safe sample bank access
     juce::SpinLock bankLock;
@@ -145,7 +149,8 @@ private:
     int instrumentIndex = -1;
 
     // Preview atomics (message thread writes, audio thread reads)
-    std::atomic<int> previewNote { -1 };
+    std::array<std::atomic<int>, kMaxPreviewVoices> pendingPreviewNotes {};
+    std::atomic<int> pendingPreviewNoteCount { 0 };
     std::atomic<float> previewVelocity { 0.0f };
     std::atomic<bool> previewStop { false };
 
@@ -164,7 +169,6 @@ private:
     // Audio thread state
     double outputSampleRate = 44100.0;
     juce::AudioBuffer<float> scratchBuffer;
-    bool voiceTriggeredByPreview = false;
 
     // Playback position for UI cursor (normalized 0-1, -1 = idle)
     std::atomic<float> playbackPosNorm { -1.0f };
@@ -173,6 +177,7 @@ private:
     void triggerNote (Voice& v, int note, float vel,
                       std::shared_ptr<const SampleBank> bank, const InstrumentParams& params);
     void renderVoice (Voice& v, juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
+    static void startFadeOut (Voice& source, Voice& fadeTarget);
 
     void renderOneShot (Voice& v, juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
                         const SampleBank& bank, const InstrumentParams& params);

@@ -11,6 +11,8 @@ TrackerSamplerPlugin::TrackerSamplerPlugin (te::PluginCreationInfo info)
     : te::Plugin (info)
 {
     clearPendingParamHighBits();
+    for (auto& note : pendingPreviewNotes)
+        note.store (-1, std::memory_order_relaxed);
 }
 
 TrackerSamplerPlugin::~TrackerSamplerPlugin()
@@ -27,6 +29,10 @@ void TrackerSamplerPlugin::deinitialise()
 {
     voice.reset();
     fadeOutVoice.reset();
+    for (auto& v : previewVoices)
+        v.reset();
+    for (auto& v : previewFadeOutVoices)
+        v.reset();
     pendingSampleOffset = -1;
     clearPendingParamHighBits();
     directionOverride = -1;
@@ -47,8 +53,22 @@ void TrackerSamplerPlugin::setSampleBank (std::shared_ptr<const SampleBank> bank
 
 void TrackerSamplerPlugin::playNote (int note, float vel)
 {
-    previewVelocity.store (vel);
-    previewNote.store (note);
+    playNotes ({ note }, vel);
+}
+
+void TrackerSamplerPlugin::playNotes (const std::vector<int>& notes, float vel)
+{
+    const int count = juce::jmin (static_cast<int> (notes.size()), kMaxPreviewVoices);
+    if (count <= 0)
+        return;
+
+    previewVelocity.store (juce::jlimit (0.0f, 1.0f, vel), std::memory_order_relaxed);
+
+    for (int i = 0; i < count; ++i)
+        pendingPreviewNotes[static_cast<size_t> (i)].store (juce::jlimit (0, 127, notes[static_cast<size_t> (i)]),
+                                                            std::memory_order_relaxed);
+
+    pendingPreviewNoteCount.store (count, std::memory_order_release);
 }
 
 void TrackerSamplerPlugin::stopAllNotes()
@@ -231,6 +251,17 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
         v.playbackPos = regionStart;
         v.playingForward = true;
     }
+}
+
+void TrackerSamplerPlugin::startFadeOut (Voice& source, Voice& fadeTarget)
+{
+    if (source.state != Voice::State::Playing)
+        return;
+
+    fadeTarget = source;
+    fadeTarget.state = Voice::State::FadingOut;
+    fadeTarget.fadeOutRemaining = Voice::kFadeOutSamples;
+    source.state = Voice::State::Idle;
 }
 
 //==============================================================================
@@ -475,7 +506,13 @@ void TrackerSamplerPlugin::prepareGranularGrain (Voice& v, const SampleBank& ban
 
     const double regionLen = regionEnd - regionStart;
 
-    double grainLenSamples = static_cast<double> (params.granularLength) * 0.001 * bank.sampleRate;
+    const double pitchRatio = juce::jmax (1.0e-6, std::abs (getPitchRatio (v.midiNote, bank, params)));
+    const double pitchOffsetSemitones = static_cast<double> (
+        pitchOffset.load (std::memory_order_relaxed));
+    const double requestedRenderLength = SamplePlaybackLayout::getGranularRenderLengthSamples (
+        params, v.midiNote, outputSampleRate, pitchOffsetSemitones);
+
+    double grainLenSamples = requestedRenderLength * pitchRatio;
     grainLenSamples = juce::jlimit (1.0, regionLen, juce::jmax (64.0, grainLenSamples));
 
     const double positionOffset = static_cast<double> (
@@ -498,7 +535,7 @@ void TrackerSamplerPlugin::prepareGranularGrain (Voice& v, const SampleBank& ban
 
     v.grainStart = juce::jlimit (regionStart, regionEnd - 1.0, grainStart);
     v.grainEnd = juce::jlimit (v.grainStart + 1.0, regionEnd, grainEnd);
-    v.grainLength = juce::jmax (1, static_cast<int> (v.grainEnd - v.grainStart));
+    v.grainLength = juce::jmax (1, juce::roundToInt ((v.grainEnd - v.grainStart) / pitchRatio));
 }
 
 void TrackerSamplerPlugin::renderGranular (Voice& v, juce::AudioBuffer<float>& buffer,
@@ -688,33 +725,29 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     // --- Handle stop request before new note (avoids stopping a just-triggered note) ---
     if (previewStop.exchange (false))
     {
-        if (voice.state == Voice::State::Playing)
-        {
-            fadeOutVoice = voice;
-            fadeOutVoice.state = Voice::State::FadingOut;
-            fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
-            voice.state = Voice::State::Idle;
-        }
+        for (size_t i = 0; i < previewVoices.size(); ++i)
+            startFadeOut (previewVoices[i], previewFadeOutVoices[i]);
     }
 
     // --- Handle preview notes from message thread ---
-    int pNote = previewNote.exchange (-1);
-    if (pNote >= 0)
+    int previewCount = pendingPreviewNoteCount.exchange (0, std::memory_order_acquire);
+    previewCount = juce::jlimit (0, kMaxPreviewVoices, previewCount);
+    if (previewCount > 0)
     {
-        float pVel = previewVelocity.load();
+        float pVel = previewVelocity.load (std::memory_order_relaxed);
 
-        if (voice.state == Voice::State::Playing)
-        {
-            fadeOutVoice = voice;
-            fadeOutVoice.state = Voice::State::FadingOut;
-            fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
-        }
+        for (size_t i = 0; i < previewVoices.size(); ++i)
+            startFadeOut (previewVoices[i], previewFadeOutVoices[i]);
 
         if (currentBank != nullptr && currentBank->totalSamples > 0)
         {
             auto params = getCurrentInstrumentParams();
-            triggerNote (voice, pNote, pVel, currentBank, params);
-            voiceTriggeredByPreview = true;
+            for (int i = 0; i < previewCount; ++i)
+            {
+                const int note = pendingPreviewNotes[static_cast<size_t> (i)].load (std::memory_order_relaxed);
+                if (note >= 0)
+                    triggerNote (previewVoices[static_cast<size_t> (i)], note, pVel, currentBank, params);
+            }
         }
     }
 
@@ -724,13 +757,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         if (fc.bufferForMidiMessages->isAllNotesOff)
         {
             // Graceful fade (same as noteOff)
-            if (voice.state == Voice::State::Playing)
-            {
-                fadeOutVoice = voice;
-                fadeOutVoice.state = Voice::State::FadingOut;
-                fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
-                voice.state = Voice::State::Idle;
-            }
+            startFadeOut (voice, fadeOutVoice);
         }
 
         for (auto& m : *fc.bufferForMidiMessages)
@@ -826,12 +853,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             }
             else if (m.isNoteOn())
             {
-                if (voice.state == Voice::State::Playing)
-                {
-                    fadeOutVoice = voice;
-                    fadeOutVoice.state = Voice::State::FadingOut;
-                    fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
-                }
+                startFadeOut (voice, fadeOutVoice);
 
                 if (currentBank != nullptr && currentBank->totalSamples > 0)
                 {
@@ -839,7 +861,6 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
                     triggerNote (voice, m.getNoteNumber(),
                                  m.getVelocity() / 127.0f, currentBank, params);
-                    voiceTriggeredByPreview = false;
 
                     if (pendingSampleOffset >= 0)
                     {
@@ -851,24 +872,12 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             else if (m.isNoteOff())
             {
                 // Graceful fade-out with crossfade
-                if (voice.state == Voice::State::Playing)
-                {
-                    fadeOutVoice = voice;
-                    fadeOutVoice.state = Voice::State::FadingOut;
-                    fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
-                    voice.state = Voice::State::Idle;
-                }
+                startFadeOut (voice, fadeOutVoice);
             }
             else if (m.isAllNotesOff())
             {
                 // Graceful fade (OFF) — same as noteOff
-                if (voice.state == Voice::State::Playing)
-                {
-                    fadeOutVoice = voice;
-                    fadeOutVoice.state = Voice::State::FadingOut;
-                    fadeOutVoice.fadeOutRemaining = Voice::kFadeOutSamples;
-                    voice.state = Voice::State::Idle;
-                }
+                startFadeOut (voice, fadeOutVoice);
             }
             else if (m.isAllSoundOff())
             {
@@ -879,13 +888,15 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         }
     }
 
-    // --- Render fade-out voice ---
-    if (fadeOutVoice.state == Voice::State::FadingOut && fadeOutVoice.fadeOutRemaining > 0)
+    auto renderFadeOut = [this, &buffer, startSample, numSamples] (Voice& fadingVoice)
     {
-        int fadeSamples = juce::jmin (numSamples, fadeOutVoice.fadeOutRemaining);
-        float startGain = static_cast<float> (fadeOutVoice.fadeOutRemaining)
+        if (fadingVoice.state != Voice::State::FadingOut || fadingVoice.fadeOutRemaining <= 0)
+            return;
+
+        int fadeSamples = juce::jmin (numSamples, fadingVoice.fadeOutRemaining);
+        float startGain = static_cast<float> (fadingVoice.fadeOutRemaining)
                         / static_cast<float> (Voice::kFadeOutSamples);
-        float endGain = static_cast<float> (fadeOutVoice.fadeOutRemaining - fadeSamples)
+        float endGain = static_cast<float> (fadingVoice.fadeOutRemaining - fadeSamples)
                       / static_cast<float> (Voice::kFadeOutSamples);
 
         // Render fade-out to scratch buffer, then apply gain ramp
@@ -895,9 +906,9 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         {
             scratchBuffer.clear (0, fadeSamples);
 
-            fadeOutVoice.state = Voice::State::Playing;
-            renderVoice (fadeOutVoice, scratchBuffer, 0, fadeSamples);
-            fadeOutVoice.state = Voice::State::FadingOut;
+            fadingVoice.state = Voice::State::Playing;
+            renderVoice (fadingVoice, scratchBuffer, 0, fadeSamples);
+            fadingVoice.state = Voice::State::FadingOut;
 
             for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
             {
@@ -914,18 +925,38 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             }
         }
 
-        fadeOutVoice.fadeOutRemaining -= fadeSamples;
-        if (fadeOutVoice.fadeOutRemaining <= 0)
-            fadeOutVoice.state = Voice::State::Idle;
-    }
+        fadingVoice.fadeOutRemaining -= fadeSamples;
+        if (fadingVoice.fadeOutRemaining <= 0)
+            fadingVoice.state = Voice::State::Idle;
+    };
+
+    // --- Render fade-out voices ---
+    renderFadeOut (fadeOutVoice);
+    for (auto& fadingPreviewVoice : previewFadeOutVoices)
+        renderFadeOut (fadingPreviewVoice);
 
     // --- Render main voice ---
     renderVoice (voice, buffer, startSample, numSamples);
+    for (auto& previewVoice : previewVoices)
+        renderVoice (previewVoice, buffer, startSample, numSamples);
 
     // Publish playback position for UI cursor
     if (voice.state == Voice::State::Playing && voice.bank != nullptr && voice.bank->totalSamples > 0)
+    {
         playbackPosNorm.store (static_cast<float> (voice.playbackPos / static_cast<double> (voice.bank->totalSamples)),
                                std::memory_order_relaxed);
-    else
-        playbackPosNorm.store (-1.0f, std::memory_order_relaxed);
+        return;
+    }
+
+    for (auto& previewVoice : previewVoices)
+    {
+        if (previewVoice.state == Voice::State::Playing && previewVoice.bank != nullptr && previewVoice.bank->totalSamples > 0)
+        {
+            playbackPosNorm.store (static_cast<float> (previewVoice.playbackPos / static_cast<double> (previewVoice.bank->totalSamples)),
+                                   std::memory_order_relaxed);
+            return;
+        }
+    }
+
+    playbackPosNorm.store (-1.0f, std::memory_order_relaxed);
 }

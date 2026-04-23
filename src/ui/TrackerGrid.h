@@ -240,6 +240,7 @@ private:
 
     // Navigation
     void moveCursor (int rowDelta, int trackDelta);
+    void moveCursorToAdjacentCell (int direction);
 
     // Hit test: convert pixel position to grid coordinates
     bool hitTestGrid (int x, int y, int& outRow, int& outTrack, SubColumn& outSubCol) const;

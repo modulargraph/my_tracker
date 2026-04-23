@@ -45,6 +45,12 @@ struct InstrumentParams
     // === Granular params ===
     double granularPosition = 0.0; // absolute normalized sample position (0.0-1.0)
     int    granularLength   = 500; // 1-1000 ms
+    enum class GranLengthMode { MS, Steps };
+    GranLengthMode granularLengthMode = GranLengthMode::MS;
+    static constexpr double kMinGranularLengthSteps = 0.5;
+    static constexpr double kMaxGranularLengthSteps = 256.0;
+    static constexpr double kDefaultGranularLengthSteps = 16.0;
+    double granularLengthSteps = kDefaultGranularLengthSteps; // pitch-relative steps, 0.5 increments
     enum class GranShape { Square, Triangle, Gauss };
     GranShape granularShape = GranShape::Triangle;
     enum class GranLoop { Forward, Reverse, Pingpong };
@@ -120,6 +126,9 @@ struct InstrumentParams
         if (playMode != PlayMode::OneShot || reversed)
             return false;
         if (! approximatelyEqual (granularPosition, 0.0) || granularLength != 500)
+            return false;
+        if (granularLengthMode != GranLengthMode::MS
+            || ! approximatelyEqual (granularLengthSteps, kDefaultGranularLengthSteps))
             return false;
         if (granularShape != GranShape::Triangle || granularLoop != GranLoop::Forward)
             return false;

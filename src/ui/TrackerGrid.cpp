@@ -1683,6 +1683,133 @@ void TrackerGrid::moveCursor (int rowDelta, int trackDelta)
     setCursorPosition (newRow, newTrack);
 }
 
+void TrackerGrid::moveCursorToAdjacentCell (int direction)
+{
+    if (direction == 0)
+        return;
+
+    direction = direction > 0 ? 1 : -1;
+    hexDigitCount = 0;
+    hexAccumulator = 0;
+
+    if (! velocityLanesVisible && cursorSubColumn == SubColumn::Volume)
+        cursorSubColumn = SubColumn::Instrument;
+
+    if (direction > 0)
+    {
+        if (isMasterTrack (cursorTrack))
+        {
+            cursorSubColumn = SubColumn::FX;
+            const int fxLanes = trackLayout.getMasterFxLaneCount();
+            if (cursorFxLane < fxLanes - 1)
+                cursorFxLane++;
+            else
+            {
+                moveCursor (0, 1);
+                cursorFxLane = 0;
+                cursorNoteLane = 0;
+                cursorSubColumn = isMasterTrack (cursorTrack) ? SubColumn::FX : SubColumn::Note;
+            }
+            return;
+        }
+
+        const int noteLanes = trackLayout.getTrackNoteLaneCount (cursorTrack);
+        const int fxLanes = trackLayout.getTrackFxLaneCount (cursorTrack);
+
+        if (cursorSubColumn == SubColumn::Note)
+        {
+            cursorSubColumn = SubColumn::Instrument;
+        }
+        else if (cursorSubColumn == SubColumn::Instrument && velocityLanesVisible)
+        {
+            cursorSubColumn = SubColumn::Volume;
+        }
+        else if (cursorSubColumn == SubColumn::Volume
+                 || (cursorSubColumn == SubColumn::Instrument && ! velocityLanesVisible))
+        {
+            if (cursorNoteLane < noteLanes - 1)
+            {
+                cursorNoteLane++;
+                cursorSubColumn = SubColumn::Note;
+            }
+            else
+            {
+                cursorSubColumn = SubColumn::FX;
+                cursorFxLane = 0;
+            }
+        }
+        else if (cursorSubColumn == SubColumn::FX)
+        {
+            if (cursorFxLane < fxLanes - 1)
+                cursorFxLane++;
+            else
+            {
+                moveCursor (0, 1);
+                cursorFxLane = 0;
+                cursorNoteLane = 0;
+                cursorSubColumn = isMasterTrack (cursorTrack) ? SubColumn::FX : SubColumn::Note;
+            }
+        }
+
+        return;
+    }
+
+    if (isMasterTrack (cursorTrack))
+    {
+        cursorSubColumn = SubColumn::FX;
+        if (cursorFxLane > 0)
+        {
+            cursorFxLane--;
+        }
+        else
+        {
+            moveCursor (0, -1);
+            cursorSubColumn = SubColumn::FX;
+            cursorFxLane = isMasterTrack (cursorTrack) ? trackLayout.getMasterFxLaneCount() - 1
+                                                       : trackLayout.getTrackFxLaneCount (cursorTrack) - 1;
+            cursorNoteLane = 0;
+        }
+        return;
+    }
+
+    const int noteLanes = trackLayout.getTrackNoteLaneCount (cursorTrack);
+
+    if (cursorSubColumn == SubColumn::Note)
+    {
+        if (cursorNoteLane > 0)
+        {
+            cursorNoteLane--;
+            cursorSubColumn = getLastVisibleNoteSubColumn();
+        }
+        else
+        {
+            moveCursor (0, -1);
+            cursorSubColumn = SubColumn::FX;
+            cursorFxLane = isMasterTrack (cursorTrack) ? trackLayout.getMasterFxLaneCount() - 1
+                                                       : trackLayout.getTrackFxLaneCount (cursorTrack) - 1;
+            cursorNoteLane = 0;
+        }
+    }
+    else if (cursorSubColumn == SubColumn::Instrument)
+    {
+        cursorSubColumn = SubColumn::Note;
+    }
+    else if (cursorSubColumn == SubColumn::Volume)
+    {
+        cursorSubColumn = SubColumn::Instrument;
+    }
+    else if (cursorSubColumn == SubColumn::FX)
+    {
+        if (cursorFxLane > 0)
+            cursorFxLane--;
+        else
+        {
+            cursorSubColumn = getLastVisibleNoteSubColumn();
+            cursorNoteLane = noteLanes - 1;
+        }
+    }
+}
+
 void TrackerGrid::setPlaybackRow (int row)
 {
     if (playbackRow == row) return;  // avoid redundant repaint
@@ -1783,6 +1910,15 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     }
     if (keyCode == juce::KeyPress::leftKey)
     {
+        if (! shift)
+        {
+            moveCursorToAdjacentCell (-1);
+            clearSelection();
+            repaint();
+            if (onCursorMoved) onCursorMoved();
+            return true;
+        }
+
         if (shift && ! hasSelection)
         {
             hasSelection = true;
@@ -1796,6 +1932,15 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     }
     if (keyCode == juce::KeyPress::rightKey)
     {
+        if (! shift)
+        {
+            moveCursorToAdjacentCell (1);
+            clearSelection();
+            repaint();
+            if (onCursorMoved) onCursorMoved();
+            return true;
+        }
+
         if (shift && ! hasSelection)
         {
             hasSelection = true;

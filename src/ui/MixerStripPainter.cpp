@@ -197,17 +197,19 @@ void paintGenericEqSection (juce::Graphics& g, TrackerLookAndFeel& lnf,
         g.drawText (bands[i].label + juce::String (" ") + valStr, x, labelArea.getY(), barWidth, labelArea.getHeight(), juce::Justification::centred);
     }
 
-    if (selectedParam == 3)
-    {
-        g.setColour (selCol.withAlpha (0.16f));
-        g.fillRect (freqArea);
-        g.setColour (selCol.withAlpha (0.45f));
-        g.drawRect (freqArea, 1);
+    const bool midFreqSelected = (selectedParam == 3);
+    auto textCol = lnf.findColour (TrackerLookAndFeel::textColourId);
 
-        g.setFont (lnf.getMonoFont (10.0f));
-        g.setColour (selCol);
-        g.drawText ("MID " + formatEqFrequency (midFreq), freqArea, juce::Justification::centred);
-    }
+    g.setColour (midFreqSelected ? selCol.withAlpha (0.16f)
+                                 : textCol.withAlpha (0.06f));
+    g.fillRect (freqArea);
+    g.setColour (midFreqSelected ? selCol.withAlpha (0.45f)
+                                 : textCol.withAlpha (0.18f));
+    g.drawRect (freqArea, 1);
+
+    g.setFont (lnf.getMonoFont (10.0f));
+    g.setColour (midFreqSelected ? selCol : textCol.withAlpha (0.55f));
+    g.drawText ("MID " + formatEqFrequency (midFreq), freqArea, juce::Justification::centred);
 }
 
 void paintGenericCompSection (juce::Graphics& g, TrackerLookAndFeel& lnf,

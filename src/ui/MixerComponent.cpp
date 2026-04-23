@@ -831,10 +831,34 @@ double MixerComponent::getParamStep (Section section, int param) const
     return MixerParamModel::getParamStep (section, param);
 }
 
+double MixerComponent::getParamDefault (Section section, int param) const
+{
+    return MixerParamModel::getParamDefault (section, param);
+}
+
 int MixerComponent::getParamCountForSection (Section section) const
 {
     auto info = getStripInfo (selectedTrack);
     return MixerParamModel::getParamCountForSection (section, mixerState, info.type, info.index);
+}
+
+bool MixerComponent::resetHitParamToDefault (const HitResult& hit)
+{
+    if (hit.visualTrack < 0 || hit.param < 0 || hit.hitMute || hit.hitSolo || hit.section == Section::Inserts)
+        return false;
+
+    selectedTrack = hit.visualTrack;
+    currentSection = hit.section;
+    currentParam = hit.param;
+
+    const double defaultValue = getParamDefault (currentSection, currentParam);
+    const double currentValue = getParamValue (selectedTrack, currentSection, currentParam);
+
+    if (std::abs (currentValue - defaultValue) > 1.0e-9)
+        setParamValue (selectedTrack, currentSection, currentParam, defaultValue);
+
+    repaint();
+    return true;
 }
 
 //==============================================================================
@@ -1165,6 +1189,15 @@ void MixerComponent::mouseUp (const juce::MouseEvent&)
 {
     dragging = false;
     dragTrack = -1;
+}
+
+void MixerComponent::mouseDoubleClick (const juce::MouseEvent& event)
+{
+    dragging = false;
+    dragTrack = -1;
+
+    auto hit = hitTestStrip (event.getPosition());
+    resetHitParamToDefault (hit);
 }
 
 void MixerComponent::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)

@@ -40,6 +40,36 @@ void sortPluginsByManufacturerAndName (juce::Array<juce::PluginDescription>& plu
                });
 }
 
+juce::String getPluginEquivalentName (const juce::PluginDescription& desc)
+{
+    return desc.name.trim().toLowerCase();
+}
+
+juce::Array<juce::PluginDescription> filterAudioUnitEquivalents (
+    const juce::Array<juce::PluginDescription>& plugins,
+    bool showAudioUnitEquivalents)
+{
+    if (showAudioUnitEquivalents)
+        return plugins;
+
+    juce::StringArray vst3Names;
+    for (auto& desc : plugins)
+        if (desc.pluginFormatName == "VST3")
+            vst3Names.addIfNotAlreadyThere (getPluginEquivalentName (desc));
+
+    juce::Array<juce::PluginDescription> filtered;
+    for (auto& desc : plugins)
+    {
+        if (desc.pluginFormatName == "AudioUnit"
+            && vst3Names.contains (getPluginEquivalentName (desc)))
+            continue;
+
+        filtered.add (desc);
+    }
+
+    return filtered;
+}
+
 juce::PopupMenu buildPluginMenuByManufacturer (const juce::Array<juce::PluginDescription>& plugins)
 {
     juce::PopupMenu menu;
@@ -599,6 +629,7 @@ private:
 MainComponent::MainComponent()
 {
     setLookAndFeel (&trackerLookAndFeel);
+    showAudioUnitEquivalents = ProjectSerializer::loadGlobalPluginMenuAudioUnitsVisible();
 
     // Initialise the engine
     trackerEngine.initialise();
@@ -933,7 +964,8 @@ MainComponent::MainComponent()
     instrumentPanel->onSetPluginInstrumentRequested = [this] (int inst)
     {
         // Show plugin picker from scanned instruments list
-        auto instruments = trackerEngine.getPluginCatalog().getInstruments();
+        auto instruments = filterAudioUnitEquivalents (trackerEngine.getPluginCatalog().getInstruments(),
+                                                       showAudioUnitEquivalents);
         if (instruments.isEmpty())
         {
             setTemporaryStatus ("No plugin instruments found. Scan for plugins first.", true, 3000);
@@ -1082,7 +1114,8 @@ MainComponent::MainComponent()
     // Insert plugin callbacks
     mixerComponent->onAddInsertClicked = [this] (int track)
     {
-        auto effects = trackerEngine.getPluginCatalog().getEffects();
+        auto effects = filterAudioUnitEquivalents (trackerEngine.getPluginCatalog().getEffects(),
+                                                  showAudioUnitEquivalents);
         if (effects.isEmpty())
         {
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::InfoIcon,
@@ -1163,7 +1196,8 @@ MainComponent::MainComponent()
 
     mixerComponent->onAddMasterInsertClicked = [this]
     {
-        auto effects = trackerEngine.getPluginCatalog().getEffects();
+        auto effects = filterAudioUnitEquivalents (trackerEngine.getPluginCatalog().getEffects(),
+                                                  showAudioUnitEquivalents);
         if (effects.isEmpty())
         {
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::InfoIcon,
@@ -1751,6 +1785,21 @@ void MainComponent::toggleVelocityLanes()
     setVelocityLanesVisible (! trackerGrid->areVelocityLanesVisible(), true);
 }
 
+void MainComponent::setAudioUnitEquivalentsVisible (bool visible, bool persist)
+{
+    showAudioUnitEquivalents = visible;
+
+    if (persist)
+        ProjectSerializer::saveGlobalPluginMenuAudioUnitsVisible (visible);
+
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::toggleAudioUnitEquivalents()
+{
+    setAudioUnitEquivalentsVisible (! showAudioUnitEquivalents, true);
+}
+
 void MainComponent::updateUiScaleLabel()
 {
     uiScaleLabel.setText ("Scale", juce::dontSendNotification);
@@ -2047,6 +2096,7 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
     commands.add (cmdToggleInstrumentPanel);
     commands.add (cmdToggleMetronome);
     commands.add (cmdToggleVelocityLanes);
+    commands.add (cmdToggleAudioUnitEquivalents);
     commands.add (cmdAudioPluginSettings);
 }
 
@@ -2137,6 +2187,13 @@ void MainComponent::getCommandInfo (juce::CommandID commandID, juce::Application
         case cmdToggleVelocityLanes:
             result.setInfo ("Show Velocity Lanes", "Show/hide per-note velocity columns", "View", 0);
             result.setTicked (trackerGrid == nullptr || trackerGrid->areVelocityLanesVisible());
+            break;
+        case cmdToggleAudioUnitEquivalents:
+            result.setInfo ("Show AudioUnit Equivalents",
+                            "Show AudioUnit plugin menu entries even when a VST3 with the same name exists",
+                            "View",
+                            0);
+            result.setTicked (showAudioUnitEquivalents);
             break;
         case cmdAudioPluginSettings:
             result.setInfo ("Audio & Plugin Settings...", "Configure audio output and plugin scan paths", "File", 0);
@@ -2245,6 +2302,9 @@ bool MainComponent::perform (const InvocationInfo& info)
         case cmdToggleVelocityLanes:
             toggleVelocityLanes();
             return true;
+        case cmdToggleAudioUnitEquivalents:
+            toggleAudioUnitEquivalents();
+            return true;
         case cmdAudioPluginSettings:
             showAudioPluginSettings();
             return true;
@@ -2296,6 +2356,8 @@ juce::PopupMenu MainComponent::getMenuForIndex (int menuIndex, const juce::Strin
         menu.addCommandItem (&commandManager, cmdToggleSongMode);
         menu.addCommandItem (&commandManager, cmdToggleMetronome);
         menu.addCommandItem (&commandManager, cmdToggleVelocityLanes);
+        menu.addSeparator();
+        menu.addCommandItem (&commandManager, cmdToggleAudioUnitEquivalents);
     }
     else if (menuIndex == 3)
     {
@@ -2921,7 +2983,7 @@ bool MainComponent::enterChordFromKeyboardNote (int rootNote, int row, int targe
     if (changed)
     {
         const int previewTrack = trackerGrid->isCursorInMasterLane() ? 0 : targetTrack;
-        trackerEngine.previewNote (previewTrack, instrument, chordNotes.front());
+        trackerEngine.previewNotes (previewTrack, instrument, chordNotes);
         if (trackerGrid->onPatternDataChanged)
             trackerGrid->onPatternDataChanged();
         trackerGrid->repaint();
@@ -2935,6 +2997,8 @@ void MainComponent::setChordEntryEnabled (bool enabled)
 {
     chordEntryEnabled = enabled;
     trackerGrid->setChordEntryEnabled (enabled);
+    if (activeTab == Tab::Tracker)
+        trackerGrid->grabKeyboardFocus();
     updateToolbar();
     updateStatusBar();
 
@@ -2946,6 +3010,8 @@ void MainComponent::setChordEntryEnabled (bool enabled)
 void MainComponent::cycleMidiGeneratorChordStyle()
 {
     lastMidiGeneratorSettings.chordStyle = (lastMidiGeneratorSettings.chordStyle + 1) % 4;
+    if (activeTab == Tab::Tracker)
+        trackerGrid->grabKeyboardFocus();
     updateToolbar();
     updateStatusBar();
     setTemporaryStatus ("Chord set: " + getChordEntryStatusText(), false, 1800);

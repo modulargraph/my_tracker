@@ -56,6 +56,10 @@ public:
     static void saveGlobalVelocityLanesVisible (bool visible);
     static bool loadGlobalVelocityLanesVisible();
 
+    // Global plugin picker display preference (independent of project files)
+    static void saveGlobalPluginMenuAudioUnitsVisible (bool visible);
+    static bool loadGlobalPluginMenuAudioUnitsVisible();
+
 private:
     static juce::ValueTree patternToValueTree (const Pattern& pattern, int index);
     static void valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern, int version);

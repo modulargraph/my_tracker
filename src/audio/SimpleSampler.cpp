@@ -220,8 +220,13 @@ juce::String SimpleSampler::applyParams (te::AudioTrack& track, int instrumentIn
 
 void SimpleSampler::playNote (te::AudioTrack& track, int midiNote, float velocity)
 {
+    playNotes (track, { midiNote }, velocity);
+}
+
+void SimpleSampler::playNotes (te::AudioTrack& track, const std::vector<int>& midiNotes, float velocity)
+{
     if (auto* sampler = track.pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
-        sampler->playNote (midiNote, juce::jlimit (0.0f, 1.0f, velocity));
+        sampler->playNotes (midiNotes, juce::jlimit (0.0f, 1.0f, velocity));
 }
 
 void SimpleSampler::stopNote (te::AudioTrack& track)

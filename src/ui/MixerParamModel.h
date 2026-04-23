@@ -22,9 +22,10 @@ namespace MixerParamModel
 
     //--------------------------------------------------------------------------
     // Range / step metadata (independent of strip type)
-    double getParamMin  (Section section, int paramIndex);
-    double getParamMax  (Section section, int paramIndex);
-    double getParamStep (Section section, int paramIndex);
+    double getParamMin     (Section section, int paramIndex);
+    double getParamMax     (Section section, int paramIndex);
+    double getParamStep    (Section section, int paramIndex);
+    double getParamDefault (Section section, int paramIndex);
 
     //--------------------------------------------------------------------------
     // Number of adjustable parameters in a given section.

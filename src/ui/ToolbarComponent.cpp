@@ -3,6 +3,8 @@
 ToolbarComponent::ToolbarComponent (TrackerLookAndFeel& lnf)
     : lookAndFeel (lnf)
 {
+    setWantsKeyboardFocus (false);
+    setMouseClickGrabsKeyboardFocus (false);
 }
 
 void ToolbarComponent::setChordEntryState (bool enabled, const juce::String& label)

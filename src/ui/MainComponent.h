@@ -88,6 +88,7 @@ public:
         cmdToggleInstrumentPanel = 0x1053,
         cmdToggleMetronome       = 0x1054,
         cmdToggleVelocityLanes   = 0x1055,
+        cmdToggleAudioUnitEquivalents = 0x1056,
         cmdAudioPluginSettings   = 0x1060
     };
 
@@ -127,6 +128,7 @@ private:
     void restoreAutomationSelection (int trackIndex);
     bool arrangementVisible = false;
     bool instrumentPanelVisible = true;
+    bool showAudioUnitEquivalents = false;
     bool songMode = false;
     enum class FollowMode { Off, Center, Page };
     FollowMode followMode = FollowMode::Off;
@@ -197,6 +199,8 @@ private:
     void toggleSongMode();
     void toggleVelocityLanes();
     void setVelocityLanesVisible (bool visible, bool persist);
+    void toggleAudioUnitEquivalents();
+    void setAudioUnitEquivalentsVisible (bool visible, bool persist);
     void syncArrangementToEdit();
     void showHelpOverlay();
     void updateInstrumentPanel();

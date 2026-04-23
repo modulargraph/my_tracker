@@ -303,6 +303,9 @@ void TrackerEngine::rebuildTempoSequenceFromPatternMasterLane (const Pattern& pa
         else
             tempoSequence.insertTempo (te::BeatPosition::fromBeats (beat), bpm, 0.0f);
     }
+
+    if (sendEffectsPlugin != nullptr)
+        sendEffectsPlugin->setTempoBpm (tempoSequence.getTempos()[0]->getBpm());
 }
 
 void TrackerEngine::rebuildTempoSequenceFromArrangementMasterLane (const std::vector<std::pair<const Pattern*, int>>& sequence, int rpb)
@@ -351,6 +354,9 @@ void TrackerEngine::rebuildTempoSequenceFromArrangementMasterLane (const std::ve
         else
             tempoSequence.insertTempo (te::BeatPosition::fromBeats (beat), bpm, 0.0f);
     }
+
+    if (sendEffectsPlugin != nullptr)
+        sendEffectsPlugin->setTempoBpm (tempoSequence.getTempos()[0]->getBpm());
 }
 
 void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
@@ -1047,7 +1053,10 @@ void TrackerEngine::setBpm (double bpm)
     if (edit == nullptr)
         return;
 
-    edit->tempoSequence.getTempos()[0]->setBpm (juce::jlimit (20.0, 999.0, bpm));
+    const double clampedBpm = juce::jlimit (20.0, 999.0, bpm);
+    edit->tempoSequence.getTempos()[0]->setBpm (clampedBpm);
+    if (sendEffectsPlugin != nullptr)
+        sendEffectsPlugin->setTempoBpm (clampedBpm);
 }
 
 double TrackerEngine::getBpm() const
@@ -1223,12 +1232,22 @@ void TrackerEngine::invalidateTrackInstruments()
 
 void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNote, bool autoStop)
 {
+    previewNotes (trackIndex, instrumentIndex, { midiNote }, autoStop);
+}
+
+void TrackerEngine::previewNotes (int trackIndex, int instrumentIndex, const std::vector<int>& midiNotes, bool autoStop)
+{
     juce::ignoreUnused (trackIndex);
 
-    if (instrumentIndex < 0)
+    if (instrumentIndex < 0 || midiNotes.empty())
         return;
 
     stopPreview();
+
+    std::vector<int> notes;
+    notes.reserve (midiNotes.size());
+    for (int note : midiNotes)
+        notes.push_back (juce::jlimit (0, 127, note));
 
     // Plugin instrument: inject an explicit note-on on the owner track via
     // injectLiveMidiMessage so we have full control over note-off timing.
@@ -1243,12 +1262,14 @@ void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNo
         auto* ownerTrack = getTrack (slotInfo.ownerTrack);
         if (ownerTrack != nullptr)
         {
-            int note = juce::jlimit (0, 127, midiNote);
             int velocity = juce::jlimit (1, 127, static_cast<int> (previewVolume * 127.0f + 0.5f));
-            ownerTrack->injectLiveMidiMessage (
-                juce::MidiMessage::noteOn (1, note, static_cast<juce::uint8> (velocity)), 0);
+            for (int note : notes)
+            {
+                ownerTrack->injectLiveMidiMessage (
+                    juce::MidiMessage::noteOn (1, note, static_cast<juce::uint8> (velocity)), 0);
+            }
 
-            previewPluginNote = note;
+            previewPluginNotes = notes;
             previewPluginInstrument = instrumentIndex;
             previewPluginTrack = slotInfo.ownerTrack;
         }
@@ -1278,7 +1299,7 @@ void TrackerEngine::previewNote (int trackIndex, int instrumentIndex, int midiNo
         fxPlugin->setOutputGainLinear (previewVolume);
     }
 
-    sampler.playNote (*track, midiNote, 1.0f);
+    sampler.playNotes (*track, notes, 1.0f);
 
     activePreviewTrack = kPreviewTrack;
 
@@ -1376,15 +1397,20 @@ void TrackerEngine::previewInstrument (int instrumentIndex)
 
 bool TrackerEngine::stopPluginPreview()
 {
-    if (previewPluginNote >= 0 && previewPluginTrack >= 0)
+    if (! previewPluginNotes.empty() && previewPluginTrack >= 0)
     {
         auto* track = getTrack (previewPluginTrack);
         if (track != nullptr)
-            track->injectLiveMidiMessage (
-                juce::MidiMessage::noteOff (1, previewPluginNote), 0);
+        {
+            for (int note : previewPluginNotes)
+            {
+                track->injectLiveMidiMessage (
+                    juce::MidiMessage::noteOff (1, note), 0);
+            }
+        }
     }
 
-    previewPluginNote = -1;
+    previewPluginNotes.clear();
     previewPluginInstrument = -1;
     previewPluginTrack = -1;
     return true;
@@ -1522,6 +1548,7 @@ void TrackerEngine::setupSendEffectsTrack()
     {
         existing->setSendBuffers (&sampler.getSendBuffers());
         existing->setMixerState (mixerStatePtr);
+        existing->setTempoBpm (getBpm());
         sendEffectsPlugin = existing;
     }
 }
@@ -2198,7 +2225,7 @@ void TrackerEngine::openExternalPluginEditor (te::Plugin* plugin, const juce::St
 
     window->setContentOwned (editor, true);
     window->setResizable (true, false);
-    window->centreWithSize (editor->getWidth(), editor->getHeight());
+    window->centreWithSize (window->getWidth(), window->getHeight());
     window->setVisible (true);
     window->setAlwaysOnTop (true);
 
@@ -2992,7 +3019,7 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 
     window->setContentOwned (content, true);
     window->setResizable (true, false);
-    window->centreWithSize (content->getWidth(), content->getHeight());
+    window->centreWithSize (window->getWidth(), window->getHeight());
     window->setVisible (true);
     window->setAlwaysOnTop (true);
 

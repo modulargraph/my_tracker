@@ -199,8 +199,10 @@ private:
     juce::String getModTypeName (InstrumentParams::Modulation::Type type) const;
     juce::String getLfoShapeName (InstrumentParams::Modulation::LFOShape shape) const;
     juce::String getModDestFullName (int dest) const;
+    juce::String getGranLengthModeName (InstrumentParams::GranLengthMode mode) const;
     juce::String getGranShapeName (InstrumentParams::GranShape shape) const;
     juce::String getGranLoopName (InstrumentParams::GranLoop loop) const;
+    juce::String formatGranularLengthSteps (double steps) const;
     juce::String formatLfoSpeed (int speed) const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SampleEditorComponent)

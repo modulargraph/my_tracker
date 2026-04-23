@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <vector>
 #include "TrackerConstants.h"
 #include "SimpleSampler.h"
 #include "MixerState.h"
@@ -83,6 +84,7 @@ public:
     // Preview a note on a track using a specific instrument
     // autoStop: when true (default), stops after kPreviewDurationMs; when false, plays until stopPreview()
     void previewNote (int trackIndex, int instrumentIndex, int midiNote, bool autoStop = true);
+    void previewNotes (int trackIndex, int instrumentIndex, const std::vector<int>& midiNotes, bool autoStop = true);
 
     // Get the normalized playback position (0-1) of the preview voice, or -1 if idle
     float getPreviewPlaybackPosition() const;
@@ -265,7 +267,7 @@ private:
     float previewVolume = 1.0f;
 
     // Plugin instrument preview state
-    int previewPluginNote = -1;
+    std::vector<int> previewPluginNotes;
     int previewPluginInstrument = -1;
     int previewPluginTrack = -1;
     bool stopPluginPreview();

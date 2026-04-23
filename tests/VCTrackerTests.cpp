@@ -420,7 +420,7 @@ bool testSendBuffersStartSampleAlignmentAndConsume()
     return true;
 }
 
-bool testSendBuffersAutoResizeForLargeWrites()
+bool testSendBuffersClipToPreparedCapacity()
 {
     SendBuffers buffers;
     buffers.prepare (8, 2);
@@ -430,7 +430,7 @@ bool testSendBuffersAutoResizeForLargeWrites()
         for (int i = 0; i < source.getNumSamples(); ++i)
             source.setSample (ch, i, static_cast<float> ((ch + 1) * 100 + i));
 
-    // Write beyond initial prepared length; addTo* should resize and keep all samples.
+    // Audio callbacks must not allocate, so writes beyond prepared capacity are clipped.
     buffers.addToDelay (source, 4, 20, 1.0f);
     buffers.addToReverb (source, 4, 20, 0.5f);
 
@@ -440,23 +440,24 @@ bool testSendBuffersAutoResizeForLargeWrites()
 
     if (delayOut.getNumSamples() != 20 || reverbOut.getNumSamples() != 20)
     {
-        std::cerr << "auto-resize send consume returned wrong slice size\n";
+        std::cerr << "fixed-capacity send consume returned wrong slice size\n";
         return false;
     }
 
     for (int i = 0; i < 20; ++i)
     {
-        const float expectedDelayL = source.getSample (0, 4 + i);
-        const float expectedDelayR = source.getSample (1, 4 + i);
-        const float expectedReverbL = source.getSample (0, 4 + i) * 0.5f;
-        const float expectedReverbR = source.getSample (1, 4 + i) * 0.5f;
+        const bool inPreparedRange = i < 4;
+        const float expectedDelayL = inPreparedRange ? source.getSample (0, 4 + i) : 0.0f;
+        const float expectedDelayR = inPreparedRange ? source.getSample (1, 4 + i) : 0.0f;
+        const float expectedReverbL = inPreparedRange ? source.getSample (0, 4 + i) * 0.5f : 0.0f;
+        const float expectedReverbR = inPreparedRange ? source.getSample (1, 4 + i) * 0.5f : 0.0f;
 
         if (! floatsClose (delayOut.getSample (0, i), expectedDelayL)
             || ! floatsClose (delayOut.getSample (1, i), expectedDelayR)
             || ! floatsClose (reverbOut.getSample (0, i), expectedReverbL)
             || ! floatsClose (reverbOut.getSample (1, i), expectedReverbR))
         {
-            std::cerr << "auto-resize send buffer mismatch at sample " << i << "\n";
+            std::cerr << "fixed-capacity send buffer mismatch at sample " << i << "\n";
             return false;
         }
     }
@@ -995,6 +996,8 @@ bool testProjectRoundTripKeepsMixerLayoutAndInstrumentParams()
     params.delaySend = -24.0;
     params.playMode = InstrumentParams::PlayMode::Granular;
     params.granularLength = 333;
+    params.granularLengthMode = InstrumentParams::GranLengthMode::Steps;
+    params.granularLengthSteps = 12.5;
     params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].type
         = InstrumentParams::Modulation::Type::LFO;
     params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].amount = 48;
@@ -1099,6 +1102,8 @@ bool testProjectRoundTripKeepsMixerLayoutAndInstrumentParams()
         || std::abs (loadedParams.delaySend - (-24.0)) > 1.0e-6
         || loadedParams.playMode != InstrumentParams::PlayMode::Granular
         || loadedParams.granularLength != 333
+        || loadedParams.granularLengthMode != InstrumentParams::GranLengthMode::Steps
+        || std::abs (loadedParams.granularLengthSteps - 12.5) > 1.0e-6
         || loadedParams.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].type
             != InstrumentParams::Modulation::Type::LFO
         || loadedParams.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].amount != 48)
@@ -2550,6 +2555,65 @@ bool testGranularCenterOffsetClampsToRegion()
     if (! doublesClose (SamplePlaybackLayout::getGranularCenterNorm (params, -0.5), 0.25))
     {
         std::cerr << "negative granular offset should clamp to region start\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testGranularStepLengthUsesHalfStepMultiples()
+{
+    InstrumentParams params;
+    params.granularLengthMode = InstrumentParams::GranLengthMode::Steps;
+    params.granularLengthSteps = 2.5;
+
+    const double lengthSamples = SamplePlaybackLayout::getGranularRenderLengthSamples (
+        params, 60, 48000.0, 0.0);
+    const double expected = 2.5 * 48000.0 / 261.6255653005986;
+    if (! doublesClose (lengthSamples, expected))
+    {
+        std::cerr << "granular step length should support 0.5-step multiples; got "
+                  << lengthSamples << "\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testGranularStepLengthTracksPitch()
+{
+    InstrumentParams params;
+    params.granularLengthMode = InstrumentParams::GranLengthMode::Steps;
+    params.granularLengthSteps = 4.0;
+
+    const double baseLength = SamplePlaybackLayout::getGranularRenderLengthSamples (
+        params, 60, 48000.0, 0.0);
+    const double octaveLength = SamplePlaybackLayout::getGranularRenderLengthSamples (
+        params, 72, 48000.0, 0.0);
+
+    if (! doublesClose (octaveLength, baseLength * 0.5))
+    {
+        std::cerr << "granular step length should shorten at higher pitch\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testGranularMsLengthIgnoresPitch()
+{
+    InstrumentParams params;
+    params.granularLengthMode = InstrumentParams::GranLengthMode::MS;
+    params.granularLength = 250;
+
+    const double baseLength = SamplePlaybackLayout::getGranularRenderLengthSamples (
+        params, 60, 48000.0, 0.0);
+    const double octaveLength = SamplePlaybackLayout::getGranularRenderLengthSamples (
+        params, 72, 48000.0, 0.0);
+
+    if (! doublesClose (baseLength, 12000.0) || ! doublesClose (octaveLength, 12000.0))
+    {
+        std::cerr << "granular ms length should remain a fixed time length\n";
         return false;
     }
 
@@ -5678,6 +5742,99 @@ bool testTrackerGridCanHideVelocityLanes()
     return true;
 }
 
+bool testTrackerGridArrowKeysStepAcrossVisibleCells()
+{
+    PatternData patternData;
+    TrackLayout trackLayout;
+    TrackerLookAndFeel lnf;
+    TrackerGrid grid (patternData, lnf, trackLayout);
+
+    trackLayout.setTrackNoteLaneCount (0, 2);
+    grid.setCursorPosition (0, 0);
+
+    const juce::KeyPress rightKey (juce::KeyPress::rightKey);
+    const juce::KeyPress leftKey (juce::KeyPress::leftKey);
+
+    if (! grid.keyPressed (rightKey)
+        || grid.getCursorTrack() != 0
+        || grid.getCursorNoteLane() != 0
+        || grid.getCursorSubColumn() != SubColumn::Instrument)
+    {
+        std::cerr << "Right arrow should step from note to instrument within the first note lane\n";
+        return false;
+    }
+
+    if (! grid.keyPressed (rightKey)
+        || grid.getCursorTrack() != 0
+        || grid.getCursorNoteLane() != 0
+        || grid.getCursorSubColumn() != SubColumn::Volume)
+    {
+        std::cerr << "Right arrow should step from instrument to velocity within the first note lane\n";
+        return false;
+    }
+
+    if (! grid.keyPressed (rightKey)
+        || grid.getCursorTrack() != 0
+        || grid.getCursorNoteLane() != 1
+        || grid.getCursorSubColumn() != SubColumn::Note)
+    {
+        std::cerr << "Right arrow should step to the next note lane before moving tracks\n";
+        return false;
+    }
+
+    if (! grid.keyPressed (leftKey)
+        || grid.getCursorTrack() != 0
+        || grid.getCursorNoteLane() != 0
+        || grid.getCursorSubColumn() != SubColumn::Volume)
+    {
+        std::cerr << "Left arrow should step back to the prior note lane velocity cell\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testTrackerGridArrowKeysSkipHiddenVelocityCells()
+{
+    PatternData patternData;
+    TrackLayout trackLayout;
+    TrackerLookAndFeel lnf;
+    TrackerGrid grid (patternData, lnf, trackLayout);
+
+    trackLayout.setTrackNoteLaneCount (0, 2);
+    grid.setVelocityLanesVisible (false);
+    grid.setCursorPosition (0, 0);
+
+    const juce::KeyPress rightKey (juce::KeyPress::rightKey);
+    const juce::KeyPress leftKey (juce::KeyPress::leftKey);
+
+    if (! grid.keyPressed (rightKey)
+        || grid.getCursorSubColumn() != SubColumn::Instrument
+        || grid.getCursorNoteLane() != 0)
+    {
+        std::cerr << "Right arrow should step to instrument when velocity lanes are hidden\n";
+        return false;
+    }
+
+    if (! grid.keyPressed (rightKey)
+        || grid.getCursorSubColumn() != SubColumn::Note
+        || grid.getCursorNoteLane() != 1)
+    {
+        std::cerr << "Right arrow should skip hidden velocity and move to the next note lane\n";
+        return false;
+    }
+
+    if (! grid.keyPressed (leftKey)
+        || grid.getCursorSubColumn() != SubColumn::Instrument
+        || grid.getCursorNoteLane() != 0)
+    {
+        std::cerr << "Left arrow should skip hidden velocity and return to the prior instrument cell\n";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -5694,7 +5851,7 @@ int main()
         { "PatternRoundTripNoExtraPattern", &testPatternRoundTripNoExtraPattern },
         { "SinglePatternRoundTripStaysSingle", &testSinglePatternRoundTripStaysSingle },
         { "SendBuffersStartSampleAlignmentAndConsume", &testSendBuffersStartSampleAlignmentAndConsume },
-        { "SendBuffersAutoResizeForLargeWrites", &testSendBuffersAutoResizeForLargeWrites },
+        { "SendBuffersClipToPreparedCapacity", &testSendBuffersClipToPreparedCapacity },
         { "PanMappingCenterAndExtremes", &testPanMappingCenterAndExtremes },
         { "InstrumentRoutingRoundTripFullRange", &testInstrumentRoutingRoundTripFullRange },
         { "InstrumentRoutingClampsOutOfRange", &testInstrumentRoutingClampsOutOfRange },
@@ -5733,6 +5890,9 @@ int main()
         { "GranularCenterUsesAbsolutePosition", &testGranularCenterUsesAbsolutePosition },
         { "GranularCenterClampsToRegion", &testGranularCenterClampsToRegion },
         { "GranularCenterOffsetClampsToRegion", &testGranularCenterOffsetClampsToRegion },
+        { "GranularStepLengthUsesHalfStepMultiples", &testGranularStepLengthUsesHalfStepMultiples },
+        { "GranularStepLengthTracksPitch", &testGranularStepLengthTracksPitch },
+        { "GranularMsLengthIgnoresPitch", &testGranularMsLengthIgnoresPitch },
         { "LoopRegionUsesAbsolutePositions", &testLoopRegionUsesAbsolutePositions },
         { "LoopRegionDefaultsClampToPlaybackRegion", &testLoopRegionDefaultsClampToPlaybackRegion },
         { "SliceBoundariesUseAbsolutePositions", &testSliceBoundariesUseAbsolutePositions },
@@ -5776,6 +5936,8 @@ int main()
         { "PluginAutomationMultiPluginTrack", &testPluginAutomationMultiPluginTrack },
         { "TrackerGridClampsCursorNoteLaneOnTrackChange", &testTrackerGridClampsCursorNoteLaneOnTrackChange },
         { "TrackerGridCanHideVelocityLanes", &testTrackerGridCanHideVelocityLanes },
+        { "TrackerGridArrowKeysStepAcrossVisibleCells", &testTrackerGridArrowKeysStepAcrossVisibleCells },
+        { "TrackerGridArrowKeysSkipHiddenVelocityCells", &testTrackerGridArrowKeysSkipHiddenVelocityCells },
     };
 
     int failures = 0;

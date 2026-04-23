@@ -2,6 +2,41 @@
 
 const char* SendEffectsPlugin::xmlTypeName = "SendEffects";
 
+namespace
+{
+constexpr int kMinimumSendBufferSamples = 8192;
+
+float percentToUnit (double value)
+{
+    return juce::jlimit (0.0f, 1.0f, static_cast<float> (value) / 100.0f);
+}
+
+float softLimitDelaySample (float value)
+{
+    if (! std::isfinite (value))
+        return 0.0f;
+
+    static constexpr float kLinearLimit = 2.0f;
+    if (std::abs (value) <= kLinearLimit)
+        return value;
+
+    return kLinearLimit * std::tanh (value / kLinearLimit);
+}
+
+template <typename Filter>
+void assignBiquadCoefficients (Filter& filter, const std::array<float, 6>& coeffs)
+{
+    *filter.coefficients = coeffs;
+}
+
+template <typename FilterL, typename FilterR>
+void assignStereoBiquadCoefficients (FilterL& left, FilterR& right, const std::array<float, 6>& coeffs)
+{
+    assignBiquadCoefficients (left, coeffs);
+    assignBiquadCoefficients (right, coeffs);
+}
+} // namespace
+
 SendEffectsPlugin::SendEffectsPlugin (te::PluginCreationInfo info)
     : te::Plugin (info)
 {
@@ -11,52 +46,311 @@ SendEffectsPlugin::~SendEffectsPlugin()
 {
 }
 
+void SendEffectsPlugin::AtomicDelayParams::store (const DelayParams& params)
+{
+    sequence.fetch_add (1, std::memory_order_release);
+    time.store (static_cast<float> (juce::jlimit (1.0, 2000.0, params.time)), std::memory_order_relaxed);
+    syncDivision.store (juce::jlimit (1, 32, params.syncDivision), std::memory_order_relaxed);
+    bpmSync.store (params.bpmSync, std::memory_order_relaxed);
+    dotted.store (params.dotted, std::memory_order_relaxed);
+    feedback.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.feedback)), std::memory_order_relaxed);
+    filterType.store (juce::jlimit (0, 2, params.filterType), std::memory_order_relaxed);
+    filterCutoff.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.filterCutoff)), std::memory_order_relaxed);
+    wet.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.wet)), std::memory_order_relaxed);
+    stereoWidth.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.stereoWidth)), std::memory_order_relaxed);
+    sequence.fetch_add (1, std::memory_order_release);
+}
+
+bool SendEffectsPlugin::AtomicDelayParams::loadConsistent (DelayParams& params) const
+{
+    const auto before = sequence.load (std::memory_order_acquire);
+    if ((before & 1u) != 0u)
+        return false;
+
+    DelayParams snapshot;
+    snapshot.time = time.load (std::memory_order_relaxed);
+    snapshot.syncDivision = syncDivision.load (std::memory_order_relaxed);
+    snapshot.bpmSync = bpmSync.load (std::memory_order_relaxed);
+    snapshot.dotted = dotted.load (std::memory_order_relaxed);
+    snapshot.feedback = feedback.load (std::memory_order_relaxed);
+    snapshot.filterType = filterType.load (std::memory_order_relaxed);
+    snapshot.filterCutoff = filterCutoff.load (std::memory_order_relaxed);
+    snapshot.wet = wet.load (std::memory_order_relaxed);
+    snapshot.stereoWidth = stereoWidth.load (std::memory_order_relaxed);
+
+    const auto after = sequence.load (std::memory_order_acquire);
+    if (before != after || (after & 1u) != 0u)
+        return false;
+
+    params = snapshot;
+    return true;
+}
+
+DelayParams SendEffectsPlugin::AtomicDelayParams::loadRelaxed() const
+{
+    DelayParams params;
+    params.time = time.load (std::memory_order_relaxed);
+    params.syncDivision = syncDivision.load (std::memory_order_relaxed);
+    params.bpmSync = bpmSync.load (std::memory_order_relaxed);
+    params.dotted = dotted.load (std::memory_order_relaxed);
+    params.feedback = feedback.load (std::memory_order_relaxed);
+    params.filterType = filterType.load (std::memory_order_relaxed);
+    params.filterCutoff = filterCutoff.load (std::memory_order_relaxed);
+    params.wet = wet.load (std::memory_order_relaxed);
+    params.stereoWidth = stereoWidth.load (std::memory_order_relaxed);
+    return params;
+}
+
+void SendEffectsPlugin::AtomicReverbParams::store (const ReverbParams& params)
+{
+    sequence.fetch_add (1, std::memory_order_release);
+    roomSize.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.roomSize)), std::memory_order_relaxed);
+    decay.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.decay)), std::memory_order_relaxed);
+    damping.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.damping)), std::memory_order_relaxed);
+    preDelay.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.preDelay)), std::memory_order_relaxed);
+    wet.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.wet)), std::memory_order_relaxed);
+    sequence.fetch_add (1, std::memory_order_release);
+}
+
+bool SendEffectsPlugin::AtomicReverbParams::loadConsistent (ReverbParams& params) const
+{
+    const auto before = sequence.load (std::memory_order_acquire);
+    if ((before & 1u) != 0u)
+        return false;
+
+    ReverbParams snapshot;
+    snapshot.roomSize = roomSize.load (std::memory_order_relaxed);
+    snapshot.decay = decay.load (std::memory_order_relaxed);
+    snapshot.damping = damping.load (std::memory_order_relaxed);
+    snapshot.preDelay = preDelay.load (std::memory_order_relaxed);
+    snapshot.wet = wet.load (std::memory_order_relaxed);
+
+    const auto after = sequence.load (std::memory_order_acquire);
+    if (before != after || (after & 1u) != 0u)
+        return false;
+
+    params = snapshot;
+    return true;
+}
+
+ReverbParams SendEffectsPlugin::AtomicReverbParams::loadRelaxed() const
+{
+    ReverbParams params;
+    params.roomSize = roomSize.load (std::memory_order_relaxed);
+    params.decay = decay.load (std::memory_order_relaxed);
+    params.damping = damping.load (std::memory_order_relaxed);
+    params.preDelay = preDelay.load (std::memory_order_relaxed);
+    params.wet = wet.load (std::memory_order_relaxed);
+    return params;
+}
+
+void SendEffectsPlugin::AtomicSendReturnState::store (const SendReturnState& state)
+{
+    sequence.fetch_add (1, std::memory_order_release);
+    volume.store (static_cast<float> (juce::jlimit (-100.0, 12.0, state.volume)), std::memory_order_relaxed);
+    pan.store (juce::jlimit (-50, 50, state.pan), std::memory_order_relaxed);
+    muted.store (state.muted, std::memory_order_relaxed);
+    eqLowGain.store (static_cast<float> (juce::jlimit (-12.0, 12.0, state.eqLowGain)), std::memory_order_relaxed);
+    eqMidGain.store (static_cast<float> (juce::jlimit (-12.0, 12.0, state.eqMidGain)), std::memory_order_relaxed);
+    eqHighGain.store (static_cast<float> (juce::jlimit (-12.0, 12.0, state.eqHighGain)), std::memory_order_relaxed);
+    eqMidFreq.store (static_cast<float> (juce::jlimit (200.0, 8000.0, state.eqMidFreq)), std::memory_order_relaxed);
+    sequence.fetch_add (1, std::memory_order_release);
+}
+
+bool SendEffectsPlugin::AtomicSendReturnState::loadConsistent (SendReturnState& state) const
+{
+    const auto before = sequence.load (std::memory_order_acquire);
+    if ((before & 1u) != 0u)
+        return false;
+
+    SendReturnState snapshot;
+    snapshot.volume = volume.load (std::memory_order_relaxed);
+    snapshot.pan = pan.load (std::memory_order_relaxed);
+    snapshot.muted = muted.load (std::memory_order_relaxed);
+    snapshot.eqLowGain = eqLowGain.load (std::memory_order_relaxed);
+    snapshot.eqMidGain = eqMidGain.load (std::memory_order_relaxed);
+    snapshot.eqHighGain = eqHighGain.load (std::memory_order_relaxed);
+    snapshot.eqMidFreq = eqMidFreq.load (std::memory_order_relaxed);
+
+    const auto after = sequence.load (std::memory_order_acquire);
+    if (before != after || (after & 1u) != 0u)
+        return false;
+
+    state = snapshot;
+    return true;
+}
+
+void SendEffectsPlugin::AtomicMasterMixState::store (const MasterMixState& state)
+{
+    sequence.fetch_add (1, std::memory_order_release);
+    volume.store (static_cast<float> (juce::jlimit (-100.0, 12.0, state.volume)), std::memory_order_relaxed);
+    pan.store (juce::jlimit (-50, 50, state.pan), std::memory_order_relaxed);
+    eqLowGain.store (static_cast<float> (juce::jlimit (-12.0, 12.0, state.eqLowGain)), std::memory_order_relaxed);
+    eqMidGain.store (static_cast<float> (juce::jlimit (-12.0, 12.0, state.eqMidGain)), std::memory_order_relaxed);
+    eqHighGain.store (static_cast<float> (juce::jlimit (-12.0, 12.0, state.eqHighGain)), std::memory_order_relaxed);
+    eqMidFreq.store (static_cast<float> (juce::jlimit (200.0, 8000.0, state.eqMidFreq)), std::memory_order_relaxed);
+    compThreshold.store (static_cast<float> (juce::jlimit (-60.0, 0.0, state.compThreshold)), std::memory_order_relaxed);
+    compRatio.store (static_cast<float> (juce::jlimit (1.0, 20.0, state.compRatio)), std::memory_order_relaxed);
+    compAttack.store (static_cast<float> (juce::jlimit (0.1, 100.0, state.compAttack)), std::memory_order_relaxed);
+    compRelease.store (static_cast<float> (juce::jlimit (10.0, 1000.0, state.compRelease)), std::memory_order_relaxed);
+    limiterThreshold.store (static_cast<float> (juce::jlimit (-24.0, 0.0, state.limiterThreshold)), std::memory_order_relaxed);
+    limiterRelease.store (static_cast<float> (juce::jlimit (1.0, 500.0, state.limiterRelease)), std::memory_order_relaxed);
+    sequence.fetch_add (1, std::memory_order_release);
+}
+
+bool SendEffectsPlugin::AtomicMasterMixState::loadConsistent (MasterMixState& state) const
+{
+    const auto before = sequence.load (std::memory_order_acquire);
+    if ((before & 1u) != 0u)
+        return false;
+
+    MasterMixState snapshot;
+    snapshot.volume = volume.load (std::memory_order_relaxed);
+    snapshot.pan = pan.load (std::memory_order_relaxed);
+    snapshot.eqLowGain = eqLowGain.load (std::memory_order_relaxed);
+    snapshot.eqMidGain = eqMidGain.load (std::memory_order_relaxed);
+    snapshot.eqHighGain = eqHighGain.load (std::memory_order_relaxed);
+    snapshot.eqMidFreq = eqMidFreq.load (std::memory_order_relaxed);
+    snapshot.compThreshold = compThreshold.load (std::memory_order_relaxed);
+    snapshot.compRatio = compRatio.load (std::memory_order_relaxed);
+    snapshot.compAttack = compAttack.load (std::memory_order_relaxed);
+    snapshot.compRelease = compRelease.load (std::memory_order_relaxed);
+    snapshot.limiterThreshold = limiterThreshold.load (std::memory_order_relaxed);
+    snapshot.limiterRelease = limiterRelease.load (std::memory_order_relaxed);
+
+    const auto after = sequence.load (std::memory_order_acquire);
+    if (before != after || (after & 1u) != 0u)
+        return false;
+
+    state = snapshot;
+    return true;
+}
+
+void SendEffectsPlugin::setSendBuffers (SendBuffers* buffers)
+{
+    sendBuffers = buffers;
+    if (sendBuffers != nullptr && sendBufferCapacitySamples > 0)
+        sendBuffers->prepare (sendBufferCapacitySamples, 2);
+}
+
+void SendEffectsPlugin::setMixerState (MixerState* mixState)
+{
+    mixerStatePtr = mixState;
+    if (mixerStatePtr != nullptr)
+    {
+        refreshMixerStateSnapshot();
+        hasMixerState.store (true, std::memory_order_release);
+    }
+    else
+    {
+        hasMixerState.store (false, std::memory_order_release);
+        pendingSendReturns[0].store (SendReturnState {});
+        pendingSendReturns[1].store (SendReturnState {});
+        pendingMasterState.store (MasterMixState {});
+    }
+}
+
+void SendEffectsPlugin::refreshMixerStateSnapshot()
+{
+    if (mixerStatePtr == nullptr)
+        return;
+
+    pendingSendReturns[0].store (mixerStatePtr->sendReturns[0]);
+    pendingSendReturns[1].store (mixerStatePtr->sendReturns[1]);
+    pendingMasterState.store (mixerStatePtr->master);
+}
+
+void SendEffectsPlugin::setDelayParams (const DelayParams& params)
+{
+    pendingDelayParams.store (params);
+}
+
+void SendEffectsPlugin::setReverbParams (const ReverbParams& params)
+{
+    pendingReverbParams.store (params);
+}
+
+DelayParams SendEffectsPlugin::getDelayParams() const
+{
+    return pendingDelayParams.loadRelaxed();
+}
+
+ReverbParams SendEffectsPlugin::getReverbParams() const
+{
+    return pendingReverbParams.loadRelaxed();
+}
+
+void SendEffectsPlugin::setTempoBpm (double bpm)
+{
+    tempoBpm.store (static_cast<float> (juce::jlimit (20.0, 999.0, bpm)), std::memory_order_relaxed);
+}
+
+void SendEffectsPlugin::configurePreparedBuffers (int blockSize)
+{
+    maxScratchSamples = juce::jmax (1, blockSize);
+    sendBufferCapacitySamples = juce::jmax (kMinimumSendBufferSamples, maxScratchSamples * 2);
+
+    delayScratch.setSize (2, maxScratchSamples);
+    reverbInputScratch.setSize (2, maxScratchSamples);
+    reverbScratch.setSize (2, maxScratchSamples);
+    delayReturnScratch.setSize (2, maxScratchSamples);
+    reverbReturnScratch.setSize (2, maxScratchSamples);
+
+    delayScratch.clear();
+    reverbInputScratch.clear();
+    reverbScratch.clear();
+    delayReturnScratch.clear();
+    reverbReturnScratch.clear();
+
+    if (sendBuffers != nullptr)
+        sendBuffers->prepare (sendBufferCapacitySamples, 2);
+}
+
 void SendEffectsPlugin::initialise (const te::PluginInitialisationInfo& info)
 {
     sampleRate = info.sampleRate;
 
     // Delay line (stereo circular buffer)
-    delayLine.setSize (2, kMaxDelaySamples);
+    const int maxDelaySamples = juce::jmax (1, static_cast<int> (std::ceil (sampleRate * kMaxDelaySeconds)) + 1);
+    delayLine.setSize (2, maxDelaySamples);
     delayLine.clear();
     delayWritePos = 0;
 
     // Delay feedback filter
     juce::dsp::ProcessSpec spec;
     spec.sampleRate = sampleRate;
-    spec.maximumBlockSize = static_cast<juce::uint32> (info.blockSizeSamples);
+    spec.maximumBlockSize = static_cast<juce::uint32> (juce::jmax (1, info.blockSizeSamples));
     spec.numChannels = 1;
-    delayFilter.prepare (spec);
-    delayFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
-    delayFilter.setCutoffFrequency (8000.0f);
+    delayFilterL.prepare (spec);
+    delayFilterR.prepare (spec);
+    delayFilterL.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+    delayFilterR.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+    delayFilterL.setCutoffFrequency (8000.0f);
+    delayFilterR.setCutoffFrequency (8000.0f);
     delayFilterInitialized = true;
 
     // Reverb
     reverb.setSampleRate (sampleRate);
 
     // Pre-delay buffer for reverb (max 100ms)
-    preDelayMaxSamples = static_cast<int> (sampleRate * 0.1);
+    preDelayMaxSamples = juce::jmax (1, static_cast<int> (std::ceil (sampleRate * 0.1)) + 1);
     preDelayBuffer.setSize (2, preDelayMaxSamples);
     preDelayBuffer.clear();
     preDelayWritePos = 0;
 
-    // Scratch buffers
-    delayScratch.setSize (2, info.blockSizeSamples);
-    reverbInputScratch.setSize (2, info.blockSizeSamples);
-    reverbScratch.setSize (2, info.blockSizeSamples);
-    delayReturnScratch.setSize (2, info.blockSizeSamples);
-    reverbReturnScratch.setSize (2, info.blockSizeSamples);
+    configurePreparedBuffers (info.blockSizeSamples);
 
     // Initialize EQ filters with flat coefficients
-    auto flatCoeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sampleRate, 1000.0f, 0.707f, 1.0f);
-    delayReturnEqLowL.coefficients = flatCoeffs;  delayReturnEqLowR.coefficients = flatCoeffs;
-    delayReturnEqMidL.coefficients = flatCoeffs;   delayReturnEqMidR.coefficients = flatCoeffs;
-    delayReturnEqHighL.coefficients = flatCoeffs;  delayReturnEqHighR.coefficients = flatCoeffs;
-    reverbReturnEqLowL.coefficients = flatCoeffs;  reverbReturnEqLowR.coefficients = flatCoeffs;
-    reverbReturnEqMidL.coefficients = flatCoeffs;   reverbReturnEqMidR.coefficients = flatCoeffs;
-    reverbReturnEqHighL.coefficients = flatCoeffs;  reverbReturnEqHighR.coefficients = flatCoeffs;
-    masterEqLowL.coefficients = flatCoeffs;  masterEqLowR.coefficients = flatCoeffs;
-    masterEqMidL.coefficients = flatCoeffs;   masterEqMidR.coefficients = flatCoeffs;
-    masterEqHighL.coefficients = flatCoeffs;  masterEqHighR.coefficients = flatCoeffs;
+    auto flatCoeffs = juce::dsp::IIR::ArrayCoefficients<float>::makePeakFilter (sampleRate, 1000.0f, 0.707f, 1.0f);
+    assignStereoBiquadCoefficients (delayReturnEqLowL, delayReturnEqLowR, flatCoeffs);
+    assignStereoBiquadCoefficients (delayReturnEqMidL, delayReturnEqMidR, flatCoeffs);
+    assignStereoBiquadCoefficients (delayReturnEqHighL, delayReturnEqHighR, flatCoeffs);
+    assignStereoBiquadCoefficients (reverbReturnEqLowL, reverbReturnEqLowR, flatCoeffs);
+    assignStereoBiquadCoefficients (reverbReturnEqMidL, reverbReturnEqMidR, flatCoeffs);
+    assignStereoBiquadCoefficients (reverbReturnEqHighL, reverbReturnEqHighR, flatCoeffs);
+    assignStereoBiquadCoefficients (masterEqLowL, masterEqLowR, flatCoeffs);
+    assignStereoBiquadCoefficients (masterEqMidL, masterEqMidR, flatCoeffs);
+    assignStereoBiquadCoefficients (masterEqHighL, masterEqHighR, flatCoeffs);
 
     masterCompEnvelope = 0.0f;
     masterLimiterEnvelope = 0.0f;
@@ -65,7 +359,8 @@ void SendEffectsPlugin::initialise (const te::PluginInitialisationInfo& info)
 void SendEffectsPlugin::deinitialise()
 {
     delayLine.clear();
-    delayFilter.reset();
+    delayFilterL.reset();
+    delayFilterR.reset();
     delayFilterInitialized = false;
     reverb.reset();
     preDelayBuffer.clear();
@@ -83,7 +378,7 @@ int SendEffectsPlugin::getDelayTimeSamples() const
     if (activeDelayParams.bpmSync)
     {
         // BPM-synced delay: division is the note denominator (4 = quarter, 8 = eighth, etc.)
-        double bpm = edit.tempoSequence.getTempos()[0]->getBpm();
+        double bpm = static_cast<double> (tempoBpm.load (std::memory_order_relaxed));
         if (bpm <= 0.0) bpm = 120.0;
 
         // Time for one beat (quarter note) in seconds
@@ -97,13 +392,13 @@ int SendEffectsPlugin::getDelayTimeSamples() const
             divisionSeconds *= 1.5;
 
         int samples = static_cast<int> (divisionSeconds * sampleRate);
-        return juce::jlimit (1, kMaxDelaySamples - 1, samples);
+        return juce::jlimit (1, getDelayLineSize() - 1, samples);
     }
     else
     {
         // Free time in ms
         int samples = static_cast<int> (activeDelayParams.time * sampleRate / 1000.0);
-        return juce::jlimit (1, kMaxDelaySamples - 1, samples);
+        return juce::jlimit (1, getDelayLineSize() - 1, samples);
     }
 }
 
@@ -118,24 +413,31 @@ void SendEffectsPlugin::processDelay (const juce::AudioBuffer<float>& input,
 {
     if (numSamples <= 0) return;
 
-    float wet = static_cast<float> (activeDelayParams.wet) / 100.0f;
-    float feedback = static_cast<float> (activeDelayParams.feedback) / 100.0f;
+    float wet = percentToUnit (activeDelayParams.wet);
+    float feedback = juce::jlimit (0.0f, 0.98f, percentToUnit (activeDelayParams.feedback));
     int delaySamples = getDelayTimeSamples();
 
     // Ping-pong amount: 0% = normal stereo delay, 100% = full ping-pong
-    float pingPong = static_cast<float> (activeDelayParams.stereoWidth) / 100.0f;
+    float pingPong = percentToUnit (activeDelayParams.stereoWidth);
 
     // Setup filter if applicable
     if (delayFilterInitialized && activeDelayParams.filterType > 0)
     {
         float cutoffHz = 20.0f * std::pow (1000.0f, static_cast<float> (activeDelayParams.filterCutoff) / 100.0f);
         cutoffHz = juce::jmin (cutoffHz, static_cast<float> (sampleRate) * 0.4f);
-        delayFilter.setCutoffFrequency (cutoffHz);
+        delayFilterL.setCutoffFrequency (cutoffHz);
+        delayFilterR.setCutoffFrequency (cutoffHz);
 
         if (activeDelayParams.filterType == 1)
-            delayFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+        {
+            delayFilterL.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+            delayFilterR.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+        }
         else
-            delayFilter.setType (juce::dsp::StateVariableTPTFilterType::highpass);
+        {
+            delayFilterL.setType (juce::dsp::StateVariableTPTFilterType::highpass);
+            delayFilterR.setType (juce::dsp::StateVariableTPTFilterType::highpass);
+        }
     }
 
     // Process delay with circular buffer
@@ -145,7 +447,7 @@ void SendEffectsPlugin::processDelay (const juce::AudioBuffer<float>& input,
     {
         // Read from delay line
         int readPos = delayWritePos - delaySamples;
-        if (readPos < 0) readPos += kMaxDelaySamples;
+        if (readPos < 0) readPos += getDelayLineSize();
 
         float delayedL = delayLine.getSample (0, readPos);
         float delayedR = (channels > 1) ? delayLine.getSample (1, readPos) : delayedL;
@@ -153,10 +455,8 @@ void SendEffectsPlugin::processDelay (const juce::AudioBuffer<float>& input,
         // Apply filter to feedback signal
         if (delayFilterInitialized && activeDelayParams.filterType > 0)
         {
-            float mono = (delayedL + delayedR) * 0.5f;
-            float filtered = delayFilter.processSample (0, mono);
-            delayedL = filtered + (delayedL - mono);
-            delayedR = filtered + (delayedR - mono);
+            delayedL = delayFilterL.processSample (0, delayedL);
+            delayedR = delayFilterR.processSample (0, delayedR);
         }
 
         // Get input from captured send slice
@@ -177,15 +477,15 @@ void SendEffectsPlugin::processDelay (const juce::AudioBuffer<float>& input,
         float finalWriteL = stdWriteL + (ppWriteL - stdWriteL) * pingPong;
         float finalWriteR = stdWriteR + (ppWriteR - stdWriteR) * pingPong;
 
-        // Soft clip feedback to prevent runaway
-        finalWriteL = std::tanh (finalWriteL);
-        finalWriteR = std::tanh (finalWriteR);
+        // Keep pathological feedback or send spikes finite without colouring normal levels.
+        finalWriteL = softLimitDelaySample (finalWriteL);
+        finalWriteR = softLimitDelaySample (finalWriteR);
 
         delayLine.setSample (0, delayWritePos, finalWriteL);
         if (channels > 1)
             delayLine.setSample (1, delayWritePos, finalWriteR);
 
-        delayWritePos = (delayWritePos + 1) % kMaxDelaySamples;
+        delayWritePos = (delayWritePos + 1) % getDelayLineSize();
 
         // Add wet signal to output
         if (channels > 0)
@@ -206,20 +506,20 @@ void SendEffectsPlugin::processReverb (const juce::AudioBuffer<float>& input,
 {
     if (numSamples <= 0) return;
 
-    float wet = static_cast<float> (activeReverbParams.wet) / 100.0f;
+    float wet = percentToUnit (activeReverbParams.wet);
     if (wet <= 0.0f) return;
 
     // Configure juce::Reverb parameters
     juce::Reverb::Parameters rvParams;
-    rvParams.roomSize   = static_cast<float> (activeReverbParams.roomSize) / 100.0f;
-    rvParams.damping    = static_cast<float> (activeReverbParams.damping) / 100.0f;
+    rvParams.roomSize   = percentToUnit (activeReverbParams.roomSize);
+    rvParams.damping    = percentToUnit (activeReverbParams.damping);
     rvParams.wetLevel   = wet;
     rvParams.dryLevel   = 0.0f; // We only want the wet signal
     rvParams.width      = 1.0f;
     rvParams.freezeMode = 0.0f;
 
     // Map decay to room size blend (decay affects both roomSize and wet)
-    float decayFactor = static_cast<float> (activeReverbParams.decay) / 100.0f;
+    float decayFactor = percentToUnit (activeReverbParams.decay);
     rvParams.roomSize = juce::jlimit (0.0f, 1.0f, rvParams.roomSize * (0.5f + decayFactor * 0.5f));
 
     reverb.setParameters (rvParams);
@@ -231,8 +531,8 @@ void SendEffectsPlugin::processReverb (const juce::AudioBuffer<float>& input,
     int channels = juce::jmin (2, output.getNumChannels());
 
     // Copy send buffer through pre-delay into scratch buffer
-    reverbScratch.setSize (2, numSamples, false, false, true);
-    reverbScratch.clear();
+    for (int ch = 0; ch < reverbScratch.getNumChannels(); ++ch)
+        reverbScratch.clear (ch, 0, juce::jmin (numSamples, reverbScratch.getNumSamples()));
 
     for (int i = 0; i < numSamples; ++i)
     {
@@ -289,62 +589,37 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     int startSample = fc.bufferStartSample;
     int numSamples = fc.bufferNumSamples;
 
-    // Copy params from pending (UI thread) to active (audio thread)
+    if (numSamples <= 0)
+        return;
+
+    pendingDelayParams.loadConsistent (activeDelayParams);
+    pendingReverbParams.loadConsistent (activeReverbParams);
+    const bool useMixerState = hasMixerState.load (std::memory_order_acquire);
+    if (useMixerState)
     {
-        const juce::SpinLock::ScopedLockType lock (paramLock);
-        activeDelayParams = pendingDelayParams;
-        activeReverbParams = pendingReverbParams;
+        pendingSendReturns[0].loadConsistent (activeSendReturns[0]);
+        pendingSendReturns[1].loadConsistent (activeSendReturns[1]);
+        pendingMasterState.loadConsistent (activeMasterState);
     }
 
-    // Capture and clear this block slice atomically from shared send buffers.
-    sendBuffers->consumeSlice (delayScratch, reverbInputScratch, startSample, numSamples, 2);
-
-    // Process delay and reverb into separate scratch buffers for send return processing
-    delayReturnScratch.setSize (2, numSamples, false, false, true);
-    delayReturnScratch.clear();
-    reverbReturnScratch.setSize (2, numSamples, false, false, true);
-    reverbReturnScratch.clear();
-
-    processDelay (delayScratch, delayReturnScratch, 0, numSamples);
-    processReverb (reverbInputScratch, reverbReturnScratch, 0, numSamples);
-
-    // Apply send return channel processing (EQ, volume, pan)
-    if (mixerStatePtr != nullptr)
+    const int chunkCapacity = juce::jmax (1, maxScratchSamples);
+    int offset = 0;
+    while (offset < numSamples)
     {
-        auto& delayReturn = mixerStatePtr->sendReturns[0];
-        auto& reverbReturn = mixerStatePtr->sendReturns[1];
+        const int chunkSamples = juce::jmin (chunkCapacity, numSamples - offset);
+        processSendEffectsChunk (buffer, startSample + offset, chunkSamples, useMixerState);
+        offset += chunkSamples;
+    }
 
-        if (! delayReturn.muted)
-        {
-            processSendReturnEQ (delayReturnScratch, numSamples, delayReturn,
-                                 delayReturnEqLowL, delayReturnEqLowR,
-                                 delayReturnEqMidL, delayReturnEqMidR,
-                                 delayReturnEqHighL, delayReturnEqHighR);
-            applySendReturnVolumePan (delayReturnScratch, numSamples, delayReturn);
-
-            for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
-                buffer.addFrom (ch, startSample, delayReturnScratch, ch, 0, numSamples);
-        }
-
-        if (! reverbReturn.muted)
-        {
-            processSendReturnEQ (reverbReturnScratch, numSamples, reverbReturn,
-                                 reverbReturnEqLowL, reverbReturnEqLowR,
-                                 reverbReturnEqMidL, reverbReturnEqMidR,
-                                 reverbReturnEqHighL, reverbReturnEqHighR);
-            applySendReturnVolumePan (reverbReturnScratch, numSamples, reverbReturn);
-
-            for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
-                buffer.addFrom (ch, startSample, reverbReturnScratch, ch, 0, numSamples);
-        }
-
+    if (useMixerState)
+    {
         // Master processing: EQ -> Compressor -> Limiter -> Volume/Pan
         processMasterEQ (buffer, startSample, numSamples);
         processMasterCompressor (buffer, startSample, numSamples);
         processMasterLimiter (buffer, startSample, numSamples);
 
         // Master volume and pan
-        auto& master = mixerStatePtr->master;
+        auto& master = activeMasterState;
         float masterGain;
         if (master.volume <= -99.0)
             masterGain = 0.0f;
@@ -383,15 +658,6 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         if (peak > prev)
             masterPeakLevel.store (peak, std::memory_order_relaxed);
     }
-    else
-    {
-        // No mixer state: just add delay/reverb directly (legacy behavior)
-        for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
-        {
-            buffer.addFrom (ch, startSample, delayReturnScratch, ch, 0, numSamples);
-            buffer.addFrom (ch, startSample, reverbReturnScratch, ch, 0, numSamples);
-        }
-    }
 
     // Safety limiter
     static constexpr float kSafetyLimit = 4.0f;
@@ -404,6 +670,66 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 data[i] = 0.0f;
             else
                 data[i] = juce::jlimit (-kSafetyLimit, kSafetyLimit, data[i]);
+        }
+    }
+}
+
+void SendEffectsPlugin::processSendEffectsChunk (juce::AudioBuffer<float>& buffer,
+                                                 int startSample,
+                                                 int numSamples,
+                                                 bool useMixerState)
+{
+    if (numSamples <= 0)
+        return;
+
+    sendBuffers->consumeSliceIntoPrepared (delayScratch, reverbInputScratch, startSample, numSamples, 2);
+
+    for (int ch = 0; ch < delayReturnScratch.getNumChannels(); ++ch)
+    {
+        delayReturnScratch.clear (ch, 0, numSamples);
+        reverbReturnScratch.clear (ch, 0, numSamples);
+    }
+
+    processDelay (delayScratch, delayReturnScratch, 0, numSamples);
+    processReverb (reverbInputScratch, reverbReturnScratch, 0, numSamples);
+
+    // Apply send return channel processing (EQ, volume, pan)
+    if (useMixerState)
+    {
+        auto& delayReturn = activeSendReturns[0];
+        auto& reverbReturn = activeSendReturns[1];
+
+        if (! delayReturn.muted)
+        {
+            processSendReturnEQ (delayReturnScratch, numSamples, delayReturn,
+                                 delayReturnEqLowL, delayReturnEqLowR,
+                                 delayReturnEqMidL, delayReturnEqMidR,
+                                 delayReturnEqHighL, delayReturnEqHighR);
+            applySendReturnVolumePan (delayReturnScratch, numSamples, delayReturn);
+
+            for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
+                buffer.addFrom (ch, startSample, delayReturnScratch, ch, 0, numSamples);
+        }
+
+        if (! reverbReturn.muted)
+        {
+            processSendReturnEQ (reverbReturnScratch, numSamples, reverbReturn,
+                                 reverbReturnEqLowL, reverbReturnEqLowR,
+                                 reverbReturnEqMidL, reverbReturnEqMidR,
+                                 reverbReturnEqHighL, reverbReturnEqHighR);
+            applySendReturnVolumePan (reverbReturnScratch, numSamples, reverbReturn);
+
+            for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
+                buffer.addFrom (ch, startSample, reverbReturnScratch, ch, 0, numSamples);
+        }
+    }
+    else
+    {
+        // No mixer state: just add delay/reverb directly (legacy behavior)
+        for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
+        {
+            buffer.addFrom (ch, startSample, delayReturnScratch, ch, 0, numSamples);
+            buffer.addFrom (ch, startSample, reverbReturnScratch, ch, 0, numSamples);
         }
     }
 }
@@ -428,26 +754,23 @@ void SendEffectsPlugin::processSendReturnEQ (juce::AudioBuffer<float>& buffer, i
         float gain = (sendState.eqLowGain != 0.0)
                          ? juce::Decibels::decibelsToGain (static_cast<float> (sendState.eqLowGain))
                          : 1.0f;
-        auto coeffs = juce::dsp::IIR::Coefficients<float>::makeLowShelf (sampleRate, 200.0f, 0.707f, gain);
-        eqLowL.coefficients = coeffs;
-        eqLowR.coefficients = coeffs;
+        auto coeffs = juce::dsp::IIR::ArrayCoefficients<float>::makeLowShelf (sampleRate, 200.0f, 0.707f, gain);
+        assignStereoBiquadCoefficients (eqLowL, eqLowR, coeffs);
     }
     {
         float gain = (sendState.eqMidGain != 0.0)
                          ? juce::Decibels::decibelsToGain (static_cast<float> (sendState.eqMidGain))
                          : 1.0f;
         float freq = juce::jlimit (200.0f, 8000.0f, static_cast<float> (sendState.eqMidFreq));
-        auto coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sampleRate, freq, 1.0f, gain);
-        eqMidL.coefficients = coeffs;
-        eqMidR.coefficients = coeffs;
+        auto coeffs = juce::dsp::IIR::ArrayCoefficients<float>::makePeakFilter (sampleRate, freq, 1.0f, gain);
+        assignStereoBiquadCoefficients (eqMidL, eqMidR, coeffs);
     }
     {
         float gain = (sendState.eqHighGain != 0.0)
                          ? juce::Decibels::decibelsToGain (static_cast<float> (sendState.eqHighGain))
                          : 1.0f;
-        auto coeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate, 4000.0f, 0.707f, gain);
-        eqHighL.coefficients = coeffs;
-        eqHighR.coefficients = coeffs;
+        auto coeffs = juce::dsp::IIR::ArrayCoefficients<float>::makeHighShelf (sampleRate, 4000.0f, 0.707f, gain);
+        assignStereoBiquadCoefficients (eqHighL, eqHighR, coeffs);
     }
 
     if (buffer.getNumChannels() >= 2)
@@ -513,9 +836,7 @@ void SendEffectsPlugin::applySendReturnVolumePan (juce::AudioBuffer<float>& buff
 
 void SendEffectsPlugin::processMasterEQ (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
 {
-    if (mixerStatePtr == nullptr) return;
-
-    auto& master = mixerStatePtr->master;
+    auto& master = activeMasterState;
     bool hasEQ = master.eqLowGain != 0.0 || master.eqMidGain != 0.0 || master.eqHighGain != 0.0;
     if (! hasEQ) return;
 
@@ -523,26 +844,23 @@ void SendEffectsPlugin::processMasterEQ (juce::AudioBuffer<float>& buffer, int s
         float gain = (master.eqLowGain != 0.0)
                          ? juce::Decibels::decibelsToGain (static_cast<float> (master.eqLowGain))
                          : 1.0f;
-        auto coeffs = juce::dsp::IIR::Coefficients<float>::makeLowShelf (sampleRate, 200.0f, 0.707f, gain);
-        masterEqLowL.coefficients = coeffs;
-        masterEqLowR.coefficients = coeffs;
+        auto coeffs = juce::dsp::IIR::ArrayCoefficients<float>::makeLowShelf (sampleRate, 200.0f, 0.707f, gain);
+        assignStereoBiquadCoefficients (masterEqLowL, masterEqLowR, coeffs);
     }
     {
         float gain = (master.eqMidGain != 0.0)
                          ? juce::Decibels::decibelsToGain (static_cast<float> (master.eqMidGain))
                          : 1.0f;
         float freq = juce::jlimit (200.0f, 8000.0f, static_cast<float> (master.eqMidFreq));
-        auto coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sampleRate, freq, 1.0f, gain);
-        masterEqMidL.coefficients = coeffs;
-        masterEqMidR.coefficients = coeffs;
+        auto coeffs = juce::dsp::IIR::ArrayCoefficients<float>::makePeakFilter (sampleRate, freq, 1.0f, gain);
+        assignStereoBiquadCoefficients (masterEqMidL, masterEqMidR, coeffs);
     }
     {
         float gain = (master.eqHighGain != 0.0)
                          ? juce::Decibels::decibelsToGain (static_cast<float> (master.eqHighGain))
                          : 1.0f;
-        auto coeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate, 4000.0f, 0.707f, gain);
-        masterEqHighL.coefficients = coeffs;
-        masterEqHighR.coefficients = coeffs;
+        auto coeffs = juce::dsp::IIR::ArrayCoefficients<float>::makeHighShelf (sampleRate, 4000.0f, 0.707f, gain);
+        assignStereoBiquadCoefficients (masterEqHighL, masterEqHighR, coeffs);
     }
 
     if (buffer.getNumChannels() >= 2)
@@ -567,9 +885,7 @@ void SendEffectsPlugin::processMasterEQ (juce::AudioBuffer<float>& buffer, int s
 
 void SendEffectsPlugin::processMasterCompressor (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
 {
-    if (mixerStatePtr == nullptr) return;
-
-    auto& master = mixerStatePtr->master;
+    auto& master = activeMasterState;
     if (master.compThreshold >= 0.0 && master.compRatio <= 1.0) return;
 
     float thresholdLinear = juce::Decibels::decibelsToGain (static_cast<float> (master.compThreshold));
@@ -609,9 +925,7 @@ void SendEffectsPlugin::processMasterCompressor (juce::AudioBuffer<float>& buffe
 
 void SendEffectsPlugin::processMasterLimiter (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
 {
-    if (mixerStatePtr == nullptr) return;
-
-    auto& master = mixerStatePtr->master;
+    auto& master = activeMasterState;
     if (master.limiterThreshold >= 0.0) return;  // 0 dB = off
 
     float thresholdLinear = juce::Decibels::decibelsToGain (static_cast<float> (master.limiterThreshold));

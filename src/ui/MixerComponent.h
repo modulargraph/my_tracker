@@ -21,6 +21,7 @@ public:
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
+    void mouseDoubleClick (const juce::MouseEvent& event) override;
     void mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
 
     // Update mute/solo state from engine
@@ -160,6 +161,8 @@ private:
     double getParamMin (Section section, int param) const;
     double getParamMax (Section section, int param) const;
     double getParamStep (Section section, int param) const;
+    double getParamDefault (Section section, int param) const;
+    bool resetHitParamToDefault (const HitResult& hit);
 
     // Check if a visual index is a "separator" position (between sections)
     bool isSeparatorPosition (int visualIndex) const;
