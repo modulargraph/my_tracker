@@ -2177,7 +2177,7 @@ void MainComponent::newProject()
     trackerEngine.invalidateTrackInstruments();
     trackerEngine.setInstrumentSlotInfos ({});
     mixerState.reset();
-    trackerEngine.refreshMixerPlugins();
+    trackerEngine.rebuildMixerPluginChains();
     invalidateAutomationPluginCache();
     undoManager.clearUndoHistory();
     currentProjectFile = juce::File();
@@ -2265,7 +2265,7 @@ void MainComponent::openProject()
                               }
 
                               // Refresh mixer plugins with loaded state
-                              trackerEngine.refreshMixerPlugins();
+                              trackerEngine.rebuildMixerPluginChains();
 
                               // Invalidate track instrument cache so next sync re-loads correctly
                               trackerEngine.invalidateTrackInstruments();

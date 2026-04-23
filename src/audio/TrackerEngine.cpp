@@ -1538,6 +1538,11 @@ void TrackerEngine::setupMixerPlugins()
 void TrackerEngine::refreshMixerPlugins()
 {
     setupMixerPlugins();
+}
+
+void TrackerEngine::rebuildMixerPluginChains()
+{
+    setupMixerPlugins();
 
     for (int t = 0; t < kNumTracks; ++t)
         rebuildInsertChain (t);
@@ -1670,15 +1675,15 @@ void TrackerEngine::removeInsertPlugin (int trackIndex, int slotIndex)
     if (slotIndex < 0 || slotIndex >= static_cast<int> (slots.size()))
         return;
 
-    // Close any editor window
-    closePluginEditor (trackIndex, slotIndex);
+    closePluginEditorsForTrack (trackIndex);
+    forgetAutomatedParamsForInsertTrack (trackIndex);
 
     // Find and remove the plugin from the track's plugin list
     auto* track = getTrack (trackIndex);
     if (track != nullptr)
     {
         if (auto* plugin = findInsertPluginForSlot (*track, slotIndex))
-            plugin->removeFromParent();
+            plugin->deleteFromParent();
     }
 
     slots.erase (slots.begin() + slotIndex);
@@ -1735,6 +1740,9 @@ void TrackerEngine::rebuildInsertChain (int trackIndex)
     if (track == nullptr)
         return;
 
+    closePluginEditorsForTrack (trackIndex);
+    forgetAutomatedParamsForInsertTrack (trackIndex);
+
     // Remove all external plugins between ChannelStrip and TrackOutput
     std::vector<te::Plugin*> toRemove;
     bool pastChannelStrip = false;
@@ -1753,7 +1761,7 @@ void TrackerEngine::rebuildInsertChain (int trackIndex)
     }
 
     for (auto* p : toRemove)
-        p->removeFromParent();
+        p->deleteFromParent();
 
     // Re-add inserts from state
     auto& slots = mixerStatePtr->insertSlots[static_cast<size_t> (trackIndex)];
@@ -1924,6 +1932,19 @@ void TrackerEngine::closePluginEditor (int trackIndex, int slotIndex)
     pluginEditorWindows.erase (key);
 }
 
+void TrackerEngine::closePluginEditorsForTrack (int trackIndex)
+{
+    const auto keyPrefix = juce::String (trackIndex) + ":";
+
+    for (auto it = pluginEditorWindows.begin(); it != pluginEditorWindows.end();)
+    {
+        if (it->first.startsWith (keyPrefix))
+            it = pluginEditorWindows.erase (it);
+        else
+            ++it;
+    }
+}
+
 void TrackerEngine::changeListenerCallback (juce::ChangeBroadcaster*)
 {
     if (onTransportChanged)
@@ -1955,9 +1976,7 @@ bool TrackerEngine::setPluginInstrument (int instrumentIndex, const juce::Plugin
     if (ownerTrack < 0 || ownerTrack >= kNumTracks)
         return false;
 
-    // Close editor window and unload old plugin before switching
-    closePluginInstrumentEditor (instrumentIndex);
-    removePluginInstrumentFromTrack (instrumentIndex);
+    clearPluginInstrumentInternal (instrumentIndex, false);
 
     auto& info = instrumentSlotInfos[instrumentIndex];
     info.setPlugin (desc, ownerTrack);
@@ -1970,22 +1989,58 @@ bool TrackerEngine::setPluginInstrument (int instrumentIndex, const juce::Plugin
 
 void TrackerEngine::clearPluginInstrument (int instrumentIndex)
 {
-    // Close any editor window
+    clearPluginInstrumentInternal (instrumentIndex, true);
+}
+
+void TrackerEngine::clearPluginInstrumentInternal (int instrumentIndex, bool notifyAutomation)
+{
+    if (instrumentIndex < 0)
+        return;
+
+    const auto pluginId = "inst:" + juce::String (instrumentIndex);
+
     closePluginInstrumentEditor (instrumentIndex);
-
-    // Remove plugin from track
     removePluginInstrumentFromTrack (instrumentIndex);
+    forgetAutomatedParamsForPlugin (pluginId);
 
-    // Notify for automation cleanup before erasing slot info
-    auto pluginId = "inst:" + juce::String (instrumentIndex);
-    if (onPluginInstrumentCleared)
+    if (notifyAutomation && onPluginInstrumentCleared)
         onPluginInstrumentCleared (pluginId);
 
-    // Remove from slot infos
     instrumentSlotInfos.erase (instrumentIndex);
-
-    // Remove from loaded instances
     pluginInstrumentInstances.erase (instrumentIndex);
+}
+
+void TrackerEngine::unloadAllPluginInstruments (bool notifyAutomation)
+{
+    std::vector<int> instrumentIndices;
+
+    auto addInstrumentIndex = [&instrumentIndices] (int instrumentIndex)
+    {
+        if (std::find (instrumentIndices.begin(), instrumentIndices.end(), instrumentIndex) == instrumentIndices.end())
+            instrumentIndices.push_back (instrumentIndex);
+    };
+
+    for (const auto& [instrumentIndex, info] : instrumentSlotInfos)
+        if (info.isPlugin())
+            addInstrumentIndex (instrumentIndex);
+
+    for (const auto& [instrumentIndex, plugin] : pluginInstrumentInstances)
+    {
+        juce::ignoreUnused (plugin);
+        addInstrumentIndex (instrumentIndex);
+    }
+
+    for (const auto& [instrumentIndex, window] : pluginInstrumentEditorWindows)
+    {
+        juce::ignoreUnused (window);
+        addInstrumentIndex (instrumentIndex);
+    }
+
+    for (int instrumentIndex : instrumentIndices)
+        clearPluginInstrumentInternal (instrumentIndex, notifyAutomation);
+
+    pluginInstrumentEditorWindows.clear();
+    pluginInstrumentInstances.clear();
 }
 
 bool TrackerEngine::isPluginInstrument (int instrumentIndex) const
@@ -2004,18 +2059,7 @@ int TrackerEngine::getPluginInstrumentOwnerTrack (int instrumentIndex) const
 
 void TrackerEngine::setInstrumentSlotInfos (const std::map<int, InstrumentSlotInfo>& infos)
 {
-    // Unload all existing plugin instrument instances/editor windows to avoid stale
-    // plugins surviving project switches.
-    std::vector<int> loadedInstrumentIndices;
-    loadedInstrumentIndices.reserve (pluginInstrumentInstances.size());
-    for (const auto& [instrumentIndex, plugin] : pluginInstrumentInstances)
-    {
-        juce::ignoreUnused (plugin);
-        loadedInstrumentIndices.push_back (instrumentIndex);
-    }
-
-    for (int instrumentIndex : loadedInstrumentIndices)
-        clearPluginInstrument (instrumentIndex);
+    unloadAllPluginInstruments (false);
 
     instrumentSlotInfos = infos;
     invalidateTrackInstruments();
@@ -2145,6 +2189,9 @@ void TrackerEngine::ensurePluginInstrumentLoaded (int instrumentIndex)
 
 void TrackerEngine::removePluginInstrumentFromTrack (int instrumentIndex)
 {
+    if (previewPluginInstrument == instrumentIndex)
+        stopPluginPreview();
+
     auto instanceIt = pluginInstrumentInstances.find (instrumentIndex);
     if (instanceIt == pluginInstrumentInstances.end() || instanceIt->second == nullptr)
         return;
@@ -2730,6 +2777,28 @@ const TrackerEngine::AutomatedParam* TrackerEngine::findAutomatedParam (const ju
     }
 
     return nullptr;
+}
+
+void TrackerEngine::forgetAutomatedParamsForPlugin (const juce::String& pluginId)
+{
+    lastAutomatedParams.erase (std::remove_if (lastAutomatedParams.begin(), lastAutomatedParams.end(),
+                                               [&pluginId] (const AutomatedParam& ap)
+                                               {
+                                                   return ap.pluginId == pluginId;
+                                               }),
+                               lastAutomatedParams.end());
+}
+
+void TrackerEngine::forgetAutomatedParamsForInsertTrack (int trackIndex)
+{
+    const auto pluginIdPrefix = "insert:" + juce::String (trackIndex) + ":";
+
+    lastAutomatedParams.erase (std::remove_if (lastAutomatedParams.begin(), lastAutomatedParams.end(),
+                                               [&pluginIdPrefix] (const AutomatedParam& ap)
+                                               {
+                                                   return ap.pluginId.startsWith (pluginIdPrefix);
+                                               }),
+                               lastAutomatedParams.end());
 }
 
 void TrackerEngine::applyPatternAutomation (const PatternAutomationData& automationData,
