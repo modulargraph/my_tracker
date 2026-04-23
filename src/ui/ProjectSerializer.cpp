@@ -12,6 +12,9 @@ constexpr auto kPrefsDirName = "VCTracker";
 constexpr auto kLegacyPrefsDirName = "TrackerAdjust";
 constexpr auto kPrefsRootName = "VCTrackerPrefs";
 constexpr auto kLegacyPrefsRootName = "TrackerAdjustPrefs";
+constexpr int kDefaultUiScalePercent = 100;
+constexpr int kMinUiScalePercent = 80;
+constexpr int kMaxUiScalePercent = 150;
 
 juce::File getCurrentGlobalPrefsFile()
 {
@@ -74,6 +77,11 @@ juce::File getEmbeddedSamplesDir (const juce::File& projectFile)
 {
     return projectFile.getParentDirectory().getChildFile (
         projectFile.getFileNameWithoutExtension() + "_samples");
+}
+
+int clampUiScalePercent (int scalePercent)
+{
+    return juce::jlimit (kMinUiScalePercent, kMaxUiScalePercent, scalePercent);
 }
 } // namespace
 
@@ -1534,4 +1542,28 @@ juce::StringArray ProjectSerializer::loadGlobalPluginScanPaths()
     }
 
     return paths;
+}
+
+//==============================================================================
+// Global UI scale persistence
+//==============================================================================
+
+void ProjectSerializer::saveGlobalUiScalePercent (int scalePercent)
+{
+    auto prefsFile = getCurrentGlobalPrefsFile();
+    if (! prefsFile.getParentDirectory().createDirectory())
+        return;
+
+    auto root = loadGlobalPrefsTree();
+    root.setProperty ("uiScalePercent", clampUiScalePercent (scalePercent), nullptr);
+
+    if (auto xml = root.createXml())
+        xml->writeTo (prefsFile);
+}
+
+int ProjectSerializer::loadGlobalUiScalePercent()
+{
+    auto root = loadGlobalPrefsTree();
+    return clampUiScalePercent (
+        static_cast<int> (root.getProperty ("uiScalePercent", kDefaultUiScalePercent)));
 }
