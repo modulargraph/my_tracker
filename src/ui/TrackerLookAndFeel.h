@@ -29,6 +29,7 @@ public:
     };
 
     juce::Font getMonoFont (float height) const;
+    juce::Font getUIFont (float height, int styleFlags = juce::Font::plain) const;
 
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackerLookAndFeel)

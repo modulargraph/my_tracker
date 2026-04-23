@@ -1095,6 +1095,85 @@ bool testProjectRoundTripKeepsMixerLayoutAndInstrumentParams()
     return true;
 }
 
+bool testProjectRoundTripKeepsSelectedSlice()
+{
+    PatternData source;
+    source.getPattern (0).name = "SelectedSlice";
+
+    Arrangement arrangement;
+    TrackLayout trackLayout;
+    MixerState mixerState;
+    DelayParams delayParams;
+    ReverbParams reverbParams;
+    std::map<int, juce::File> loadedSamples;
+    std::map<int, InstrumentParams> instrumentParams;
+
+    InstrumentParams params;
+    params.playMode = InstrumentParams::PlayMode::Slice;
+    params.startPos = 0.10;
+    params.endPos = 0.90;
+    params.slicePoints = { 0.25, 0.50, 0.75 };
+    params.selectedSlice = 2;
+    instrumentParams[12] = params;
+
+    PatternData loaded;
+    double loadedBpm = 0.0;
+    int loadedRpb = 0;
+    std::map<int, juce::File> loadedSamplesOut;
+    std::map<int, InstrumentParams> instrumentParamsOut;
+    Arrangement arrangementOut;
+    TrackLayout trackLayoutOut;
+    MixerState mixerStateOut;
+    DelayParams delayOut;
+    ReverbParams reverbOut;
+
+    auto err = runProjectRoundTrip ("tracker_adjust_tests_selected_slice",
+                                    source,
+                                    120.0,
+                                    4,
+                                    loadedSamples,
+                                    instrumentParams,
+                                    arrangement,
+                                    trackLayout,
+                                    mixerState,
+                                    delayParams,
+                                    reverbParams,
+                                    0,
+                                    {},
+                                    loaded,
+                                    loadedBpm,
+                                    loadedRpb,
+                                    loadedSamplesOut,
+                                    instrumentParamsOut,
+                                    arrangementOut,
+                                    trackLayoutOut,
+                                    mixerStateOut,
+                                    delayOut,
+                                    reverbOut);
+    if (err.isNotEmpty())
+    {
+        std::cerr << err << "\n";
+        return false;
+    }
+
+    auto it = instrumentParamsOut.find (12);
+    if (it == instrumentParamsOut.end())
+    {
+        std::cerr << "selected slice instrument params missing after round-trip\n";
+        return false;
+    }
+
+    if (it->second.playMode != InstrumentParams::PlayMode::Slice
+        || it->second.selectedSlice != 2
+        || ! vectorsClose (it->second.slicePoints, params.slicePoints))
+    {
+        std::cerr << "selected slice params mismatch after round-trip\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testArrangementDeleteNotifiesChangeCallback()
 {
     TrackerLookAndFeel lnf;
@@ -2274,9 +2353,9 @@ bool testBeatSliceRegionCountDefaultsAndPointCount()
     InstrumentParams params;
     params.playMode = InstrumentParams::PlayMode::BeatSlice;
 
-    if (SamplePlaybackLayout::getBeatSliceRegionCount (params) != 16)
+    if (SamplePlaybackLayout::getBeatSliceRegionCount (params) != 8)
     {
-        std::cerr << "BeatSlice with no points should default to 16 regions\n";
+        std::cerr << "BeatSlice with no points should default to 8 regions\n";
         return false;
     }
 
@@ -2284,6 +2363,67 @@ bool testBeatSliceRegionCountDefaultsAndPointCount()
     if (SamplePlaybackLayout::getBeatSliceRegionCount (params) != 4)
     {
         std::cerr << "BeatSlice region count should be slicePoints + 1\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testBeatSliceBoundariesUseSliceMarkers()
+{
+    InstrumentParams params;
+    params.playMode = InstrumentParams::PlayMode::BeatSlice;
+    params.startPos = 0.2;
+    params.endPos = 0.8;
+    params.slicePoints = { 0.3, 0.5, 0.7 };
+
+    const auto boundaries = SamplePlaybackLayout::getBeatSliceBoundariesNorm (params);
+    const std::vector<double> expected { 0.2, 0.3, 0.5, 0.7, 0.8 };
+
+    if (! vectorsClose (boundaries, expected))
+    {
+        std::cerr << "BeatSlice should use marker boundaries when slice points exist\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testBeatSliceBoundariesDefaultToEqualRegions()
+{
+    InstrumentParams params;
+    params.playMode = InstrumentParams::PlayMode::BeatSlice;
+    params.startPos = 0.25;
+    params.endPos = 0.75;
+
+    const auto boundaries = SamplePlaybackLayout::getBeatSliceBoundariesNorm (params, 4);
+    const std::vector<double> expected { 0.25, 0.375, 0.5, 0.625, 0.75 };
+
+    if (! vectorsClose (boundaries, expected))
+    {
+        std::cerr << "BeatSlice without markers should create equal default regions\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testSelectedSliceIndexClampsToSliceRegions()
+{
+    InstrumentParams params;
+    params.startPos = 0.2;
+    params.endPos = 0.8;
+    params.slicePoints = { 0.4, 0.6 };
+
+    if (SamplePlaybackLayout::clampSliceRegionIndex (params, -5) != 0)
+    {
+        std::cerr << "selected slice index should clamp low values to first region\n";
+        return false;
+    }
+
+    if (SamplePlaybackLayout::clampSliceRegionIndex (params, 99) != 2)
+    {
+        std::cerr << "selected slice index should clamp high values to last region\n";
         return false;
     }
 
@@ -5147,6 +5287,7 @@ int main()
         { "EmbeddedSampleDataPreferredOverExternalPath", &testEmbeddedSampleDataPreferredOverExternalPath },
         { "SaveFailsWhenSampleCannotBeEmbedded", &testSaveFailsWhenSampleCannotBeEmbedded },
         { "ProjectRoundTripKeepsMixerLayoutAndInstrumentParams", &testProjectRoundTripKeepsMixerLayoutAndInstrumentParams },
+        { "ProjectRoundTripKeepsSelectedSlice", &testProjectRoundTripKeepsSelectedSlice },
         { "ArrangementDeleteNotifiesChangeCallback", &testArrangementDeleteNotifiesChangeCallback },
         { "BpmBoundaryRoundTrip", &testBpmBoundaryRoundTrip },
         { "RpbBoundaryRoundTrip", &testRpbBoundaryRoundTrip },
@@ -5177,6 +5318,9 @@ int main()
         { "SliceBoundariesClampAndDeduplicate", &testSliceBoundariesClampAndDeduplicate },
         { "EqualSlicePointGenerationUsesRegionCount", &testEqualSlicePointGenerationUsesRegionCount },
         { "BeatSliceRegionCountDefaultsAndPointCount", &testBeatSliceRegionCountDefaultsAndPointCount },
+        { "BeatSliceBoundariesUseSliceMarkers", &testBeatSliceBoundariesUseSliceMarkers },
+        { "BeatSliceBoundariesDefaultToEqualRegions", &testBeatSliceBoundariesDefaultToEqualRegions },
+        { "SelectedSliceIndexClampsToSliceRegions", &testSelectedSliceIndexClampsToSliceRegions },
         { "NoteLaneSerializationRoundTrip", &testNoteLaneSerializationRoundTrip },
         { "MultiLaneNoteDataSanity", &testMultiLaneNoteDataSanity },
         { "InstrumentSlotInfoSetAndClear", &testInstrumentSlotInfoSetAndClear },

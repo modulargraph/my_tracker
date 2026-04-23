@@ -1,8 +1,17 @@
 #include "PluginCatalogService.h"
 
+#include <vector>
+
 namespace
 {
 constexpr int kPluginScanTimeoutMs = 30000;
+
+struct PluginScanPlan
+{
+    juce::AudioPluginFormat* format = nullptr;
+    juce::String formatName;
+    juce::StringArray filesOrIdentifiers;
+};
 
 juce::File getPluginDataDirectory()
 {
@@ -120,6 +129,16 @@ void notifyScanCompleteOnMessageThread (PluginCatalogService& service)
         });
     }
 }
+
+void notifyScanProgress (const PluginCatalogService::ScanProgressCallback& callback,
+                         int completed,
+                         int total,
+                         const juce::String& formatName,
+                         const juce::String& pluginName)
+{
+    if (callback != nullptr)
+        callback ({ completed, total, formatName, pluginName });
+}
 } // namespace
 
 PluginCatalogService::PluginCatalogService (te::Engine& e)
@@ -143,7 +162,8 @@ juce::File PluginCatalogService::getFailedPluginsFile()
     return getPluginDataDirectory().getChildFile ("failed-plugins.txt");
 }
 
-void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
+void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths,
+                                           ScanProgressCallback progressCallback)
 {
     if (scanning.exchange (true))
         return;
@@ -156,6 +176,7 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
     if (! worker.existsAsFile())
     {
         DBG ("PluginScanWorker binary not found; plugin scan cancelled");
+        notifyScanProgress (progressCallback, 0, 0, {}, {});
         scanning.store (false);
         notifyScanCompleteOnMessageThread (*this);
         return;
@@ -166,8 +187,10 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
 
     try
     {
-        // Scan each format. The directory scanner stays in this process, but
-        // every plugin binary load happens in PluginScanWorker.
+        std::vector<PluginScanPlan> scanPlans;
+        int totalPluginsToScan = 0;
+
+        // Build the candidate list up front so the UI can show X/Y progress.
         for (int i = 0; i < formatManager.getNumFormats(); ++i)
         {
             auto* format = formatManager.getFormat (i);
@@ -190,13 +213,47 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
             for (int p = 0; p < defaultPaths.getNumPaths(); ++p)
                 searchPath.addIfNotAlreadyThere (defaultPaths[p]);
 
-            juce::PluginDirectoryScanner scanner (knownList, *format, searchPath,
+            auto filesOrIdentifiers = format->searchPathsForPlugins (searchPath,
+                                                                      true,   // recursive
+                                                                      true);  // allow async instantiation
+
+            totalPluginsToScan += filesOrIdentifiers.size();
+            scanPlans.push_back ({ format, formatName, std::move (filesOrIdentifiers) });
+        }
+
+        notifyScanProgress (progressCallback, 0, totalPluginsToScan, {}, {});
+
+        // Scan each format. The directory scanner stays in this process, but
+        // every plugin binary load happens in PluginScanWorker.
+        int completedPlugins = 0;
+        for (auto& plan : scanPlans)
+        {
+            if (plan.format == nullptr)
+                continue;
+
+            juce::PluginDirectoryScanner scanner (knownList, *plan.format, {},
                                                    true,   // recursive
                                                    deadPluginsFile,
                                                    true);  // allow plugins that require async instantiation
 
-            juce::String pluginName;
-            while (scanner.scanNextFile (true, pluginName)) {}
+            scanner.setFilesOrIdentifiersToScan (plan.filesOrIdentifiers);
+
+            for (int candidate = 0; candidate < plan.filesOrIdentifiers.size(); ++candidate)
+            {
+                auto pluginName = scanner.getNextPluginFileThatWillBeScanned();
+                notifyScanProgress (progressCallback, completedPlugins, totalPluginsToScan,
+                                    plan.formatName, pluginName);
+
+                juce::String scannedPluginName;
+                scanner.scanNextFile (true, scannedPluginName);
+                completedPlugins++;
+
+                if (scannedPluginName.isNotEmpty())
+                    pluginName = scannedPluginName;
+
+                notifyScanProgress (progressCallback, completedPlugins, totalPluginsToScan,
+                                    plan.formatName, pluginName);
+            }
 
             for (auto& failedFile : scanner.getFailedFiles())
             {

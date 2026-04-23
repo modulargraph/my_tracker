@@ -52,6 +52,7 @@ struct InstrumentParams
 
     // === Slice data ===
     std::vector<double> slicePoints; // absolute normalized sample positions, sorted
+    int selectedSlice = 0;            // selected slice region for Slice mode (0-based)
 
     // === Modulation (per destination) ===
     enum class ModDest { Volume, Panning, Cutoff, GranularPos, Finetune };
@@ -122,7 +123,7 @@ struct InstrumentParams
             return false;
         if (granularShape != GranShape::Triangle || granularLoop != GranLoop::Forward)
             return false;
-        if (! slicePoints.empty())
+        if (! slicePoints.empty() || selectedSlice != 0)
             return false;
         for (auto& mod : modulations)
             if (! mod.isDefault())

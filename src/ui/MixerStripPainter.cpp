@@ -138,7 +138,7 @@ void paintKnob (juce::Graphics& g, TrackerLookAndFeel& lnf,
     g.fillEllipse (dotX - 1.5f, dotY - 1.5f, 3.0f, 3.0f);
 
     // Label
-    g.setFont (lnf.getMonoFont (9.0f));
+    g.setFont (lnf.getUIFont (9.8f));
     g.setColour (colour.withAlpha (0.8f));
     g.drawText (label, inner.getX(), knobArea.getBottom() + 1, inner.getWidth(),
                 inner.getBottom() - knobArea.getBottom() - 1, juce::Justification::centredTop);
@@ -173,7 +173,7 @@ void paintGenericEqSection (juce::Graphics& g, TrackerLookAndFeel& lnf,
         auto col = paramSelected ? selCol : volumeCol;
         paintVerticalBar (g, lnf, barArea, bands[i].value, -12.0, 12.0, col, true);
 
-        g.setFont (lnf.getMonoFont (10.0f));
+        g.setFont (lnf.getMonoFont (10.5f));
         g.setColour (paramSelected ? selCol : lnf.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.6f));
         juce::String valStr = (bands[i].value >= 0.0 ? "+" : "") + juce::String (bands[i].value, 1);
         g.drawText (bands[i].label + juce::String (" ") + valStr, x, barArea.getBottom() + 1, barWidth, 16, juce::Justification::centred);
@@ -181,7 +181,7 @@ void paintGenericEqSection (juce::Graphics& g, TrackerLookAndFeel& lnf,
 
     if (selectedParam == 3)
     {
-        g.setFont (lnf.getMonoFont (10.0f));
+        g.setFont (lnf.getMonoFont (10.5f));
         g.setColour (selCol);
         juce::String freqStr = juce::String (static_cast<int> (midFreq)) + "Hz";
         g.drawText (freqStr, inner.getX(), inner.getBottom() - 12, inner.getWidth(), 10,
@@ -240,7 +240,7 @@ void paintGenericVolumeFader (juce::Graphics& g, TrackerLookAndFeel& lnf,
     auto selCol = lnf.findColour (TrackerLookAndFeel::fxColourId);
     auto volCol = lnf.findColour (TrackerLookAndFeel::volumeColourId);
 
-    g.setFont (lnf.getMonoFont (12.0f));
+    g.setFont (lnf.getUIFont (13.0f, juce::Font::bold));
     g.setColour (isSelected ? selCol : lnf.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.7f));
 
     juce::String volText;
@@ -248,9 +248,9 @@ void paintGenericVolumeFader (juce::Graphics& g, TrackerLookAndFeel& lnf,
         volText = "-inf";
     else
         volText = juce::String (volume, 1) + "dB";
-    g.drawText (volText, inner.getX(), inner.getY(), inner.getWidth(), 12, juce::Justification::centred);
+    g.drawText (volText, inner.getX(), inner.getY(), inner.getWidth(), 15, juce::Justification::centred);
 
-    auto faderArea = inner.withTrimmedTop (14).withTrimmedBottom (2);
+    auto faderArea = inner.withTrimmedTop (17).withTrimmedBottom (2);
     auto trackArea = faderArea.reduced (faderArea.getWidth() / 2 - 6, 0);
     g.setColour (lnf.findColour (TrackerLookAndFeel::gridLineColourId).brighter (0.1f));
     g.fillRect (trackArea);
@@ -322,12 +322,12 @@ void paintGenericPanSection (juce::Graphics& g, TrackerLookAndFeel& lnf,
     else
         panLabel = "PAN R" + juce::String (pan);
 
-    g.setFont (lnf.getMonoFont (9.0f));
+    g.setFont (lnf.getUIFont (10.5f));
     g.setColour (isSelected ? selCol : lnf.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.5f));
-    g.drawText (panLabel, inner.getX(), inner.getY(), 44, inner.getHeight(), juce::Justification::centredLeft);
+    g.drawText (panLabel, inner.getX(), inner.getY(), 50, inner.getHeight(), juce::Justification::centredLeft);
 
-    auto barArea = juce::Rectangle<int> (inner.getX() + 44, inner.getY() + 2,
-                                          inner.getWidth() - 46, inner.getHeight() - 4);
+    auto barArea = juce::Rectangle<int> (inner.getX() + 50, inner.getY() + 2,
+                                          inner.getWidth() - 52, inner.getHeight() - 4);
     paintHorizontalBar (g, lnf, barArea, static_cast<double> (pan), -50.0, 50.0,
                         isSelected ? selCol : panCol, true);
 }
@@ -350,7 +350,7 @@ void paintGenericMuteSolo (juce::Graphics& g, TrackerLookAndFeel& lnf,
         g.setColour (muted ? muteCol : muteCol.withAlpha (0.15f));
         g.fillRoundedRectangle (muteArea.toFloat(), 2.0f);
         g.setColour (muted ? juce::Colours::white : lnf.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.4f));
-        g.setFont (lnf.getMonoFont (13.0f));
+        g.setFont (lnf.getUIFont (14.0f, juce::Font::bold));
         g.drawText ("M", muteArea, juce::Justification::centred);
 
         auto soloArea = juce::Rectangle<int> (bounds.getX() + halfW + 1, bounds.getY() + 2,
@@ -359,7 +359,7 @@ void paintGenericMuteSolo (juce::Graphics& g, TrackerLookAndFeel& lnf,
         g.setColour (soloed ? soloCol : soloCol.withAlpha (0.15f));
         g.fillRoundedRectangle (soloArea.toFloat(), 2.0f);
         g.setColour (soloed ? juce::Colours::black : lnf.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.4f));
-        g.setFont (lnf.getMonoFont (13.0f));
+        g.setFont (lnf.getUIFont (14.0f, juce::Font::bold));
         g.drawText ("S", soloArea, juce::Justification::centred);
     }
     else
@@ -370,7 +370,7 @@ void paintGenericMuteSolo (juce::Graphics& g, TrackerLookAndFeel& lnf,
         g.setColour (muted ? muteCol : muteCol.withAlpha (0.15f));
         g.fillRoundedRectangle (muteArea.toFloat(), 2.0f);
         g.setColour (muted ? juce::Colours::white : lnf.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.4f));
-        g.setFont (lnf.getMonoFont (13.0f));
+        g.setFont (lnf.getUIFont (14.0f, juce::Font::bold));
         g.drawText ("M", muteArea, juce::Justification::centred);
     }
 }
@@ -437,12 +437,12 @@ void paintInsertSlots (juce::Graphics& g, TrackerLookAndFeel& lnf,
 
         // Remove button (X) on the right
         auto removeArea = rowArea.removeFromRight (16);
-        g.setFont (lnf.getMonoFont (10.0f));
+        g.setFont (lnf.getUIFont (11.0f));
         g.setColour (textCol.withAlpha (0.5f));
         g.drawText ("x", removeArea, juce::Justification::centred);
 
         // Plugin name (truncated)
-        g.setFont (lnf.getMonoFont (9.0f));
+        g.setFont (lnf.getUIFont (10.0f));
         g.setColour (isSel ? selCol : textCol.withAlpha (slot.bypassed ? 0.3f : 0.7f));
         auto nameText = slot.pluginName;
         if (nameText.length() > 10)
@@ -464,7 +464,7 @@ void paintInsertSlots (juce::Graphics& g, TrackerLookAndFeel& lnf,
     g.setColour (canAdd ? selCol.withAlpha (0.3f) : bgCol);
     g.fillRect (addArea);
 
-    g.setFont (lnf.getMonoFont (12.0f));
+    g.setFont (lnf.getUIFont (14.0f, juce::Font::bold));
     g.setColour (canAdd ? selCol : textCol.withAlpha (0.2f));
     g.drawText ("+", addArea, juce::Justification::centred);
 }

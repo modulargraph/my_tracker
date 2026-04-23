@@ -15,9 +15,20 @@ class PluginCatalogService
 public:
     explicit PluginCatalogService (te::Engine& engine);
 
+    struct ScanProgress
+    {
+        int completed = 0;
+        int total = 0;
+        juce::String formatName;
+        juce::String pluginName;
+    };
+
+    using ScanProgressCallback = std::function<void (const ScanProgress&)>;
+
     /** Trigger a scan for the given formats (VST3, AudioUnit) using the
      *  paths currently registered in scanPaths. */
-    void scanForPlugins (const juce::StringArray& scanPaths);
+    void scanForPlugins (const juce::StringArray& scanPaths,
+                         ScanProgressCallback progressCallback = {});
 
     /** Returns true while a scan is in progress. */
     bool isScanning() const { return scanning.load(); }

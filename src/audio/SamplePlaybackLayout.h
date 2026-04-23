@@ -89,12 +89,54 @@ inline int getSliceRegionCount (const InstrumentParams& params)
     return static_cast<int> (boundaries.size()) - 1;
 }
 
-inline int getBeatSliceRegionCount (const InstrumentParams& params, int defaultRegions = 16)
+inline int clampSliceRegionIndex (const InstrumentParams& params, int index)
+{
+    const int regionCount = getSliceRegionCount (params);
+    return std::clamp (index, 0, std::max (0, regionCount - 1));
+}
+
+inline int getBeatSliceRegionCount (const InstrumentParams& params, int defaultRegions = 8)
 {
     if (params.slicePoints.empty())
         return std::max (1, defaultRegions);
 
-    return static_cast<int> (params.slicePoints.size()) + 1;
+    return getSliceRegionCount (params);
+}
+
+inline std::vector<double> makeEqualSliceBoundariesNorm (double startNorm, double endNorm, int regionCount)
+{
+    const double start = clampNorm (startNorm);
+    const double end = std::clamp (endNorm, start, 1.0);
+    const int count = std::max (1, regionCount);
+
+    std::vector<double> boundaries;
+    boundaries.reserve (static_cast<size_t> (count + 1));
+
+    const double range = end - start;
+    if (range <= 0.0)
+    {
+        boundaries.push_back (start);
+        boundaries.push_back (end);
+        return boundaries;
+    }
+
+    for (int i = 0; i <= count; ++i)
+    {
+        const double frac = static_cast<double> (i) / static_cast<double> (count);
+        boundaries.push_back (start + frac * range);
+    }
+
+    return boundaries;
+}
+
+inline std::vector<double> getBeatSliceBoundariesNorm (const InstrumentParams& params, int defaultRegions = 8)
+{
+    if (! params.slicePoints.empty())
+        return getSliceBoundariesNorm (params);
+
+    return makeEqualSliceBoundariesNorm (getRegionStartNorm (params),
+                                         getRegionEndNorm (params),
+                                         defaultRegions);
 }
 
 inline std::vector<double> makeEqualSlicePointsNorm (double startNorm, double endNorm, int regionCount)

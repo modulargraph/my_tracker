@@ -45,6 +45,7 @@ void InstrumentParamsSerializer::save (juce::ValueTree& root, const std::map<int
         paramTree.setProperty ("grainLoop", static_cast<int> (params.granularLoop), nullptr);
 
         // Slices
+        paramTree.setProperty ("selectedSlice", params.selectedSlice, nullptr);
         if (! params.slicePoints.empty())
         {
             juce::String sliceStr;
@@ -153,6 +154,7 @@ void InstrumentParamsSerializer::load (const juce::ValueTree& root, std::map<int
                     for (auto& tok : tokens)
                         params.slicePoints.push_back (tok.getDoubleValue());
                 }
+                params.selectedSlice = paramTree.getProperty ("selectedSlice", 0);
 
                 // Modulations
                 for (int m = 0; m < paramTree.getNumChildren(); ++m)

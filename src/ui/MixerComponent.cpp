@@ -199,13 +199,13 @@ void MixerComponent::paint (juce::Graphics& g)
     if (scrollOffset > 0)
     {
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
-        g.setFont (lookAndFeel.getMonoFont (13.0f));
+        g.setFont (lookAndFeel.getUIFont (14.0f, juce::Font::bold));
         g.drawText ("<", 0, getHeight() / 2 - 10, 12, 20, juce::Justification::centred);
     }
     if (scrollOffset + visibleCount < totalStrips)
     {
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
-        g.setFont (lookAndFeel.getMonoFont (13.0f));
+        g.setFont (lookAndFeel.getUIFont (14.0f, juce::Font::bold));
         g.drawText (">", getWidth() - 12, getHeight() / 2 - 10, 12, 20, juce::Justification::centred);
     }
 }
@@ -240,7 +240,7 @@ void MixerComponent::paintStrip (juce::Graphics& g, int visualTrack, juce::Recta
 
     // EQ section
     auto eqLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("EQ", eqLabelArea, juce::Justification::centred);
 
@@ -250,7 +250,7 @@ void MixerComponent::paintStrip (juce::Graphics& g, int visualTrack, juce::Recta
 
     // Compressor section
     auto compLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("COMP", compLabelArea, juce::Justification::centred);
 
@@ -263,7 +263,7 @@ void MixerComponent::paintStrip (juce::Graphics& g, int visualTrack, juce::Recta
     if (insertHeight > 0)
     {
         auto insertLabelArea = r.removeFromTop (kSectionLabelHeight);
-        g.setFont (lookAndFeel.getMonoFont (12.0f));
+        g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
         g.drawText ("INSERTS", insertLabelArea, juce::Justification::centred);
 
@@ -274,7 +274,7 @@ void MixerComponent::paintStrip (juce::Graphics& g, int visualTrack, juce::Recta
 
     // Sends section
     auto sendsLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("SEND", sendsLabelArea, juce::Justification::centred);
 
@@ -328,7 +328,7 @@ void MixerComponent::paintHeader (juce::Graphics& g, int physTrack, int /*visual
         name = juce::String::formatted ("T%02d", physTrack + 1);
 
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
-    g.setFont (lookAndFeel.getMonoFont (14.0f));
+    g.setFont (lookAndFeel.getUIFont (15.0f, juce::Font::bold));
     g.drawText (name, bounds.reduced (4, 0), juce::Justification::centred);
 
     // Bottom line
@@ -402,11 +402,11 @@ void MixerComponent::paintSendsSection (juce::Graphics& g, const TrackMixState& 
         else
             labelText += juce::String (" ") + juce::String (static_cast<int> (sends[i].value));
 
-        g.setFont (lookAndFeel.getMonoFont (9.0f));
+        g.setFont (lookAndFeel.getUIFont (10.5f));
         g.setColour (sel ? selCol : lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.5f));
-        g.drawText (labelText, inner.getX(), y, 40, rowH, juce::Justification::centredLeft);
+        g.drawText (labelText, inner.getX(), y, 42, rowH, juce::Justification::centredLeft);
 
-        auto barArea = juce::Rectangle<int> (inner.getX() + 40, y + 3, inner.getWidth() - 42, rowH - 6);
+        auto barArea = juce::Rectangle<int> (inner.getX() + 42, y + 3, inner.getWidth() - 44, rowH - 6);
         auto col = sel ? selCol : sendCol;
         MixerStripPainter::paintHorizontalBar (g, lookAndFeel, barArea, sends[i].value, -100.0, 0.0, col);
     }
@@ -471,7 +471,7 @@ void MixerComponent::paintSendReturnStrip (juce::Graphics& g, int returnIndex,
     g.setColour (sendCol.withAlpha (0.3f));
     g.fillRect (headerArea);
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
-    g.setFont (lookAndFeel.getMonoFont (14.0f));
+    g.setFont (lookAndFeel.getUIFont (15.0f, juce::Font::bold));
     g.drawText (returnIndex == 0 ? "DELAY" : "REVERB", headerArea.reduced (4, 0), juce::Justification::centred);
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
     g.drawHorizontalLine (headerArea.getBottom() - 1, static_cast<float> (bounds.getX()),
@@ -479,7 +479,7 @@ void MixerComponent::paintSendReturnStrip (juce::Graphics& g, int returnIndex,
 
     // EQ section
     auto eqLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("EQ", eqLabelArea, juce::Justification::centred);
 
@@ -542,7 +542,7 @@ void MixerComponent::paintGroupBusStrip (juce::Graphics& g, int groupIndex,
     g.setColour (group.colour.withAlpha (0.4f));
     g.fillRect (headerArea);
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
-    g.setFont (lookAndFeel.getMonoFont (14.0f));
+    g.setFont (lookAndFeel.getUIFont (15.0f, juce::Font::bold));
     juce::String name = group.name.isNotEmpty() ? group.name : ("GRP " + juce::String (groupIndex + 1));
     g.drawText (name, headerArea.reduced (4, 0), juce::Justification::centred);
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
@@ -551,7 +551,7 @@ void MixerComponent::paintGroupBusStrip (juce::Graphics& g, int groupIndex,
 
     // EQ section
     auto eqLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("EQ", eqLabelArea, juce::Justification::centred);
 
@@ -561,7 +561,7 @@ void MixerComponent::paintGroupBusStrip (juce::Graphics& g, int groupIndex,
 
     // Comp section
     auto compLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("COMP", compLabelArea, juce::Justification::centred);
 
@@ -619,7 +619,7 @@ void MixerComponent::paintMasterStrip (juce::Graphics& g, juce::Rectangle<int> b
     g.setColour (juce::Colour (0xffcc8833).withAlpha (0.4f));
     g.fillRect (headerArea);
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
-    g.setFont (lookAndFeel.getMonoFont (14.0f));
+    g.setFont (lookAndFeel.getUIFont (15.0f, juce::Font::bold));
     g.drawText ("MASTER", headerArea.reduced (4, 0), juce::Justification::centred);
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
     g.drawHorizontalLine (headerArea.getBottom() - 1, static_cast<float> (bounds.getX()),
@@ -627,7 +627,7 @@ void MixerComponent::paintMasterStrip (juce::Graphics& g, juce::Rectangle<int> b
 
     // EQ section
     auto eqLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("EQ", eqLabelArea, juce::Justification::centred);
 
@@ -637,7 +637,7 @@ void MixerComponent::paintMasterStrip (juce::Graphics& g, juce::Rectangle<int> b
 
     // Comp section
     auto compLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText ("COMP", compLabelArea, juce::Justification::centred);
 
@@ -650,7 +650,7 @@ void MixerComponent::paintMasterStrip (juce::Graphics& g, juce::Rectangle<int> b
     if (insertHeight > 0)
     {
         auto insertLabelArea = r.removeFromTop (kSectionLabelHeight);
-        g.setFont (lookAndFeel.getMonoFont (12.0f));
+        g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
         g.drawText ("INSERTS", insertLabelArea, juce::Justification::centred);
 
@@ -662,7 +662,7 @@ void MixerComponent::paintMasterStrip (juce::Graphics& g, juce::Rectangle<int> b
 
     // Limiter section
     auto limLabelArea = r.removeFromTop (kSectionLabelHeight);
-    g.setFont (lookAndFeel.getMonoFont (12.0f));
+    g.setFont (lookAndFeel.getUIFont (12.5f, juce::Font::bold));
     g.setColour (juce::Colour (0xffcc3333).withAlpha (0.7f));
     g.drawText ("LIMITER", limLabelArea, juce::Justification::centred);
 
@@ -765,8 +765,8 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
     auto keyCode = key.getKeyCode();
     bool shift = key.getModifiers().isShiftDown();
 
-    // Up/Down: navigate params/sections within strip (vertical layout)
-    if (keyCode == juce::KeyPress::upKey && ! shift)
+    // Left/Right: navigate params/sections within the selected strip.
+    if (keyCode == juce::KeyPress::leftKey)
     {
         if (currentParam > 0)
             currentParam--;
@@ -775,7 +775,7 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
         repaint();
         return true;
     }
-    if (keyCode == juce::KeyPress::downKey && ! shift)
+    if (keyCode == juce::KeyPress::rightKey)
     {
         if (currentParam < getParamCountForSection (currentSection) - 1)
             currentParam++;
@@ -785,14 +785,14 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // Left/Right: adjust value
-    if (keyCode == juce::KeyPress::rightKey)
+    // Up/Down: adjust value. Up increases, matching vertical fader motion.
+    if (keyCode == juce::KeyPress::upKey)
     {
         adjustCurrentParam (shift ? 5.0 : 1.0);
         repaint();
         return true;
     }
-    if (keyCode == juce::KeyPress::leftKey)
+    if (keyCode == juce::KeyPress::downKey)
     {
         adjustCurrentParam (shift ? -5.0 : -1.0);
         repaint();

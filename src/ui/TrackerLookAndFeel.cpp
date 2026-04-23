@@ -29,3 +29,8 @@ juce::Font TrackerLookAndFeel::getMonoFont (float height) const
 {
     return juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), height, juce::Font::plain));
 }
+
+juce::Font TrackerLookAndFeel::getUIFont (float height, int styleFlags) const
+{
+    return juce::Font (juce::FontOptions (juce::Font::getDefaultSansSerifFontName(), height, styleFlags));
+}

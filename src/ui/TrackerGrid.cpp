@@ -818,21 +818,25 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
 
         if (isMasterTrack (physTrack))
         {
-            if (! event.mods.isPopupMenu())
+            if (event.mods.isPopupMenu())
             {
-                auto& pat = pattern.getCurrentPattern();
-                selStartRow = 0;
-                selEndRow = pat.numRows - 1;
-                selStartTrack = visualIndex;
-                selEndTrack = visualIndex;
-                hasSelection = true;
-                cursorTrack = physTrack;
-                cursorRow = 0;
-                cursorSubColumn = SubColumn::FX;
-                cursorFxLane = 0;
-                repaint();
-                if (onCursorMoved) onCursorMoved();
+                if (onTrackHeaderRightClick)
+                    onTrackHeaderRightClick (physTrack, event.getScreenPosition());
+                return;
             }
+
+            auto& pat = pattern.getCurrentPattern();
+            selStartRow = 0;
+            selEndRow = pat.numRows - 1;
+            selStartTrack = visualIndex;
+            selEndTrack = visualIndex;
+            hasSelection = true;
+            cursorTrack = physTrack;
+            cursorRow = 0;
+            cursorSubColumn = SubColumn::FX;
+            cursorFxLane = 0;
+            repaint();
+            if (onCursorMoved) onCursorMoved();
             return;
         }
 
@@ -1012,7 +1016,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
         // Right-click on grid cells
         if (event.mods.isPopupMenu())
         {
-            if (onGridRightClick && ! isMasterTrack (track))
+            if (onGridRightClick)
                 onGridRightClick (track, event.getScreenPosition());
             return;
         }

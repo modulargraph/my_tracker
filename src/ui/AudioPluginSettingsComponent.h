@@ -61,6 +61,7 @@ private:
     juce::TextButton addPathButton { "Add Path..." };
     juce::TextButton removePathButton { "Remove" };
     juce::TextButton scanButton { "Scan / Rescan" };
+    juce::Label scanStatusLabel;
 
     // Discovered plugins
     juce::Label discoveredPluginsLabel;
@@ -105,6 +106,7 @@ private:
     //==============================================================================
     void changeListenerCallback (juce::ChangeBroadcaster* source) override;
     void startPluginScan();
+    void updateScanProgress (const PluginCatalogService::ScanProgress& progress);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginSettingsComponent)
 };

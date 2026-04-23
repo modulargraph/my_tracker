@@ -186,6 +186,8 @@ private:
     void scrollView (double deltaNorm);
 
     // -- Slice operations --
+    int getSliceRegionCountForCurrentMode() const;
+    void setSelectedSliceRegion (int regionIndex);
     void addSliceAtPosition (double normPos);
     void removeSlice (int sliceIdx);
     void generateEqualSlices (int numSlices);

@@ -213,7 +213,7 @@ void WaveformView::drawWaveformMarkers (juce::Graphics& g, juce::Rectangle<int> 
         auto sliceCol = juce::Colour (0xffddcc44);
         for (int i = 0; i < static_cast<int> (currentParams.slicePoints.size()); ++i)
         {
-            bool selected = (i == selectedSliceIndex);
+            bool selected = (i == selectedSliceIndex - 1);
             bool dragging = (draggingMarker == MarkerType::Slice && draggingSliceIndex == i);
             bool hi = selected || dragging
                       || (hoveredMarker == MarkerType::Slice && draggingSliceIndex == -1);

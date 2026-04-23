@@ -141,15 +141,12 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
     if (playMode == InstrumentParams::PlayMode::Slice
         || playMode == InstrumentParams::PlayMode::BeatSlice)
     {
-        int sliceIndex = note - 60;
-        if (sliceIndex < 0) sliceIndex = 0;
-
         if (playMode == InstrumentParams::PlayMode::Slice && ! paramsRef.slicePoints.empty())
         {
             auto boundaries = SamplePlaybackLayout::getSliceBoundariesNorm (paramsRef);
 
             int numSlices = static_cast<int> (boundaries.size()) - 1;
-            sliceIndex = juce::jlimit (0, numSlices - 1, sliceIndex);
+            int sliceIndex = juce::jlimit (0, numSlices - 1, paramsRef.selectedSlice);
 
             v.sliceStart = boundaries[static_cast<size_t> (sliceIndex)] * totalSmp;
             v.sliceEnd = boundaries[static_cast<size_t> (sliceIndex + 1)] * totalSmp;
@@ -170,16 +167,22 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
         }
         else
         {
-            // BeatSlice: equal divisions
-            int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (paramsRef);
-            sliceIndex = juce::jlimit (0, numSlices - 1, sliceIndex);
+            auto boundaries = SamplePlaybackLayout::getBeatSliceBoundariesNorm (paramsRef);
 
-            double regionLen = regionEnd - regionStart;
-            v.sliceStart = regionStart + (static_cast<double> (sliceIndex) / numSlices) * regionLen;
-            v.sliceEnd = regionStart + (static_cast<double> (sliceIndex + 1) / numSlices) * regionLen;
+            int numSlices = static_cast<int> (boundaries.size()) - 1;
+            int sliceIndex = note - 60;
+            sliceIndex = juce::jlimit (0, numSlices - 1, juce::jmax (0, sliceIndex));
+
+            v.sliceStart = boundaries[static_cast<size_t> (sliceIndex)] * totalSmp;
+            v.sliceEnd = boundaries[static_cast<size_t> (sliceIndex + 1)] * totalSmp;
         }
 
-        if (directionOverride == 0)
+        const bool defaultForward = playMode == InstrumentParams::PlayMode::Slice
+                                        ? ! paramsRef.reversed
+                                        : true;
+        const bool useForward = directionOverride >= 0 ? directionOverride == 1 : defaultForward;
+
+        if (! useForward)
         {
             v.playbackPos = juce::jmax (v.sliceStart, v.sliceEnd - 1.0);
             v.playingForward = false;
@@ -407,13 +410,22 @@ void TrackerSamplerPlugin::renderSlice (Voice& v, juce::AudioBuffer<float>& buff
                                          int startSample, int numSamples,
                                          const SampleBank& bank, const InstrumentParams& params)
 {
-    // Slices play at original pitch (note selects slice, not pitch)
-    double pitchRatio = bank.sampleRate / outputSampleRate;
-    pitchRatio *= std::pow (2.0, params.tune / 12.0);
-    pitchRatio *= std::pow (2.0, params.finetune / 1200.0);
-    float fxPitch = pitchOffset.load (std::memory_order_relaxed);
-    if (std::abs (fxPitch) > 0.001f)
-        pitchRatio *= std::pow (2.0, static_cast<double> (fxPitch) / 12.0);
+    double pitchRatio = 0.0;
+    if (params.playMode == InstrumentParams::PlayMode::Slice)
+    {
+        // Slice mode plays the selected slice melodically; Beat Slice uses
+        // the note number as the slice index and keeps playback unpitched.
+        pitchRatio = getPitchRatio (v.midiNote, bank, params);
+    }
+    else
+    {
+        pitchRatio = bank.sampleRate / outputSampleRate;
+        pitchRatio *= std::pow (2.0, params.tune / 12.0);
+        pitchRatio *= std::pow (2.0, params.finetune / 1200.0);
+        float fxPitch = pitchOffset.load (std::memory_order_relaxed);
+        if (std::abs (fxPitch) > 0.001f)
+            pitchRatio *= std::pow (2.0, static_cast<double> (fxPitch) / 12.0);
+    }
 
     int numCh = buffer.getNumChannels();
 

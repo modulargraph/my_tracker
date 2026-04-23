@@ -67,12 +67,12 @@ void SampleEditorComponent::setInstrument (int instrumentIndex, const juce::File
     showingPlugin = false;
     currentFile = sampleFile;
     currentParams = params;
+
+    // Reset zoom when switching instruments, then clamp persisted playback state.
+    resetWaveformState();
     constrainPlaybackMarkersToRegion();
     lastCommittedParams = currentParams;
     paramsDirty = false;
-
-    // Reset zoom when switching instruments
-    resetWaveformState();
 
     waveformView.setSample (sampleFile);
     syncWaveformView();
@@ -269,18 +269,22 @@ void SampleEditorComponent::constrainPlaybackMarkersToRegion()
 
     if (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
     {
-        // BeatSlice selects regions, so allow one index beyond the last marker.
-        int maxSelected = currentParams.slicePoints.empty()
-            ? (SamplePlaybackLayout::getBeatSliceRegionCount (currentParams) - 1)
-            : static_cast<int> (currentParams.slicePoints.size());
-        selectedSliceIndex = juce::jlimit (0, juce::jmax (0, maxSelected), selectedSliceIndex);
+        const int regionCount = SamplePlaybackLayout::getBeatSliceRegionCount (currentParams);
+        currentParams.selectedSlice = juce::jlimit (0, juce::jmax (0, regionCount - 1),
+                                                    currentParams.selectedSlice);
+        selectedSliceIndex = currentParams.selectedSlice;
+    }
+    else if (currentParams.playMode == InstrumentParams::PlayMode::Slice)
+    {
+        const int regionCount = SamplePlaybackLayout::getSliceRegionCount (currentParams);
+        currentParams.selectedSlice = juce::jlimit (0, juce::jmax (0, regionCount - 1),
+                                                    currentParams.selectedSlice);
+        selectedSliceIndex = currentParams.selectedSlice;
     }
     else
     {
-        if (currentParams.slicePoints.empty())
-            selectedSliceIndex = -1;
-        else if (selectedSliceIndex >= static_cast<int> (currentParams.slicePoints.size()))
-            selectedSliceIndex = static_cast<int> (currentParams.slicePoints.size()) - 1;
+        currentParams.selectedSlice = 0;
+        selectedSliceIndex = -1;
     }
 }
 
@@ -450,7 +454,7 @@ int SampleEditorComponent::getColumnCount() const
         auto mode = currentParams.playMode;
         switch (mode)
         {
-            case InstrumentParams::PlayMode::OneShot:                       return 4;
+            case InstrumentParams::PlayMode::OneShot:                       return 3;
             case InstrumentParams::PlayMode::ForwardLoop:
             case InstrumentParams::PlayMode::BackwardLoop:
             case InstrumentParams::PlayMode::PingpongLoop:                  return 5;
@@ -510,8 +514,8 @@ juce::String SampleEditorComponent::getColumnName (int col) const
         {
             case InstrumentParams::PlayMode::OneShot:
             {
-                const char* n[] = { "Start", "End", "Reverse" };
-                if (col < 3) return n[col];
+                const char* n[] = { "Start", "End" };
+                if (col < 2) return n[col];
                 break;
             }
             case InstrumentParams::PlayMode::ForwardLoop:
@@ -618,7 +622,6 @@ juce::String SampleEditorComponent::getColumnValue (int col) const
                 {
                     case 0: return formatPosSec (currentParams.startPos, totalLen);
                     case 1: return formatPosSec (currentParams.endPos, totalLen);
-                    case 2: return currentParams.reversed ? "ON" : "OFF";
                 }
                 break;
 
@@ -647,15 +650,14 @@ juce::String SampleEditorComponent::getColumnValue (int col) const
                         return juce::String (SamplePlaybackLayout::getSliceRegionCount (currentParams));
                     }
                     case 3:
-                        if (mode == InstrumentParams::PlayMode::BeatSlice)
                         {
-                            int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (currentParams);
-                            int idx = juce::jlimit (0, numSlices - 1, juce::jmax (0, selectedSliceIndex));
-                            return juce::String (idx);
+                            int numSlices = (mode == InstrumentParams::PlayMode::BeatSlice)
+                                ? SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
+                                : SamplePlaybackLayout::getSliceRegionCount (currentParams);
+                            int idx = juce::jlimit (0, juce::jmax (0, numSlices - 1),
+                                                    currentParams.selectedSlice);
+                            return juce::String (idx + 1) + "/" + juce::String (numSlices);
                         }
-                        if (selectedSliceIndex >= 0 && selectedSliceIndex < static_cast<int> (currentParams.slicePoints.size()))
-                            return juce::String (selectedSliceIndex);
-                        return "--";
                     case 4: return juce::String (static_cast<int> (autoSliceSensitivity * 100.0)) + "%";
                     case 5:
                     {
@@ -1540,9 +1542,6 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                             currentParams.endPos + direction * step);
                         break;
                     }
-                    case 2: // Reverse
-                        currentParams.reversed = ! currentParams.reversed;
-                        break;
                 }
                 break;
             }
@@ -1598,7 +1597,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                         if (mode == InstrumentParams::PlayMode::BeatSlice)
                         {
                             int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (currentParams) + direction;
-                            numSlices = juce::jlimit (2, 128, numSlices);
+                            numSlices = juce::jlimit (1, 48, numSlices);
                             generateEqualSlices (numSlices);
                         }
                         // For Slice mode, Slices column is read-only (shows count)
@@ -1608,11 +1607,12 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     {
                         int numSlices = (mode == InstrumentParams::PlayMode::BeatSlice)
                             ? SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
-                            : static_cast<int> (currentParams.slicePoints.size());
+                            : SamplePlaybackLayout::getSliceRegionCount (currentParams);
                         if (numSlices > 0)
                         {
-                            selectedSliceIndex += direction;
-                            selectedSliceIndex = juce::jlimit (0, numSlices - 1, selectedSliceIndex);
+                            currentParams.selectedSlice = juce::jlimit (0, numSlices - 1,
+                                currentParams.selectedSlice + direction);
+                            selectedSliceIndex = currentParams.selectedSlice;
                         }
                         break;
                     }
@@ -1629,7 +1629,7 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                         int current = SamplePlaybackLayout::getSliceRegionCount (currentParams);
                         if (current < 2) current = 8;
                         int step = fine ? 1 : (large ? 8 : 1);
-                        int numSlices = juce::jlimit (1, 128, current + direction * step);
+                        int numSlices = juce::jlimit (1, 48, current + direction * step);
                         generateEqualSlices (numSlices);
                         break;
                     }
@@ -1879,10 +1879,6 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                         currentParams.endPos = juce::jlimit (currentParams.startPos, 1.0,
                             currentParams.endPos + normDelta);
                         break;
-                    case 2: // Reverse toggle
-                        if (std::abs (normDelta) > 0.15)
-                            currentParams.reversed = (normDelta > 0);
-                        break;
                 }
                 break;
 
@@ -1928,7 +1924,7 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                         {
                             int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
                                             + juce::roundToInt (normDelta * 32.0);
-                            numSlices = juce::jlimit (2, 128, numSlices);
+                            numSlices = juce::jlimit (1, 48, numSlices);
                             generateEqualSlices (numSlices);
                         }
                         break;
@@ -1937,11 +1933,13 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                     {
                         int numSlices = (mode == InstrumentParams::PlayMode::BeatSlice)
                             ? SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
-                            : static_cast<int> (currentParams.slicePoints.size());
+                            : SamplePlaybackLayout::getSliceRegionCount (currentParams);
                         if (numSlices > 0)
                         {
-                            int idx = selectedSliceIndex - juce::roundToInt (normDelta * static_cast<double> (numSlices));
-                            selectedSliceIndex = juce::jlimit (0, numSlices - 1, idx);
+                            int idx = currentParams.selectedSlice
+                                      - juce::roundToInt (normDelta * static_cast<double> (numSlices));
+                            currentParams.selectedSlice = juce::jlimit (0, numSlices - 1, idx);
+                            selectedSliceIndex = currentParams.selectedSlice;
                         }
                         break;
                     }
@@ -1957,7 +1955,7 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                         int current = SamplePlaybackLayout::getSliceRegionCount (currentParams);
                         if (current < 2) current = 8;
                         int numSlices = current + juce::roundToInt (normDelta * 32.0);
-                        numSlices = juce::jlimit (1, 128, numSlices);
+                        numSlices = juce::jlimit (1, 48, numSlices);
                         generateEqualSlices (numSlices);
                         break;
                     }
@@ -2038,8 +2036,6 @@ bool SampleEditorComponent::isCurrentColumnDiscrete() const
         int numCols = getColumnCount();
         if (playbackColumn == numCols - 1) return true; // Play Mode list
         auto mode = currentParams.playMode;
-        if (mode == InstrumentParams::PlayMode::OneShot && playbackColumn == 2)
-            return true; // Reverse toggle
         if ((mode == InstrumentParams::PlayMode::Slice || mode == InstrumentParams::PlayMode::BeatSlice)
             && playbackColumn >= 2)
             return true; // Slices count, Selected slice
@@ -2132,16 +2128,19 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
         // In slice modes, space previews the currently selected slice region.
         const bool isSliceMode = (currentParams.playMode == InstrumentParams::PlayMode::Slice
                                   || currentParams.playMode == InstrumentParams::PlayMode::BeatSlice);
-        const bool canSlicePreview = (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
-                                     || ! currentParams.slicePoints.empty();
-        if (displayMode == DisplayMode::InstrumentType && isSliceMode && canSlicePreview)
+        if (displayMode == DisplayMode::InstrumentType && isSliceMode)
         {
             int numSlices = (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
                 ? SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
                 : SamplePlaybackLayout::getSliceRegionCount (currentParams);
-            int sliceIndex = juce::jlimit (0, numSlices - 1, juce::jmax (0, selectedSliceIndex));
+            int sliceIndex = juce::jlimit (0, numSlices - 1, currentParams.selectedSlice);
             if (onPreviewRequested)
-                onPreviewRequested (currentInstrument, 60 + sliceIndex);
+            {
+                const int previewNote = currentParams.playMode == InstrumentParams::PlayMode::BeatSlice
+                                            ? 60 + sliceIndex
+                                            : currentOctave * 12;
+                onPreviewRequested (currentInstrument, previewNote);
+            }
         }
         else
         {
@@ -2205,49 +2204,73 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
 
         if (isSliceMode)
         {
-            // Shift+Left/Right: select different slice points
+            // Shift+Left/Right: select different slice regions
             if (shift && keyCode == juce::KeyPress::leftKey)
             {
-                int numSlices = static_cast<int> (currentParams.slicePoints.size());
-                if (numSlices > 0)
-                {
-                    selectedSliceIndex = juce::jmax (0, selectedSliceIndex - 1);
-                    repaint();
-                }
+                setSelectedSliceRegion (currentParams.selectedSlice - 1);
+                notifyParamsChanged();
                 return true;
             }
             if (shift && keyCode == juce::KeyPress::rightKey)
             {
-                int numSlices = static_cast<int> (currentParams.slicePoints.size());
-                if (numSlices > 0)
-                {
-                    selectedSliceIndex = juce::jmin (numSlices - 1, selectedSliceIndex + 1);
-                    repaint();
-                }
+                setSelectedSliceRegion (currentParams.selectedSlice + 1);
+                notifyParamsChanged();
                 return true;
             }
 
             // Shift+Up/Down: nudge selected slice position
             if (shift && keyCode == juce::KeyPress::upKey)
             {
-                if (selectedSliceIndex >= 0 && selectedSliceIndex < static_cast<int> (currentParams.slicePoints.size()))
+                const int regionIndex = currentParams.selectedSlice;
+                const double step = 0.005;
+                if (regionIndex == 0)
                 {
-                    double step = 0.005;
-                    currentParams.slicePoints[static_cast<size_t> (selectedSliceIndex)] =
-                        juce::jlimit (currentParams.startPos, currentParams.endPos,
-                            currentParams.slicePoints[static_cast<size_t> (selectedSliceIndex)] + step);
+                    const double next = currentParams.slicePoints.empty()
+                                            ? currentParams.endPos
+                                            : currentParams.slicePoints.front();
+                    currentParams.startPos = juce::jlimit (0.0, next, currentParams.startPos + step);
+                    notifyParamsChanged();
+                }
+                else if (regionIndex - 1 < static_cast<int> (currentParams.slicePoints.size()))
+                {
+                    const int pointIndex = regionIndex - 1;
+                    const double lower = pointIndex == 0
+                                             ? currentParams.startPos
+                                             : currentParams.slicePoints[static_cast<size_t> (pointIndex - 1)];
+                    const double upper = pointIndex + 1 < static_cast<int> (currentParams.slicePoints.size())
+                                             ? currentParams.slicePoints[static_cast<size_t> (pointIndex + 1)]
+                                             : currentParams.endPos;
+                    currentParams.slicePoints[static_cast<size_t> (pointIndex)] =
+                        juce::jlimit (lower, upper,
+                            currentParams.slicePoints[static_cast<size_t> (pointIndex)] + step);
                     notifyParamsChanged();
                 }
                 return true;
             }
             if (shift && keyCode == juce::KeyPress::downKey)
             {
-                if (selectedSliceIndex >= 0 && selectedSliceIndex < static_cast<int> (currentParams.slicePoints.size()))
+                const int regionIndex = currentParams.selectedSlice;
+                const double step = 0.005;
+                if (regionIndex == 0)
                 {
-                    double step = 0.005;
-                    currentParams.slicePoints[static_cast<size_t> (selectedSliceIndex)] =
-                        juce::jlimit (currentParams.startPos, currentParams.endPos,
-                            currentParams.slicePoints[static_cast<size_t> (selectedSliceIndex)] - step);
+                    const double next = currentParams.slicePoints.empty()
+                                            ? currentParams.endPos
+                                            : currentParams.slicePoints.front();
+                    currentParams.startPos = juce::jlimit (0.0, next, currentParams.startPos - step);
+                    notifyParamsChanged();
+                }
+                else if (regionIndex - 1 < static_cast<int> (currentParams.slicePoints.size()))
+                {
+                    const int pointIndex = regionIndex - 1;
+                    const double lower = pointIndex == 0
+                                             ? currentParams.startPos
+                                             : currentParams.slicePoints[static_cast<size_t> (pointIndex - 1)];
+                    const double upper = pointIndex + 1 < static_cast<int> (currentParams.slicePoints.size())
+                                             ? currentParams.slicePoints[static_cast<size_t> (pointIndex + 1)]
+                                             : currentParams.endPos;
+                    currentParams.slicePoints[static_cast<size_t> (pointIndex)] =
+                        juce::jlimit (lower, upper,
+                            currentParams.slicePoints[static_cast<size_t> (pointIndex)] - step);
                     notifyParamsChanged();
                 }
                 return true;
@@ -2256,9 +2279,9 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
             // Delete or Backspace: remove selected slice
             if (keyCode == juce::KeyPress::deleteKey || keyCode == juce::KeyPress::backspaceKey)
             {
-                if (selectedSliceIndex >= 0)
+                if (currentParams.selectedSlice > 0)
                 {
-                    removeSlice (selectedSliceIndex);
+                    removeSlice (currentParams.selectedSlice - 1);
                     notifyParamsChanged();
                 }
                 return true;
@@ -2347,12 +2370,9 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // ── Slice mode: keyboard previews individual slices ──
+    // ── Beat Slice mode: keyboard previews individual slices ──
     if (displayMode == DisplayMode::InstrumentType
-        && (currentParams.playMode == InstrumentParams::PlayMode::Slice
-            || currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
-        && ((currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
-            || ! currentParams.slicePoints.empty()))
+        && currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
     {
         // Map note keys to sequential slice indices instead of pitched notes.
         // The sampler uses (note - 60) as the slice index.
@@ -2367,14 +2387,11 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
             // Keys are laid out chromatically: lowest key = slice 0, next = slice 1, etc.
             // The octave-relative note offset from the base octave gives us the slice index.
             int sliceIndex = note - (currentOctave * 12);
-            int numSlices = (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
-                ? SamplePlaybackLayout::getBeatSliceRegionCount (currentParams)
-                : SamplePlaybackLayout::getSliceRegionCount (currentParams);
+            int numSlices = SamplePlaybackLayout::getBeatSliceRegionCount (currentParams);
             sliceIndex = juce::jlimit (0, numSlices - 1, sliceIndex);
 
-            // Update selected slice in UI (select the slice point, not the region)
-            if (sliceIndex < static_cast<int> (currentParams.slicePoints.size()))
-                selectedSliceIndex = sliceIndex;
+            setSelectedSliceRegion (sliceIndex);
+            notifyParamsChanged();
 
             // Flush pending params before preview
             flushPendingParams();
@@ -2564,7 +2581,8 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                     if (marker == MarkerType::Slice)
                     {
                         draggingSliceIndex = hitTestSlice (event.x, waveArea);
-                        selectedSliceIndex = draggingSliceIndex;
+                        if (draggingSliceIndex >= 0)
+                            setSelectedSliceRegion (draggingSliceIndex + 1);
                     }
                     repaint();
                     return;
@@ -2859,7 +2877,7 @@ void SampleEditorComponent::mouseDrag (const juce::MouseEvent& event)
                         if (std::abs (currentParams.slicePoints[static_cast<size_t> (i)] - normPos) < 0.0001)
                         {
                             draggingSliceIndex = i;
-                            selectedSliceIndex = i;
+                            setSelectedSliceRegion (i + 1);
                             break;
                         }
                     }
@@ -3182,8 +3200,29 @@ void SampleEditorComponent::scrollView (double deltaNorm)
 // Slice operations
 //==============================================================================
 
+int SampleEditorComponent::getSliceRegionCountForCurrentMode() const
+{
+    if (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
+        return SamplePlaybackLayout::getBeatSliceRegionCount (currentParams);
+
+    if (currentParams.playMode == InstrumentParams::PlayMode::Slice)
+        return SamplePlaybackLayout::getSliceRegionCount (currentParams);
+
+    return 0;
+}
+
+void SampleEditorComponent::setSelectedSliceRegion (int regionIndex)
+{
+    const int regionCount = getSliceRegionCountForCurrentMode();
+    currentParams.selectedSlice = juce::jlimit (0, juce::jmax (0, regionCount - 1), regionIndex);
+    selectedSliceIndex = currentParams.selectedSlice;
+}
+
 void SampleEditorComponent::addSliceAtPosition (double normPos)
 {
+    if (currentParams.slicePoints.size() >= 47)
+        return;
+
     normPos = juce::jlimit (currentParams.startPos, currentParams.endPos, normPos);
 
     // Check for duplicate (within small tolerance)
@@ -3209,7 +3248,7 @@ void SampleEditorComponent::addSliceAtPosition (double normPos)
     {
         if (std::abs (currentParams.slicePoints[static_cast<size_t> (i)] - normPos) < 0.001)
         {
-            selectedSliceIndex = i;
+            setSelectedSliceRegion (i + 1);
             break;
         }
     }
@@ -3221,31 +3260,16 @@ void SampleEditorComponent::removeSlice (int sliceIdx)
         return;
 
     currentParams.slicePoints.erase (currentParams.slicePoints.begin() + sliceIdx);
-
-    // Adjust selected index
-    int numSlices = static_cast<int> (currentParams.slicePoints.size());
-    if (currentParams.playMode == InstrumentParams::PlayMode::BeatSlice)
-    {
-        int maxSelected = numSlices > 0
-            ? numSlices
-            : SamplePlaybackLayout::getBeatSliceRegionCount (currentParams) - 1;
-        selectedSliceIndex = juce::jlimit (0, juce::jmax (0, maxSelected), selectedSliceIndex);
-    }
-    else
-    {
-        if (numSlices == 0)
-            selectedSliceIndex = -1;
-        else if (selectedSliceIndex >= numSlices)
-            selectedSliceIndex = numSlices - 1;
-    }
+    setSelectedSliceRegion (juce::jmax (0, currentParams.selectedSlice - 1));
 }
 
 void SampleEditorComponent::generateEqualSlices (int numSlices)
 {
+    numSlices = juce::jlimit (1, 48, numSlices);
     currentParams.slicePoints = SamplePlaybackLayout::makeEqualSlicePointsNorm (
         currentParams.startPos, currentParams.endPos, numSlices);
 
-    selectedSliceIndex = currentParams.slicePoints.empty() ? -1 : 0;
+    setSelectedSliceRegion (0);
 }
 
 void SampleEditorComponent::autoSlice()
@@ -3270,6 +3294,9 @@ void SampleEditorComponent::autoSlice()
         buffer, reader->sampleRate, autoSliceSensitivity,
         currentParams.startPos, currentParams.endPos);
 
+    if (currentParams.slicePoints.size() > 47)
+        currentParams.slicePoints.resize (47);
+
     // Switch to Slice mode
     if (! currentParams.slicePoints.empty())
     {
@@ -3279,7 +3306,7 @@ void SampleEditorComponent::autoSlice()
             currentParams.playMode = InstrumentParams::PlayMode::Slice;
             playbackColumn = juce::jmin (playbackColumn, getColumnCount() - 1);
         }
-        selectedSliceIndex = 0;
+        setSelectedSliceRegion (0);
     }
 }
 

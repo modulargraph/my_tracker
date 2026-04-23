@@ -52,6 +52,11 @@ AudioPluginSettingsComponent::AudioPluginSettingsComponent (te::Engine& e,
     addAndMakeVisible (removePathButton);
     addAndMakeVisible (scanButton);
 
+    scanStatusLabel.setText ({}, juce::dontSendNotification);
+    scanStatusLabel.setFont (lnf.getMonoFont (12.0f));
+    scanStatusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffaaaaaa));
+    addAndMakeVisible (scanStatusLabel);
+
     addPathButton.onClick = [this]
     {
         auto chooser = std::make_shared<juce::FileChooser> ("Select Plugin Scan Directory");
@@ -152,7 +157,9 @@ void AudioPluginSettingsComponent::resized()
     scanPathButtons.removeFromTop (2);
     scanButton.setBounds (scanPathButtons.removeFromTop (26));
 
-    r.removeFromTop (8);
+    r.removeFromTop (4);
+    scanStatusLabel.setBounds (r.removeFromTop (18));
+    r.removeFromTop (4);
 
     // Discovered plugins
     discoveredPluginsLabel.setBounds (r.removeFromTop (18));
@@ -179,6 +186,7 @@ void AudioPluginSettingsComponent::startPluginScan()
 
     scanButton.setEnabled (false);
     scanButton.setButtonText ("Scanning...");
+    scanStatusLabel.setText ("Preparing scan...", juce::dontSendNotification);
 
     if (scanThread.joinable())
         scanThread.join();
@@ -189,7 +197,15 @@ void AudioPluginSettingsComponent::startPluginScan()
 
     scanThread = std::thread ([catalog, safeThis, pathsCopy]
     {
-        catalog->scanForPlugins (pathsCopy);
+        catalog->scanForPlugins (pathsCopy,
+            [safeThis] (const PluginCatalogService::ScanProgress& progress)
+            {
+                juce::MessageManager::callAsync ([safeThis, progress]
+                {
+                    if (safeThis != nullptr)
+                        safeThis->updateScanProgress (progress);
+                });
+            });
 
         juce::MessageManager::callAsync ([safeThis]
         {
@@ -200,8 +216,22 @@ void AudioPluginSettingsComponent::startPluginScan()
             safeThis->scanButton.setEnabled (true);
             safeThis->scanButton.setButtonText ("Scan / Rescan");
             safeThis->refreshPluginList();
+            safeThis->scanStatusLabel.setText ("Scan complete: "
+                                                   + juce::String (safeThis->pluginTableModel.plugins.size())
+                                                   + " plugins",
+                                               juce::dontSendNotification);
         });
     });
+}
+
+void AudioPluginSettingsComponent::updateScanProgress (const PluginCatalogService::ScanProgress& progress)
+{
+    const auto completed = juce::jmax (0, progress.completed);
+    const auto total = juce::jmax (0, progress.total);
+
+    scanButton.setButtonText ("Scanning " + juce::String (completed) + "/" + juce::String (total));
+    scanStatusLabel.setText ("Scanning " + juce::String (completed) + " out of " + juce::String (total),
+                             juce::dontSendNotification);
 }
 
 void AudioPluginSettingsComponent::refreshPluginList()

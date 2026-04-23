@@ -2069,7 +2069,40 @@ void MainComponent::showPatternNameEditor()
 
 void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
 {
+    const bool isMasterColumn = (track == TrackerGrid::kMasterLaneTrack);
     juce::PopupMenu menu;
+
+    if (isMasterColumn)
+    {
+        int masterFxLanes = trackLayout.getMasterFxLaneCount();
+        menu.addItem (24, "Add Master FX Lane (" + juce::String (masterFxLanes) + " -> "
+                         + juce::String (masterFxLanes + 1) + ")", masterFxLanes < 8);
+        menu.addItem (25, "Remove Master FX Lane (" + juce::String (masterFxLanes) + " -> "
+                         + juce::String (masterFxLanes - 1) + ")", masterFxLanes > 1);
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }),
+                            [this] (int result)
+                            {
+                                if (result == 24)
+                                {
+                                    performUndoableTrackLayoutChange ([this]
+                                    {
+                                        trackLayout.setMasterFxLaneCount (trackLayout.getMasterFxLaneCount() + 1);
+                                    });
+                                }
+                                else if (result == 25)
+                                {
+                                    performUndoableTrackLayoutChange ([this]
+                                    {
+                                        trackLayout.setMasterFxLaneCount (trackLayout.getMasterFxLaneCount() - 1);
+                                    });
+                                }
+                            });
+        return;
+    }
+
+    if (track < 0 || track >= kNumTracks)
+        return;
 
     auto* t = trackerEngine.getTrack (track);
     if (t != nullptr)
@@ -2091,8 +2124,8 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
     {
         int minRow, maxRow, minViTrack, maxViTrack;
         trackerGrid->getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
-        rangeStart = minViTrack;
-        rangeEnd = maxViTrack;
+        rangeStart = juce::jlimit (0, kNumTracks - 1, minViTrack);
+        rangeEnd = juce::jlimit (0, kNumTracks - 1, maxViTrack);
     }
     else
     {
@@ -2106,9 +2139,7 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
     // Group selected tracks (if selection spans multiple tracks)
     if (trackerGrid->hasSelection)
     {
-        int minRow, maxRow, minTrack, maxTrack;
-        trackerGrid->getSelectionBounds (minRow, maxRow, minTrack, maxTrack);
-        if (minTrack != maxTrack && trackLayout.canCreateGroup())
+        if (rangeStart != rangeEnd && trackLayout.canCreateGroup())
             menu.addItem (12, "Group Selected Tracks...");
     }
 
@@ -2612,9 +2643,9 @@ void MainComponent::showHelpOverlay()
                     "Escape            Return to Tracker",
                     "` (in edit tabs)  Params / Mod" }},
                 { "MIXER", {
-                    "Up / Down         Navigate params",
-                    "Left / Right      Adjust value",
-                    "Shift+Left/Right  Large adjust",
+                    "Left / Right      Navigate params",
+                    "Up / Down         Adjust value",
+                    "Shift+Up/Down     Large adjust",
                     "Tab / Shift+Tab   Switch strip",
                     "M / S             Mute / Solo" }},
                 { "VIEW", {
