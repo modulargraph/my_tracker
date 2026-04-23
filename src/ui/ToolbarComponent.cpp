@@ -5,6 +5,13 @@ ToolbarComponent::ToolbarComponent (TrackerLookAndFeel& lnf)
 {
 }
 
+void ToolbarComponent::setChordEntryState (bool enabled, const juce::String& label)
+{
+    chordEntryOn = enabled;
+    chordEntryLabel = label.isNotEmpty() ? label : "CHD";
+    repaint();
+}
+
 void ToolbarComponent::paint (juce::Graphics& g)
 {
     auto bg = lookAndFeel.findColour (TrackerLookAndFeel::headerColourId);
@@ -179,14 +186,26 @@ void ToolbarComponent::paint (juce::Graphics& g)
     x += 28;
 
     // MIDI generator
-    midiGeneratorBounds = { x, 6, 30, 24 };
+    midiGeneratorBounds = { x, 6, 42, 24 };
     g.setColour (juce::Colour (0xff3a3a3a));
     g.fillRoundedRectangle (midiGeneratorBounds.toFloat(), 3.0f);
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
     g.setFont (lookAndFeel.getMonoFont (9.0f));
-    g.drawText ("GEN", midiGeneratorBounds, juce::Justification::centred);
+    g.drawText ("MIDI", midiGeneratorBounds, juce::Justification::centred);
     g.setFont (lookAndFeel.getMonoFont (13.0f));
-    x += 34;
+    x += 46;
+
+    // Chord entry toggle
+    chordEntryBounds = { x, 6, 42, 24 };
+    g.setColour (chordEntryOn ? lookAndFeel.findColour (TrackerLookAndFeel::noteColourId).withAlpha (0.42f)
+                              : juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (chordEntryBounds.toFloat(), 3.0f);
+    g.setColour (chordEntryOn ? juce::Colours::white
+                              : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.drawText (chordEntryLabel, chordEntryBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
+    x += 46;
 
     // Automation panel toggle
     automationToggleBounds = { x, 6, 32, 24 };
@@ -267,6 +286,19 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
     if (midiGeneratorBounds.contains (pos) && onShowMidiGenerator)
     {
         onShowMidiGenerator();
+        return;
+    }
+    if (chordEntryBounds.contains (pos))
+    {
+        if (event.mods.isPopupMenu())
+        {
+            if (onCycleChordSet)
+                onCycleChordSet();
+        }
+        else if (onToggleChordEntry)
+        {
+            onToggleChordEntry();
+        }
         return;
     }
     if (automationToggleBounds.contains (pos) && onToggleAutomation)

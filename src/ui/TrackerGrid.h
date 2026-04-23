@@ -63,6 +63,10 @@ public:
     void setCurrentInstrument (int inst) { currentInstrument = juce::jlimit (0, 255, inst); }
     int getCurrentInstrument() const { return currentInstrument; }
 
+    // Chord entry mode turns normal keyboard note input into multi-lane chord writes.
+    void setChordEntryEnabled (bool enabled) { chordEntryEnabled = enabled; }
+    bool isChordEntryEnabled() const { return chordEntryEnabled; }
+
     // Selection
     bool hasSelection = false;
     int selStartRow = 0, selStartTrack = 0;
@@ -95,6 +99,8 @@ public:
     std::function<void (int track)> onNoteModeToggled;
     // Callback for validating note entry (returns empty string if allowed, error message if blocked)
     std::function<juce::String (int instrumentIndex, int trackIndex)> onValidateNoteEntry;
+    // Callback for chord-entry note keys. Return true when the key was handled.
+    std::function<bool (int rootNote, int row, int track, int startNoteLane, int instrument)> onChordEntryRequested;
 
     // Layout constants (public for toolbar/status)
     static constexpr int kRowNumberWidth = 30;
@@ -165,6 +171,7 @@ private:
     int currentInstrument = 0;
     int rowsPerBeat = 4;
     bool velocityLanesVisible = true;
+    bool chordEntryEnabled = false;
 
     // Hex entry state for multi-digit input
     int hexDigitCount = 0;

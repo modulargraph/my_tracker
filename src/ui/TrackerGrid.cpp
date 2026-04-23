@@ -2121,6 +2121,18 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         int note = keyToNote (key);
         if (note >= 0 && note <= 127)
         {
+            if (chordEntryEnabled)
+            {
+                if (onChordEntryRequested != nullptr
+                    && onChordEntryRequested (note, cursorRow, cursorTrack, cursorNoteLane, currentInstrument))
+                {
+                    moveCursor (editStep, 0);
+                    repaint();
+                }
+
+                return true;
+            }
+
             // Validate note entry (ownership/track mode check)
             if (onValidateNoteEntry)
             {

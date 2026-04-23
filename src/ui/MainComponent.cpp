@@ -119,6 +119,17 @@ int positiveMod7 (int value)
     return mod < 0 ? mod + 7 : mod;
 }
 
+int floorDiv12 (int value)
+{
+    return value >= 0 ? value / 12 : (value - 11) / 12;
+}
+
+int positiveMod12 (int value)
+{
+    auto mod = value % 12;
+    return mod < 0 ? mod + 12 : mod;
+}
+
 int noteFromScaleStep (int rootPitchClass, const std::array<int, 7>& scaleIntervals,
                        int scaleStep, int octave)
 {
@@ -166,6 +177,115 @@ std::vector<int> getChordScaleSteps (int degree, int chordStyle)
     }
 
     return { degree, degree + 2, degree + 4 };
+}
+
+int findScaleDegreeForPitchClass (int pitchClass, int rootPitchClass, const std::array<int, 7>& scaleIntervals)
+{
+    for (int degree = 0; degree < static_cast<int> (scaleIntervals.size()); ++degree)
+        if (positiveMod12 (rootPitchClass + scaleIntervals[static_cast<size_t> (degree)]) == pitchClass)
+            return degree;
+
+    return -1;
+}
+
+std::vector<int> getChromaticChordIntervals (int scale, int chordStyle)
+{
+    const bool minor = scale == 1;
+    const int third = minor ? 3 : 4;
+    const int seventh = minor ? 10 : 11;
+
+    switch (chordStyle)
+    {
+        case 1: return { 0, third, 7, seventh };
+        case 2: return { 0, 7, 12, 12 + third };
+        case 3: return { 0, 7, 12 };
+        default: break;
+    }
+
+    return { 0, third, 7 };
+}
+
+std::vector<int> normalizeChordNotes (std::vector<int> notes)
+{
+    for (auto& note : notes)
+    {
+        while (note > 127)
+            note -= 12;
+        while (note < 0)
+            note += 12;
+        note = juce::jlimit (0, 127, note);
+    }
+
+    std::sort (notes.begin(), notes.end());
+    notes.erase (std::unique (notes.begin(), notes.end()), notes.end());
+    return notes;
+}
+
+std::vector<int> buildChordNotesForRoot (int rootNote, const MidiGeneratorSettings& settings)
+{
+    rootNote = juce::jlimit (0, 127, rootNote);
+
+    const auto scaleIntervals = getScaleIntervals (settings.scale);
+    const int degree = findScaleDegreeForPitchClass (positiveMod12 (rootNote),
+                                                     settings.keyRoot,
+                                                     scaleIntervals);
+
+    std::vector<int> notes;
+    if (degree >= 0)
+    {
+        const int scaleOctave = floorDiv12 (rootNote - settings.keyRoot
+                                            - scaleIntervals[static_cast<size_t> (degree)]);
+        const auto scaleSteps = getChordScaleSteps (degree, settings.chordStyle);
+        notes.reserve (scaleSteps.size());
+        for (auto step : scaleSteps)
+            notes.push_back (noteFromScaleStep (settings.keyRoot, scaleIntervals, step, scaleOctave));
+    }
+    else
+    {
+        const auto intervals = getChromaticChordIntervals (settings.scale, settings.chordStyle);
+        notes.reserve (intervals.size());
+        for (auto interval : intervals)
+            notes.push_back (rootNote + interval);
+    }
+
+    return normalizeChordNotes (std::move (notes));
+}
+
+juce::String getMidiGeneratorKeyName (int keyRoot)
+{
+    static const char* keys[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    return keys[static_cast<size_t> (juce::jlimit (0, 11, keyRoot))];
+}
+
+juce::String getMidiGeneratorScaleName (int scale)
+{
+    return scale == 1 ? "Minor" : "Major";
+}
+
+juce::String getChordStyleShortName (int chordStyle)
+{
+    switch (chordStyle)
+    {
+        case 1: return "7TH";
+        case 2: return "OPN";
+        case 3: return "PWR";
+        default: break;
+    }
+
+    return "TRI";
+}
+
+juce::String getChordStyleDisplayName (int chordStyle)
+{
+    switch (chordStyle)
+    {
+        case 1: return "Sevenths";
+        case 2: return "Open";
+        case 3: return "Power";
+        default: break;
+    }
+
+    return "Triads";
 }
 
 std::vector<int> getChordHitOffsets (int chordRhythm, int barRows, int rowsPerBeat)
@@ -228,7 +348,8 @@ void randomizeChordVoicing (std::vector<int>& notes, juce::Random& random, int r
 class MidiGeneratorComponent : public juce::Component
 {
 public:
-    MidiGeneratorComponent (TrackerLookAndFeel& lnf, int trackIndex)
+    MidiGeneratorComponent (TrackerLookAndFeel& lnf, int trackIndex,
+                            const MidiGeneratorSettings& initialSettings)
         : lookAndFeel (lnf)
     {
         titleLabel.setText ("Track " + juce::String (trackIndex + 1) + " MIDI generator", juce::dontSendNotification);
@@ -298,23 +419,38 @@ public:
                                        lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
         addAndMakeVisible (startAtCursorToggle);
 
-        generateButton.setButtonText ("Generate");
+        generateButton.setButtonText ("Generate MIDI");
+        generateButton.setColour (juce::TextButton::buttonColourId,
+                                  lookAndFeel.findColour (TrackerLookAndFeel::noteColourId).withAlpha (0.28f));
+        generateButton.setColour (juce::TextButton::textColourOffId,
+                                  lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
         generateButton.onClick = [this]
         {
+            auto settings = getSettings();
+            if (onSettingsChanged)
+                onSettingsChanged (settings);
             if (onGenerate)
-                onGenerate (getSettings());
+                onGenerate (settings);
             closeDialog();
         };
         addAndMakeVisible (generateButton);
 
         cancelButton.setButtonText ("Cancel");
-        cancelButton.onClick = [this] { closeDialog(); };
+        cancelButton.onClick = [this]
+        {
+            notifySettingsChanged();
+            closeDialog();
+        };
         addAndMakeVisible (cancelButton);
 
-        setSize (460, 420);
+        applySettings (initialSettings);
+        installChangeHandlers();
+
+        setSize (460, 486);
     }
 
     std::function<void (const MidiGeneratorSettings&)> onGenerate;
+    std::function<void (const MidiGeneratorSettings&)> onSettingsChanged;
 
     void paint (juce::Graphics& g) override
     {
@@ -344,7 +480,7 @@ public:
         auto buttons = area.removeFromBottom (32);
         cancelButton.setBounds (buttons.removeFromRight (92));
         buttons.removeFromRight (8);
-        generateButton.setBounds (buttons.removeFromRight (110));
+        generateButton.setBounds (buttons.removeFromRight (132));
     }
 
 private:
@@ -400,6 +536,46 @@ private:
         return settings;
     }
 
+    void applySettings (const MidiGeneratorSettings& settings)
+    {
+        juce::ScopedValueSetter<bool> suppressor (suppressSettingsCallback, true);
+
+        keyBox.setSelectedId (juce::jlimit (1, 12, settings.keyRoot + 1), juce::dontSendNotification);
+        scaleBox.setSelectedId (juce::jlimit (1, 2, settings.scale + 1), juce::dontSendNotification);
+        progressionBox.setSelectedId (juce::jlimit (1, 10, settings.progression + 1), juce::dontSendNotification);
+        outputBox.setSelectedId (juce::jlimit (1, 3, settings.outputMode + 1), juce::dontSendNotification);
+        chordStyleBox.setSelectedId (juce::jlimit (1, 4, settings.chordStyle + 1), juce::dontSendNotification);
+        chordRhythmBox.setSelectedId (juce::jlimit (1, 4, settings.chordRhythm + 1), juce::dontSendNotification);
+        bassPatternBox.setSelectedId (juce::jlimit (1, 6, settings.bassPattern + 1), juce::dontSendNotification);
+        barsSlider.setValue (juce::jlimit (1, 32, settings.bars), juce::dontSendNotification);
+        transposeSlider.setValue (juce::jlimit (-24, 24, settings.transpose), juce::dontSendNotification);
+        randomSlider.setValue (juce::jlimit (0, 100, settings.randomAmount), juce::dontSendNotification);
+        startAtCursorToggle.setToggleState (settings.startAtCursor, juce::dontSendNotification);
+    }
+
+    void installChangeHandlers()
+    {
+        auto notify = [this] { notifySettingsChanged(); };
+
+        keyBox.onChange = notify;
+        scaleBox.onChange = notify;
+        progressionBox.onChange = notify;
+        outputBox.onChange = notify;
+        chordStyleBox.onChange = notify;
+        chordRhythmBox.onChange = notify;
+        bassPatternBox.onChange = notify;
+        barsSlider.onValueChange = notify;
+        transposeSlider.onValueChange = notify;
+        randomSlider.onValueChange = notify;
+        startAtCursorToggle.onClick = notify;
+    }
+
+    void notifySettingsChanged()
+    {
+        if (! suppressSettingsCallback && onSettingsChanged)
+            onSettingsChanged (getSettings());
+    }
+
     void closeDialog()
     {
         if (auto* dialog = findParentComponentOfClass<juce::DialogWindow>())
@@ -407,6 +583,7 @@ private:
     }
 
     TrackerLookAndFeel& lookAndFeel;
+    bool suppressSettingsCallback = false;
     juce::Label titleLabel;
     juce::Label keyLabel, scaleLabel, progressionLabel, outputLabel, chordStyleLabel, chordRhythmLabel, bassPatternLabel;
     juce::Label barsLabel, transposeLabel, randomLabel;
@@ -644,6 +821,16 @@ MainComponent::MainComponent()
     toolbar->onShowMidiGenerator = [this]
     {
         showMidiGeneratorDialog();
+    };
+
+    toolbar->onToggleChordEntry = [this]
+    {
+        setChordEntryEnabled (! chordEntryEnabled);
+    };
+
+    toolbar->onCycleChordSet = [this]
+    {
+        cycleMidiGeneratorChordStyle();
     };
 
     previewVolumeLabel.setText ("Preview", juce::dontSendNotification);
@@ -1195,6 +1382,11 @@ MainComponent::MainComponent()
         int previewTrack = trackerGrid->isCursorInMasterLane() ? 0 : trackerGrid->getCursorTrack();
         trackerEngine.previewNote (previewTrack, instrument, note);
         markDirty();
+    };
+
+    trackerGrid->onChordEntryRequested = [this] (int rootNote, int row, int track, int startNoteLane, int instrument)
+    {
+        return enterChordFromKeyboardNote (rootNote, row, track, startNoteLane, instrument);
     };
 
     // Cursor moved callback
@@ -2270,10 +2462,13 @@ void MainComponent::updateStatusBar()
     const char* subColNames[] = { "Note", "Inst", "Vel", "FX" };
     auto subCol = subColNames[static_cast<int> (trackerGrid->getCursorSubColumn())];
 
-    statusLabel.setText (juce::String (playState) + "  Row:" + row + "  Track:" + track
-                             + " [" + subCol + "]"
-                             + "  Step:" + juce::String (trackerGrid->getEditStep()),
-                         juce::dontSendNotification);
+    auto statusText = juce::String (playState) + "  Row:" + row + "  Track:" + track
+                          + " [" + subCol + "]"
+                          + "  Step:" + juce::String (trackerGrid->getEditStep());
+    if (chordEntryEnabled)
+        statusText += "  Chord:" + getChordEntryStatusText();
+
+    statusLabel.setText (statusText, juce::dontSendNotification);
 
     octaveLabel.setText ("Oct:" + juce::String (trackerGrid->getOctave()),
                          juce::dontSendNotification);
@@ -2304,6 +2499,7 @@ void MainComponent::updateToolbar()
     toolbar->setPlaybackMode (songMode);
 
     toolbar->setAutomationPanelVisible (automationPanelVisible);
+    toolbar->setChordEntryState (chordEntryEnabled, getChordEntryToolbarLabel());
 
     // Show sample name for current instrument
     auto sampleFile = trackerEngine.getSampler().getSampleFile (trackerGrid->getCurrentInstrument());
@@ -2444,9 +2640,14 @@ void MainComponent::showMidiGeneratorDialog (int targetTrack)
         return;
     }
 
-    auto* content = new MidiGeneratorComponent (trackerLookAndFeel, targetTrack);
+    auto* content = new MidiGeneratorComponent (trackerLookAndFeel, targetTrack, lastMidiGeneratorSettings);
+    content->onSettingsChanged = [this] (const MidiGeneratorSettings& settings)
+    {
+        lastMidiGeneratorSettings = settings;
+    };
     content->onGenerate = [this, targetTrack] (const MidiGeneratorSettings& settings)
     {
+        lastMidiGeneratorSettings = settings;
         applyGeneratedMidiToTrack (targetTrack, settings);
     };
 
@@ -2656,6 +2857,111 @@ void MainComponent::applyGeneratedMidiToTrack (int targetTrack, const MidiGenera
                                 + " (" + juce::String (endRow - startRow) + " rows)",
                             false, 3000);
     }
+}
+
+bool MainComponent::enterChordFromKeyboardNote (int rootNote, int row, int targetTrack,
+                                                int startNoteLane, int instrument)
+{
+    if (targetTrack < 0 || targetTrack >= kNumTracks)
+        return false;
+
+    if (auto error = trackerEngine.validateNoteEntry (instrument, targetTrack); error.isNotEmpty())
+    {
+        setTemporaryStatus (error, true, 3000);
+        return false;
+    }
+
+    auto chordNotes = buildChordNotesForRoot (rootNote, lastMidiGeneratorSettings);
+    if (chordNotes.empty())
+        return false;
+
+    startNoteLane = juce::jlimit (0, 7, startNoteLane);
+    const int requiredLanes = startNoteLane + static_cast<int> (chordNotes.size());
+    if (requiredLanes > 8)
+    {
+        setTemporaryStatus ("Chord needs " + juce::String (requiredLanes)
+                                + " note lanes from the current lane; max is 8.",
+                            true, 3000);
+        return false;
+    }
+
+    if (requiredLanes > trackLayout.getTrackNoteLaneCount (targetTrack))
+    {
+        performUndoableTrackLayoutChange ([this, targetTrack, requiredLanes]
+        {
+            trackLayout.setTrackNoteLaneCount (targetTrack, requiredLanes);
+        });
+    }
+
+    auto& pat = patternData.getCurrentPattern();
+    if (row < 0 || row >= pat.numRows)
+        return false;
+
+    auto oldCell = pat.getCell (row, targetTrack);
+    auto newCell = oldCell;
+    for (int i = 0; i < static_cast<int> (chordNotes.size()); ++i)
+    {
+        const int lane = startNoteLane + i;
+        auto slot = newCell.getNoteLane (lane);
+        slot.note = chordNotes[static_cast<size_t> (i)];
+        slot.instrument = instrument;
+        if (slot.volume < 0)
+            slot.volume = 127;
+        newCell.setNoteLane (lane, slot);
+    }
+
+    std::vector<MultiCellEditAction::CellRecord> records;
+    if (! PatternEditUtils::sameCell (oldCell, newCell))
+        records.push_back ({ row, targetTrack, oldCell, newCell });
+
+    const bool changed = PatternEditUtils::applyPatternEdit (patternData, &undoManager,
+                                                             patternData.getCurrentPatternIndex(),
+                                                             std::move (records), {});
+
+    if (changed)
+    {
+        const int previewTrack = trackerGrid->isCursorInMasterLane() ? 0 : targetTrack;
+        trackerEngine.previewNote (previewTrack, instrument, chordNotes.front());
+        if (trackerGrid->onPatternDataChanged)
+            trackerGrid->onPatternDataChanged();
+        trackerGrid->repaint();
+        commandManager.commandStatusChanged();
+    }
+
+    return true;
+}
+
+void MainComponent::setChordEntryEnabled (bool enabled)
+{
+    chordEntryEnabled = enabled;
+    trackerGrid->setChordEntryEnabled (enabled);
+    updateToolbar();
+    updateStatusBar();
+
+    setTemporaryStatus (enabled ? "Chord entry on: " + getChordEntryStatusText()
+                                : "Chord entry off",
+                        false, 1800);
+}
+
+void MainComponent::cycleMidiGeneratorChordStyle()
+{
+    lastMidiGeneratorSettings.chordStyle = (lastMidiGeneratorSettings.chordStyle + 1) % 4;
+    updateToolbar();
+    updateStatusBar();
+    setTemporaryStatus ("Chord set: " + getChordEntryStatusText(), false, 1800);
+}
+
+juce::String MainComponent::getChordEntryToolbarLabel() const
+{
+    return chordEntryEnabled ? getChordStyleShortName (lastMidiGeneratorSettings.chordStyle)
+                             : "CHD";
+}
+
+juce::String MainComponent::getChordEntryStatusText() const
+{
+    return getChordStyleDisplayName (lastMidiGeneratorSettings.chordStyle)
+        + " " + getMidiGeneratorKeyName (lastMidiGeneratorSettings.keyRoot)
+        + " " + getMidiGeneratorScaleName (lastMidiGeneratorSettings.scale);
 }
 
 void MainComponent::transposeNotesInRange (int startRow, int endRow, int startVisualTrack,

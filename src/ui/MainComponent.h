@@ -117,6 +117,8 @@ private:
     std::unique_ptr<SendEffectsComponent> sendEffectsComponent;
     std::unique_ptr<PluginAutomationComponent> automationPanel;
     bool automationPanelVisible = false;
+    MidiGeneratorSettings lastMidiGeneratorSettings;
+    bool chordEntryEnabled = false;
     int lastAutomationPopulateTrack = -1;
     std::map<int, std::vector<AutomatablePluginInfo>> automationPluginCache;
     std::map<int, std::pair<juce::String, int>> automationSelectionPerTrack;
@@ -165,6 +167,11 @@ private:
     void showPatternNameEditor();
     void showMidiGeneratorDialog (int targetTrack = -1);
     void applyGeneratedMidiToTrack (int targetTrack, const MidiGeneratorSettings& settings);
+    bool enterChordFromKeyboardNote (int rootNote, int row, int targetTrack, int startNoteLane, int instrument);
+    void setChordEntryEnabled (bool enabled);
+    void cycleMidiGeneratorChordStyle();
+    juce::String getChordEntryToolbarLabel() const;
+    juce::String getChordEntryStatusText() const;
     void transposeNotesInRange (int startRow, int endRow, int startVisualTrack, int endVisualTrack, int semitones);
     void showTrackHeaderMenu (int track, juce::Point<int> screenPos);
     void showRenameTrackDialog (int track);
