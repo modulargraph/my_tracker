@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 #include <juce_core/juce_core.h>
 
@@ -279,6 +281,41 @@ struct PatternAutomationData
                                       [trackIndex] (const AutomationLane& lane)
                                       { return lane.owningTrack == trackIndex; }),
                      lanes.end());
+    }
+
+    /** Remove automation for a deleted insert slot and shift later positional insert IDs down. */
+    bool remapInsertLanesAfterSlotRemoved (int trackIndex, int removedSlotIndex)
+    {
+        if (trackIndex < 0 || removedSlotIndex < 0)
+            return false;
+
+        bool changed = false;
+        const auto prefix = "insert:" + juce::String (trackIndex) + ":";
+
+        lanes.erase (std::remove_if (lanes.begin(), lanes.end(),
+                                      [&] (AutomationLane& lane)
+                                      {
+                                          if (! lane.pluginId.startsWith (prefix))
+                                              return false;
+
+                                          int slotIndex = lane.pluginId.substring (prefix.length()).getIntValue();
+                                          if (slotIndex == removedSlotIndex)
+                                          {
+                                              changed = true;
+                                              return true;
+                                          }
+
+                                          if (slotIndex > removedSlotIndex)
+                                          {
+                                              lane.pluginId = prefix + juce::String (slotIndex - 1);
+                                              changed = true;
+                                          }
+
+                                          return false;
+                                      }),
+                     lanes.end());
+
+        return changed;
     }
 
     /** Remove all empty lanes (lanes with no points). */

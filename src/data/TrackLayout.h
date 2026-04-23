@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <numeric>
 #include <JuceHeader.h>
 #include "TrackerConstants.h"
@@ -72,6 +73,7 @@ public:
             visualOrder[static_cast<size_t> (i)] = visualOrder[static_cast<size_t> (i - 1)];
 
         visualOrder[static_cast<size_t> (insertAt)] = physTrack;
+        normalizeGroups();
     }
 
     void swapTracks (int visualA, int visualB)
@@ -80,12 +82,17 @@ public:
             return;
         std::swap (visualOrder[static_cast<size_t> (visualA)],
                    visualOrder[static_cast<size_t> (visualB)]);
+        normalizeGroups();
     }
 
     // Move a contiguous visual range one step left or right (delta = -1 or +1)
     void moveVisualRange (int rangeStart, int rangeEnd, int delta)
     {
+        if (delta != -1 && delta != 1)
+            return;
         if (rangeStart > rangeEnd) std::swap (rangeStart, rangeEnd);
+        rangeStart = juce::jlimit (0, kNumTracks - 1, rangeStart);
+        rangeEnd = juce::jlimit (0, kNumTracks - 1, rangeEnd);
         if (delta == -1 && rangeStart <= 0) return;
         if (delta == +1 && rangeEnd >= kNumTracks - 1) return;
 
@@ -105,6 +112,8 @@ public:
                 visualOrder[static_cast<size_t> (i)] = visualOrder[static_cast<size_t> (i - 1)];
             visualOrder[static_cast<size_t> (rangeStart)] = saved;
         }
+
+        normalizeGroups();
     }
 
     // Track names (indexed by physical track)
@@ -156,6 +165,9 @@ public:
 
     int createGroup (const juce::String& name, int visualStart, int visualEnd)
     {
+        if (! canCreateGroup())
+            return -1;
+
         if (visualStart > visualEnd)
             std::swap (visualStart, visualEnd);
 
@@ -167,11 +179,21 @@ public:
         group.colour = getGroupPaletteColour (static_cast<int> (groups.size()));
 
         for (int v = visualStart; v <= visualEnd; ++v)
-            group.trackIndices.push_back (visualOrder[static_cast<size_t> (v)]);
+        {
+            int phys = visualOrder[static_cast<size_t> (v)];
+            if (std::find (group.trackIndices.begin(), group.trackIndices.end(), phys) == group.trackIndices.end())
+                group.trackIndices.push_back (phys);
+        }
+
+        if (group.trackIndices.empty())
+            return -1;
 
         groups.push_back (std::move (group));
+        normalizeGroups();
         return static_cast<int> (groups.size()) - 1;
     }
+
+    bool canCreateGroup() const { return static_cast<int> (groups.size()) < kMaxTrackGroups; }
 
     void removeGroup (int groupIndex)
     {
@@ -221,11 +243,59 @@ public:
     TrackGroup& getGroup (int index) { return groups[static_cast<size_t> (index)]; }
 
     const std::vector<TrackGroup>& getGroups() const { return groups; }
-    void addGroup (TrackGroup group) { groups.push_back (std::move (group)); }
+    void addGroup (TrackGroup group)
+    {
+        if (! canCreateGroup())
+            return;
+        groups.push_back (std::move (group));
+        normalizeGroups();
+    }
 
     const std::array<int, kNumTracks>& getVisualOrder() const { return visualOrder; }
 
-    void setVisualOrder (const std::array<int, kNumTracks>& order) { visualOrder = order; }
+    void setVisualOrder (const std::array<int, kNumTracks>& order)
+    {
+        if (! isValidVisualOrder (order))
+            return;
+
+        visualOrder = order;
+        normalizeGroups();
+    }
+
+    void normalizeGroups()
+    {
+        if (groups.size() > static_cast<size_t> (kMaxTrackGroups))
+            groups.resize (static_cast<size_t> (kMaxTrackGroups));
+
+        for (auto& group : groups)
+        {
+            std::array<bool, kNumTracks> seen {};
+            std::vector<int> normalized;
+            normalized.reserve (group.trackIndices.size());
+
+            for (int visual = 0; visual < kNumTracks; ++visual)
+            {
+                int phys = visualOrder[static_cast<size_t> (visual)];
+                if (std::find (group.trackIndices.begin(), group.trackIndices.end(), phys) == group.trackIndices.end())
+                    continue;
+
+                if (seen[static_cast<size_t> (phys)])
+                    continue;
+
+                normalized.push_back (phys);
+                seen[static_cast<size_t> (phys)] = true;
+            }
+
+            group.trackIndices = std::move (normalized);
+        }
+
+        groups.erase (std::remove_if (groups.begin(), groups.end(),
+                                      [] (const TrackGroup& group)
+                                      {
+                                          return group.trackIndices.empty();
+                                      }),
+                      groups.end());
+    }
 
     // Per-track note lane count (minimum 1, maximum 8)
     int getTrackNoteLaneCount (int physicalTrack) const
@@ -311,13 +381,14 @@ public:
 
     void applySnapshot (const Snapshot& snapshot)
     {
-        visualOrder = snapshot.visualOrder;
+        visualOrder = isValidVisualOrder (snapshot.visualOrder) ? snapshot.visualOrder : defaultVisualOrder();
         groups = snapshot.groups;
         trackNames = snapshot.trackNames;
         trackNoteModes = snapshot.trackNoteModes;
         trackFxLaneCounts = snapshot.trackFxLaneCounts;
         trackNoteLaneCounts = snapshot.trackNoteLaneCounts;
         masterFxLaneCount = juce::jlimit (1, 8, snapshot.masterFxLaneCount);
+        normalizeGroups();
     }
 
     static bool snapshotsEqual (const Snapshot& a, const Snapshot& b)
@@ -332,6 +403,28 @@ public:
     }
 
 private:
+    static std::array<int, kNumTracks> defaultVisualOrder()
+    {
+        std::array<int, kNumTracks> order {};
+        std::iota (order.begin(), order.end(), 0);
+        return order;
+    }
+
+    static bool isValidVisualOrder (const std::array<int, kNumTracks>& order)
+    {
+        std::array<bool, kNumTracks> seen {};
+        for (auto phys : order)
+        {
+            if (phys < 0 || phys >= kNumTracks)
+                return false;
+            if (seen[static_cast<size_t> (phys)])
+                return false;
+            seen[static_cast<size_t> (phys)] = true;
+        }
+
+        return true;
+    }
+
     std::array<int, kNumTracks> visualOrder {};
     std::vector<TrackGroup> groups;
     std::array<juce::String, kNumTracks> trackNames;

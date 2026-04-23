@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "Pattern.h"
 #include "PluginAutomationData.h"
 
@@ -96,12 +97,51 @@ void Pattern::resize (int newNumRows)
         for (int i = oldSize; i < numRows; ++i)
             rows[static_cast<size_t> (i)] = std::array<Cell, kNumTracks> {};
     }
+    else if (static_cast<int> (rows.size()) > numRows)
+    {
+        rows.resize (static_cast<size_t> (numRows));
+    }
 
     if (static_cast<int> (masterFxRows.size()) < numRows)
     {
         const auto laneCount = masterFxRows.empty() ? 1 : static_cast<int> (masterFxRows[0].size());
         masterFxRows.resize (static_cast<size_t> (numRows), std::vector<FxSlot> (static_cast<size_t> (laneCount)));
     }
+    else if (static_cast<int> (masterFxRows.size()) > numRows)
+    {
+        masterFxRows.resize (static_cast<size_t> (numRows));
+    }
+
+    if (automationData != nullptr)
+    {
+        for (auto& lane : automationData->lanes)
+        {
+            lane.points.erase (std::remove_if (lane.points.begin(), lane.points.end(),
+                                               [this] (const AutomationPoint& point)
+                                               {
+                                                   return point.row < 0 || point.row >= numRows;
+                                               }),
+                               lane.points.end());
+        }
+
+        automationData->removeEmptyLanes();
+    }
+}
+
+bool Pattern::hasAnyData (int masterFxLaneCount) const
+{
+    for (int r = 0; r < numRows; ++r)
+        for (int t = 0; t < kNumTracks; ++t)
+            if (! getCell (r, t).isEmpty())
+                return true;
+
+    masterFxLaneCount = juce::jlimit (1, 8, masterFxLaneCount);
+    for (int r = 0; r < numRows; ++r)
+        for (int lane = 0; lane < masterFxLaneCount; ++lane)
+            if (! getMasterFxSlot (r, lane).isEmpty())
+                return true;
+
+    return automationData != nullptr && ! automationData->isEmpty();
 }
 
 FxSlot& Pattern::getMasterFxSlot (int row, int lane)

@@ -4408,6 +4408,167 @@ bool testAutomationLaneEquality()
     return true;
 }
 
+bool testPatternDataRemoveAdjustsCurrentIndex()
+{
+    PatternData data;
+    data.addPattern();
+    data.addPattern();
+    data.setCurrentPattern (2);
+
+    data.removePattern (0);
+    if (data.getNumPatterns() != 2 || data.getCurrentPatternIndex() != 1)
+    {
+        std::cerr << "Removing a pattern before current should keep the same logical current pattern\n";
+        return false;
+    }
+
+    data.removePattern (1);
+    if (data.getNumPatterns() != 1 || data.getCurrentPatternIndex() != 0)
+    {
+        std::cerr << "Removing the current last pattern should clamp current index to 0\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testPatternHasAnyDataIncludesAutomation()
+{
+    Pattern pattern (16);
+    if (pattern.hasAnyData())
+    {
+        std::cerr << "Empty pattern should report no data\n";
+        return false;
+    }
+
+    pattern.getAutomationData().getOrCreateLane ("inst:1", 0, 0).setPoint (4, 0.5f);
+    if (! pattern.hasAnyData())
+    {
+        std::cerr << "Automation-only pattern should report data\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testPatternResizePrunesHiddenRowsAndAutomation()
+{
+    Pattern pattern (8);
+
+    Cell cell;
+    cell.note = 60;
+    pattern.setCell (6, 0, cell);
+    pattern.getMasterFxSlot (7, 0).setSymbolicCommand ('T', 12);
+    pattern.getAutomationData().getOrCreateLane ("inst:1", 0, 0).setPoint (6, 0.75f);
+
+    pattern.resize (4);
+    pattern.resize (8);
+
+    if (! pattern.getCell (6, 0).isEmpty())
+    {
+        std::cerr << "Shrunk pattern should not restore hidden note data when expanded\n";
+        return false;
+    }
+
+    if (! pattern.getMasterFxSlot (7, 0).isEmpty())
+    {
+        std::cerr << "Shrunk pattern should not restore hidden master FX data when expanded\n";
+        return false;
+    }
+
+    if (! pattern.getAutomationData().isEmpty())
+    {
+        std::cerr << "Automation points outside the resized pattern length should be pruned\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testTrackLayoutGroupNormalizationAndLimits()
+{
+    TrackLayout layout;
+    int groupIndex = layout.createGroup ("A", 0, 2);
+    if (groupIndex != 0)
+    {
+        std::cerr << "Expected first group at index 0\n";
+        return false;
+    }
+
+    layout.moveTrack (0, 5);
+    std::vector<int> expectedOrder { 1, 2, 0 };
+    if (layout.getGroup (0).trackIndices != expectedOrder)
+    {
+        std::cerr << "Group track indices should stay sorted by visual order after reordering\n";
+        return false;
+    }
+
+    auto beforeOrder = layout.getVisualOrder();
+    auto invalidOrder = beforeOrder;
+    invalidOrder[0] = invalidOrder[1];
+    layout.setVisualOrder (invalidOrder);
+    if (layout.getVisualOrder() != beforeOrder)
+    {
+        std::cerr << "Invalid visual order should be ignored\n";
+        return false;
+    }
+
+    TrackLayout limited;
+    for (int i = 0; i < kMaxTrackGroups; ++i)
+    {
+        if (limited.createGroup ("G" + juce::String (i), i % kNumTracks, i % kNumTracks) < 0)
+        {
+            std::cerr << "Group " << i << " should be allowed before the max limit\n";
+            return false;
+        }
+    }
+
+    if (limited.createGroup ("TooMany", 0, 0) >= 0
+        || limited.getNumGroups() != kMaxTrackGroups)
+    {
+        std::cerr << "TrackLayout should cap groups at kMaxTrackGroups\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testInsertAutomationRemapAfterSlotRemoval()
+{
+    PatternAutomationData data;
+    data.getOrCreateLane ("insert:3:0", 1, 3).setPoint (0, 0.1f);
+    data.getOrCreateLane ("insert:3:1", 2, 3).setPoint (0, 0.2f);
+    data.getOrCreateLane ("insert:3:2", 3, 3).setPoint (0, 0.3f);
+    data.getOrCreateLane ("insert:2:1", 4, 2).setPoint (0, 0.4f);
+
+    if (! data.remapInsertLanesAfterSlotRemoved (3, 0))
+    {
+        std::cerr << "Expected insert automation remap to report a change\n";
+        return false;
+    }
+
+    if (data.findLane ("insert:3:0", 1) != nullptr)
+    {
+        std::cerr << "Automation for the removed insert slot should be deleted\n";
+        return false;
+    }
+
+    if (data.findLane ("insert:3:0", 2) == nullptr
+        || data.findLane ("insert:3:1", 3) == nullptr)
+    {
+        std::cerr << "Automation for later insert slots should shift down with slot IDs\n";
+        return false;
+    }
+
+    if (data.findLane ("insert:2:1", 4) == nullptr)
+    {
+        std::cerr << "Automation for other tracks should be left unchanged\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testPluginAutomationSetAvailablePluginsIsNotReentrant()
 {
     TrackerLookAndFeel lnf;
@@ -4694,6 +4855,11 @@ int main()
         { "MultiPatternAutomationRoundTrip", &testMultiPatternAutomationRoundTrip },
         { "InsertSlotMaxCapacity", &testInsertSlotMaxCapacity },
         { "AutomationLaneEquality", &testAutomationLaneEquality },
+        { "PatternDataRemoveAdjustsCurrentIndex", &testPatternDataRemoveAdjustsCurrentIndex },
+        { "PatternHasAnyDataIncludesAutomation", &testPatternHasAnyDataIncludesAutomation },
+        { "PatternResizePrunesHiddenRowsAndAutomation", &testPatternResizePrunesHiddenRowsAndAutomation },
+        { "TrackLayoutGroupNormalizationAndLimits", &testTrackLayoutGroupNormalizationAndLimits },
+        { "InsertAutomationRemapAfterSlotRemoval", &testInsertAutomationRemapAfterSlotRemoval },
         { "PluginAutomationSetAvailablePluginsIsNotReentrant", &testPluginAutomationSetAvailablePluginsIsNotReentrant },
         { "PluginAutomationPreservesParameterSelection", &testPluginAutomationPreservesParameterSelection },
         { "PluginAutomationMultiPluginTrack", &testPluginAutomationMultiPluginTrack },

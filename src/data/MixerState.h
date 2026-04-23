@@ -10,7 +10,7 @@
 static constexpr int kMaxInsertSlots = 8;
 
 // Maximum number of group buses
-static constexpr int kMaxGroupBuses = 8;
+static constexpr int kMaxGroupBuses = kMaxTrackGroups;
 
 // Represents a single insert plugin slot on a track
 struct InsertSlotState

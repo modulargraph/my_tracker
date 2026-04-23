@@ -91,8 +91,16 @@ void InsertPluginManager::removeInsertPlugin (int trackIndex, int slotIndex)
     if (slotIndex < 0 || slotIndex >= static_cast<int> (slots.size()))
         return;
 
-    // Close any editor window
-    closePluginEditor (trackIndex, slotIndex);
+    // Insert slot IDs are positional. Close all editor windows on this track so
+    // shifted slots cannot keep stale window keys after the erase.
+    const auto editorKeyPrefix = juce::String (trackIndex) + ":";
+    for (auto it = pluginEditorWindows.begin(); it != pluginEditorWindows.end(); )
+    {
+        if (it->first.startsWith (editorKeyPrefix))
+            it = pluginEditorWindows.erase (it);
+        else
+            ++it;
+    }
 
     // Find and remove the plugin from the track's plugin list
     auto* track = engine.getTrack (trackIndex);

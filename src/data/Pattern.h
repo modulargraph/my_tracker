@@ -29,6 +29,7 @@ struct Pattern
     void setCell (int row, int track, const Cell& cell);
     void clear();
     void resize (int newNumRows);
+    bool hasAnyData (int masterFxLaneCount = 1) const;
 
     FxSlot& getMasterFxSlot (int row, int lane);
     const FxSlot& getMasterFxSlot (int row, int lane) const;
