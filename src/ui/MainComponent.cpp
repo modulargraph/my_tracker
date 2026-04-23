@@ -55,6 +55,28 @@ juce::PopupMenu buildPluginMenuByManufacturer (const juce::Array<juce::PluginDes
 
     return menu;
 }
+
+bool remapInsertPluginIdAfterSlotRemoved (juce::String& pluginId, int trackIndex, int removedSlotIndex)
+{
+    const auto prefix = "insert:" + juce::String (trackIndex) + ":";
+    if (! pluginId.startsWith (prefix))
+        return false;
+
+    int slotIndex = pluginId.substring (prefix.length()).getIntValue();
+    if (slotIndex == removedSlotIndex)
+    {
+        pluginId.clear();
+        return true;
+    }
+
+    if (slotIndex > removedSlotIndex)
+    {
+        pluginId = prefix + juce::String (slotIndex - 1);
+        return true;
+    }
+
+    return false;
+}
 }
 
 MainComponent::MainComponent()
@@ -97,15 +119,7 @@ MainComponent::MainComponent()
 
         // Only delete when the current pattern is empty.
         // Otherwise this behaves like "previous pattern".
-        bool hasData = false;
-        for (int r = 0; r < pat.numRows && ! hasData; ++r)
-            for (int t = 0; t < kNumTracks && ! hasData; ++t)
-                if (! pat.getCell (r, t).isEmpty())
-                    hasData = true;
-        for (int r = 0; r < pat.numRows && ! hasData; ++r)
-            for (int lane = 0; lane < trackLayout.getMasterFxLaneCount() && ! hasData; ++lane)
-                if (! pat.getMasterFxSlot (r, lane).isEmpty())
-                    hasData = true;
+        bool hasData = pat.hasAnyData (trackLayout.getMasterFxLaneCount());
 
         if (hasData)
         {
@@ -146,15 +160,7 @@ MainComponent::MainComponent()
             if (idx == patternData.getNumPatterns() - 1)
             {
                 auto& pat = patternData.getCurrentPattern();
-                bool hasData = false;
-                for (int r = 0; r < pat.numRows && ! hasData; ++r)
-                    for (int t = 0; t < kNumTracks && ! hasData; ++t)
-                        if (! pat.getCell (r, t).isEmpty())
-                            hasData = true;
-                for (int r = 0; r < pat.numRows && ! hasData; ++r)
-                    for (int lane = 0; lane < trackLayout.getMasterFxLaneCount() && ! hasData; ++lane)
-                        if (! pat.getMasterFxSlot (r, lane).isEmpty())
-                            hasData = true;
+                bool hasData = pat.hasAnyData (trackLayout.getMasterFxLaneCount());
                 if (! hasData)
                 {
                     removePatternAndRepairArrangement (idx);
@@ -397,6 +403,8 @@ MainComponent::MainComponent()
 
                                     trackerEngine.setPluginInstrument (inst, desc, cursorTrack);
                                     invalidateAutomationPluginCache (cursorTrack);
+                                    if (trackerEngine.isPlaying())
+                                        resyncPlaybackForCurrentMode();
                                     updateInstrumentPanel();
                                     if (automationPanelVisible)
                                         refreshAutomationPanel();
@@ -413,6 +421,8 @@ MainComponent::MainComponent()
     {
         trackerEngine.clearPluginInstrument (inst);
         invalidateAutomationPluginCache();
+        if (trackerEngine.isPlaying())
+            resyncPlaybackForCurrentMode();
         updateInstrumentPanel();
         if (automationPanelVisible)
             refreshAutomationPanel();
@@ -545,11 +555,39 @@ MainComponent::MainComponent()
 
     mixerComponent->onRemoveInsertClicked = [this] (int track, int slotIndex)
     {
+        saveAutomationSelection();
         trackerEngine.removeInsertPlugin (track, slotIndex);
+
+        bool automationChanged = false;
+        for (int p = 0; p < patternData.getNumPatterns(); ++p)
+        {
+            if (patternData.getPattern (p).getAutomationData().remapInsertLanesAfterSlotRemoved (track, slotIndex))
+                automationChanged = true;
+        }
+
+        for (auto it = automationSelectionPerTrack.begin(); it != automationSelectionPerTrack.end(); )
+        {
+            auto pluginId = it->second.first;
+            if (remapInsertPluginIdAfterSlotRemoved (pluginId, track, slotIndex))
+            {
+                if (pluginId.isEmpty())
+                {
+                    it = automationSelectionPerTrack.erase (it);
+                    continue;
+                }
+
+                it->second.first = pluginId;
+            }
+
+            ++it;
+        }
+
         invalidateAutomationPluginCache (track);
         mixerComponent->repaint();
         if (automationPanelVisible)
             refreshAutomationPanel();
+        if (automationChanged && trackerEngine.isPlaying())
+            resyncPlaybackForCurrentMode();
         markDirty();
     };
 
@@ -1942,7 +1980,7 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
     {
         int minRow, maxRow, minTrack, maxTrack;
         trackerGrid->getSelectionBounds (minRow, maxRow, minTrack, maxTrack);
-        if (minTrack != maxTrack)
+        if (minTrack != maxTrack && trackLayout.canCreateGroup())
             menu.addItem (12, "Group Selected Tracks...");
     }
 
@@ -2039,8 +2077,7 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                                     group.trackIndices.erase (
                                         std::remove (group.trackIndices.begin(), group.trackIndices.end(), track),
                                         group.trackIndices.end());
-                                    if (group.trackIndices.empty())
-                                        trackLayout.removeGroup (currentGroupIdx);
+                                    trackLayout.normalizeGroups();
                                 });
                             }
                             else if (result == 14 && groupIdx >= 0)

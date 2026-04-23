@@ -1108,6 +1108,7 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
                     if (! alreadyIn)
                         group.trackIndices.push_back (phys);
                 }
+                trackLayout.normalizeGroups();
                 repaint();
             }
             else if (visualIndex < curLast && visualIndex >= curFirst)
@@ -1120,8 +1121,7 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
                         std::remove (group.trackIndices.begin(), group.trackIndices.end(), phys),
                         group.trackIndices.end());
                 }
-                if (group.trackIndices.empty())
-                    trackLayout.removeGroup (dragGroupIndex);
+                trackLayout.normalizeGroups();
                 repaint();
             }
         }
@@ -1139,6 +1139,7 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
                     if (! alreadyIn)
                         group.trackIndices.insert (group.trackIndices.begin(), phys);
                 }
+                trackLayout.normalizeGroups();
                 repaint();
             }
             else if (visualIndex > curFirst && visualIndex <= curLast)
@@ -1150,8 +1151,7 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
                         std::remove (group.trackIndices.begin(), group.trackIndices.end(), phys),
                         group.trackIndices.end());
                 }
-                if (group.trackIndices.empty())
-                    trackLayout.removeGroup (dragGroupIndex);
+                trackLayout.normalizeGroups();
                 repaint();
             }
         }

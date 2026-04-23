@@ -107,7 +107,9 @@ void PatternData::removePattern (int index)
     if (index >= 0 && index < static_cast<int> (patterns.size()) && patterns.size() > 1)
     {
         patterns.erase (patterns.begin() + index);
-        if (currentPattern >= static_cast<int> (patterns.size()))
+        if (currentPattern > index)
+            --currentPattern;
+        else if (currentPattern >= static_cast<int> (patterns.size()))
             currentPattern = static_cast<int> (patterns.size()) - 1;
     }
 }
