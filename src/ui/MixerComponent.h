@@ -8,12 +8,15 @@
 #include "TrackLayout.h"
 
 class MixerComponent : public juce::Component,
-                       private juce::Timer
+                       private juce::Timer,
+                       private juce::ScrollBar::Listener
 {
 public:
     MixerComponent (TrackerLookAndFeel& lnf, MixerState& state, TrackLayout& layout);
+    ~MixerComponent() override;
 
     void paint (juce::Graphics& g) override;
+    void resized() override;
     bool keyPressed (const juce::KeyPress& key) override;
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDrag (const juce::MouseEvent& event) override;
@@ -50,6 +53,8 @@ public:
 
 private:
     void timerCallback() override;
+    void scrollBarMoved (juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart) override;
+
     TrackerLookAndFeel& lookAndFeel;
     MixerState& mixerState;
     TrackLayout& trackLayout;
@@ -73,6 +78,8 @@ private:
 
     // Horizontal scroll
     int scrollOffset = 0;
+    double wheelScrollAccumulator = 0.0;
+    juce::ScrollBar horizontalScrollbar { false };
 
     // Mouse drag state
     bool dragging = false;
@@ -96,11 +103,17 @@ private:
     static constexpr int kPanSectionHeight = 36;
     static constexpr int kMuteSoloHeight = 31;
     static constexpr int kSectionLabelHeight = 18;
+    static constexpr int kHorizontalScrollbarHeight = 14;
 
     // Computed layout
     int getStripX (int visualTrack) const;
     int getVisibleStripCount() const;
+    int getMaxScrollOffset() const;
+    int getMixerAreaHeight() const;
     juce::Rectangle<int> getStripBounds (int visualTrack) const;
+    void setScrollOffset (int newOffset);
+    void scrollByStrips (int stripDelta);
+    void updateHorizontalScrollbar();
 
     // Paint helpers - regular tracks
     void paintStrip (juce::Graphics& g, int visualTrack, juce::Rectangle<int> bounds);

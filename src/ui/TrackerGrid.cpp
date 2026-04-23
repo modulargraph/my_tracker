@@ -19,9 +19,27 @@ TrackerGrid::TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf, Tra
     setWantsKeyboardFocus (true);
 }
 
+void TrackerGrid::setVelocityLanesVisible (bool visible)
+{
+    if (velocityLanesVisible == visible)
+        return;
+
+    velocityLanesVisible = visible;
+    if (! velocityLanesVisible && cursorSubColumn == SubColumn::Volume)
+        cursorSubColumn = SubColumn::Instrument;
+
+    ensureCursorVisible();
+    repaint();
+}
+
+SubColumn TrackerGrid::getLastVisibleNoteSubColumn() const
+{
+    return velocityLanesVisible ? SubColumn::Volume : SubColumn::Instrument;
+}
+
 int TrackerGrid::visualToTrackIndex (int visualIndex) const
 {
-    if (isMasterVisualColumn (visualIndex))
+    if (visualIndex >= getRegularVisualColumnCount())
         return kMasterLaneTrack;
     return trackLayout.visualToPhysical (visualIndex);
 }
@@ -29,7 +47,7 @@ int TrackerGrid::visualToTrackIndex (int visualIndex) const
 int TrackerGrid::trackToVisualIndex (int trackIndex) const
 {
     if (trackIndex == kMasterLaneTrack)
-        return kNumTracks;
+        return getRegularVisualColumnCount();
     return trackLayout.physicalToVisual (trackIndex);
 }
 
@@ -58,7 +76,8 @@ int TrackerGrid::getTrackWidth (int visualIndex) const
     }
     int phys = trackLayout.visualToPhysical (visualIndex);
     return getCellWidth (trackLayout.getTrackFxLaneCount (phys),
-                         trackLayout.getTrackNoteLaneCount (phys));
+                         trackLayout.getTrackNoteLaneCount (phys),
+                         velocityLanesVisible);
 }
 
 int TrackerGrid::visualTrackAtPixel (int pixelX) const
@@ -389,14 +408,16 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
         g.drawText (instStr, textX, y, kInstWidth, kRowHeight, juce::Justification::centredLeft);
         textX += kInstWidth + kSubColSpace;
 
-        // Volume sub-column
-        juce::String volStr = noteSlot.volume >= 0 ? juce::String::formatted ("%02X", noteSlot.volume) : "..";
-        auto volColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
-        if (isCursor && cursorSubColumn == SubColumn::Volume && cursorNoteLane == nl)
-            drawCursorSubColumnHighlight (g, textX - 1, y, kVolWidth + 2);
-        g.setColour (volColour);
-        g.drawText (volStr, textX, y, kVolWidth, kRowHeight, juce::Justification::centredLeft);
-        textX += kVolWidth + kSubColSpace;
+        if (velocityLanesVisible)
+        {
+            juce::String volStr = noteSlot.volume >= 0 ? juce::String::formatted ("%02X", noteSlot.volume) : "..";
+            auto volColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
+            if (isCursor && cursorSubColumn == SubColumn::Volume && cursorNoteLane == nl)
+                drawCursorSubColumnHighlight (g, textX - 1, y, kVolWidth + 2);
+            g.setColour (volColour);
+            g.drawText (volStr, textX, y, kVolWidth, kRowHeight, juce::Justification::centredLeft);
+            textX += kVolWidth + kSubColSpace;
+        }
     }
 
     // FX sub-columns (one or more lanes)
@@ -516,7 +537,7 @@ void TrackerGrid::drawGroupHeaders (juce::Graphics& g)
 
     // Pass 1: draw per-column background, blending colors of all groups that contain each track
     int xPos = kRowNumberWidth;
-    for (int vi = 0; vi < visibleTracks && (horizontalScrollOffset + vi) < kNumTracks; ++vi)
+    for (int vi = 0; vi < visibleTracks && (horizontalScrollOffset + vi) < getRegularVisualColumnCount(); ++vi)
     {
         int absVi = horizontalScrollOffset + vi;
         int physTrack = trackLayout.visualToPhysical (absVi);
@@ -556,6 +577,9 @@ void TrackerGrid::drawGroupHeaders (juce::Graphics& g)
     {
         auto& group = trackLayout.getGroup (gi);
         auto [firstVisual, lastVisual] = trackLayout.getGroupVisualRange (gi);
+        if (firstVisual >= getRegularVisualColumnCount())
+            continue;
+        lastVisual = juce::jmin (lastVisual, getRegularVisualColumnCount() - 1);
 
         int startCol = firstVisual - horizontalScrollOffset;
         int endCol = lastVisual - horizontalScrollOffset;
@@ -618,7 +642,7 @@ juce::Rectangle<int> TrackerGrid::getFxPopupTargetRect() const
     int xOff = getTrackXOffset (cursorVisual);
     int popupX = kRowNumberWidth + xOff + kCellPadding;
     if (! isMasterTrack (cursorTrack))
-        popupX += trackLayout.getTrackNoteLaneCount (cursorTrack) * kNoteLaneWidth;
+        popupX += trackLayout.getTrackNoteLaneCount (cursorTrack) * getVisibleNoteLaneWidth();
 
     popupX += cursorFxLane * (kFxWidth + kSubColSpace);
     int popupY = effectiveHeaderH + (cursorRow - scrollOffset) * kRowHeight + kRowHeight;
@@ -758,18 +782,19 @@ bool TrackerGrid::hitTestGrid (int mx, int my, int& outRow, int& outTrack, SubCo
     }
 
     // Total width of all note lanes
-    int totalNoteLaneWidth = noteLanes * kNoteLaneWidth;
+    int noteLaneWidth = getVisibleNoteLaneWidth();
+    int totalNoteLaneWidth = noteLanes * noteLaneWidth;
 
     if (cellOffset < totalNoteLaneWidth)
     {
         // Inside a note lane
-        int noteLane = cellOffset / kNoteLaneWidth;
+        int noteLane = cellOffset / noteLaneWidth;
         outNoteLane = juce::jlimit (0, noteLanes - 1, noteLane);
-        int withinLane = cellOffset - outNoteLane * kNoteLaneWidth;
+        int withinLane = cellOffset - outNoteLane * noteLaneWidth;
 
         if (withinLane < kNoteWidth)
             outSubCol = SubColumn::Note;
-        else if (withinLane < kNoteWidth + kSubColSpace + kInstWidth)
+        else if (! velocityLanesVisible || withinLane < kNoteWidth + kSubColSpace + kInstWidth)
             outSubCol = SubColumn::Instrument;
         else
             outSubCol = SubColumn::Volume;
@@ -1027,7 +1052,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
         {
             int minRow, maxRow, minViTrack, maxViTrack;
             getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
-            if (maxViTrack >= kNumTracks)
+            if (maxViTrack >= getRegularVisualColumnCount())
                 return;
             if (row >= minRow && row <= maxRow && viTrack >= minViTrack && viTrack <= maxViTrack)
             {
@@ -1092,7 +1117,7 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
         if (trackPixel < 0) return;
 
         int visualIndex = visualTrackAtPixel (trackPixel);
-        visualIndex = juce::jlimit (0, kNumTracks - 1, visualIndex);
+        visualIndex = juce::jlimit (0, getRegularVisualColumnCount() - 1, visualIndex);
 
         auto& group = trackLayout.getGroup (dragGroupIndex);
         auto [curFirst, curLast] = trackLayout.getGroupVisualRange (dragGroupIndex);
@@ -1166,7 +1191,7 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
         if (trackPixel >= 0)
         {
             int visualIndex = visualTrackAtPixel (trackPixel);
-            visualIndex = juce::jlimit (0, kNumTracks - 1, visualIndex);
+            visualIndex = juce::jlimit (0, getRegularVisualColumnCount() - 1, visualIndex);
 
             if (isDraggingGroupAsWhole && dragGroupDragIndex >= 0
                 && dragGroupDragIndex < trackLayout.getNumGroups())
@@ -1179,18 +1204,25 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
                 {
                     // Clamp delta so group stays in bounds
                     if (gFirst + delta < 0) delta = -gFirst;
-                    if (gLast + delta >= kNumTracks) delta = kNumTracks - 1 - gLast;
+                    if (gLast + delta >= getRegularVisualColumnCount())
+                        delta = getRegularVisualColumnCount() - 1 - gLast;
 
                     if (delta != 0)
                     {
                         // Move group range by delta using moveVisualRange
                         int moveDir = (delta > 0) ? 1 : -1;
+                        int appliedDelta = 0;
                         for (int s = 0; s < std::abs (delta); ++s)
                         {
                             auto [curFirst, curLast] = trackLayout.getGroupVisualRange (dragGroupDragIndex);
-                            trackLayout.moveVisualRange (curFirst, curLast, moveDir);
+                            if (! trackLayout.moveVisualRange (curFirst, curLast, moveDir))
+                                break;
+                            appliedDelta += moveDir;
                         }
-                        dragHeaderVisualIndex = visualIndex;
+                        if (appliedDelta == 0)
+                            return;
+
+                        dragHeaderVisualIndex += appliedDelta;
 
                         // Update selection to follow the moved group
                         auto [newFirst, newLast] = trackLayout.getGroupVisualRange (dragGroupDragIndex);
@@ -1215,7 +1247,9 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
 
                 if (visualIndex != dragHeaderVisualIndex)
                 {
-                    trackLayout.swapTracks (dragHeaderVisualIndex, visualIndex);
+                    if (! trackLayout.swapTracks (dragHeaderVisualIndex, visualIndex))
+                        return;
+
                     dragHeaderVisualIndex = visualIndex;
 
                     // Update selection to follow the dragged track (visual space)
@@ -1393,7 +1427,7 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
                     for (int t = 0; t < selTracks; ++t)
                     {
                         int dvi = destViTrack + t;
-                        if (dvi < 0 || dvi >= kNumTracks) continue;
+                        if (dvi < 0 || dvi >= getRegularVisualColumnCount()) continue;
                         int dphys = trackLayout.visualToPhysical (dvi);
                         auto key = std::make_pair (dr, dphys);
                         auto it = cellMap.find (key);
@@ -1436,7 +1470,7 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
                         for (int t = 0; t < selTracks; ++t)
                         {
                             int dvi = destViTrack + t;
-                            if (dvi < 0 || dvi >= kNumTracks) continue;
+                            if (dvi < 0 || dvi >= getRegularVisualColumnCount()) continue;
                             int dphys = trackLayout.visualToPhysical (dvi);
                             pat.getCell (dr, dphys) = buffer[static_cast<size_t> (r)][static_cast<size_t> (t)];
                         }
@@ -1472,7 +1506,7 @@ void TrackerGrid::mouseDoubleClick (const juce::MouseEvent& event)
     {
         int trackPixel = event.x - kRowNumberWidth;
         int visualIndex = visualTrackAtPixel (trackPixel);
-        if (visualIndex < kNumTracks && onTrackHeaderDoubleClick)
+        if (visualIndex < getRegularVisualColumnCount() && onTrackHeaderDoubleClick)
             onTrackHeaderDoubleClick (visualToTrackIndex (visualIndex), event.getScreenPosition());
     }
 }
@@ -1503,7 +1537,7 @@ void TrackerGrid::drawDragPreview (juce::Graphics& g)
         for (int t = 0; t < selTracks; ++t)
         {
             int destVi = minViTrack + trackOffset + t;
-            if (destVi < 0 || destVi >= kNumTracks) continue;
+            if (destVi < 0 || destVi >= getRegularVisualColumnCount()) continue;
 
             int screenVi = destVi - horizontalScrollOffset;
             if (screenVi < 0 || screenVi >= visibleTracks) continue;
@@ -1539,7 +1573,7 @@ void TrackerGrid::filesDropped (const juce::StringArray& files, int x, int /*y*/
     if (trackPixel < 0) return;
 
     int visualIndex = visualTrackAtPixel (trackPixel);
-    if (visualIndex >= kNumTracks) return;
+    if (visualIndex >= getRegularVisualColumnCount()) return;
 
     for (auto& f : files)
     {
@@ -1551,7 +1585,7 @@ void TrackerGrid::filesDropped (const juce::StringArray& files, int x, int /*y*/
             if (onFileDroppedOnTrack)
                 onFileDroppedOnTrack (physTrack, file);
             visualIndex++; // Next file goes to next visual track
-            if (visualIndex >= kNumTracks) break;
+            if (visualIndex >= getRegularVisualColumnCount()) break;
         }
     }
 }
@@ -1588,7 +1622,19 @@ void TrackerGrid::setCursorPosition (int row, int track)
 {
     auto& pat = pattern.getCurrentPattern();
     cursorRow = juce::jlimit (0, pat.numRows - 1, row);
-    cursorTrack = juce::jlimit (0, kMasterLaneTrack, track);
+
+    if (track == kMasterLaneTrack)
+    {
+        cursorTrack = kMasterLaneTrack;
+    }
+    else
+    {
+        auto clampedTrack = juce::jlimit (0, kNumTracks - 1, track);
+        if (trackLayout.physicalToVisual (clampedTrack) >= getRegularVisualColumnCount())
+            clampedTrack = trackLayout.visualToPhysical (getRegularVisualColumnCount() - 1);
+        cursorTrack = clampedTrack;
+    }
+
     cursorFxLane = juce::jmax (0, cursorFxLane);
     if (cursorTrack == kMasterLaneTrack)
         cursorNoteLane = 0;
@@ -1599,6 +1645,10 @@ void TrackerGrid::setCursorPosition (int row, int track)
     {
         cursorSubColumn = SubColumn::FX;
         cursorFxLane = juce::jlimit (0, trackLayout.getMasterFxLaneCount() - 1, cursorFxLane);
+    }
+    else if (! velocityLanesVisible && cursorSubColumn == SubColumn::Volume)
+    {
+        cursorSubColumn = SubColumn::Instrument;
     }
     hexDigitCount = 0;
     hexAccumulator = 0;
@@ -1659,6 +1709,9 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     bool ctrl = key.getModifiers().isCtrlDown();
 
     bool cmd = key.getModifiers().isCommandDown();
+
+    if (! velocityLanesVisible && cursorSubColumn == SubColumn::Volume)
+        cursorSubColumn = SubColumn::Instrument;
 
     // Ctrl+Up/Down: semitone transpose with preview (Note sub-column only)
     // Cmd+Left/Right: octave transpose with preview (Note sub-column only)
@@ -1818,7 +1871,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 if (cursorNoteLane > 0)
                 {
                     cursorNoteLane--;
-                    cursorSubColumn = SubColumn::Volume;
+                    cursorSubColumn = getLastVisibleNoteSubColumn();
                 }
                 else
                 {
@@ -1841,7 +1894,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                     cursorFxLane--;
                 else
                 {
-                    cursorSubColumn = SubColumn::Volume;
+                    cursorSubColumn = getLastVisibleNoteSubColumn();
                     cursorNoteLane = noteLanes - 1;
                 }
             }
@@ -1867,9 +1920,10 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
             // Forward: Note(0) -> Inst(0) -> Vol(0) -> Note(1) -> ... -> Vol(lastNL) -> FX(0) -> ... -> FX(last) -> next track
             if (cursorSubColumn == SubColumn::Note)
                 cursorSubColumn = SubColumn::Instrument;
-            else if (cursorSubColumn == SubColumn::Instrument)
+            else if (cursorSubColumn == SubColumn::Instrument && velocityLanesVisible)
                 cursorSubColumn = SubColumn::Volume;
-            else if (cursorSubColumn == SubColumn::Volume)
+            else if (cursorSubColumn == SubColumn::Volume
+                     || (cursorSubColumn == SubColumn::Instrument && ! velocityLanesVisible))
             {
                 if (cursorNoteLane < noteLanes - 1)
                 {

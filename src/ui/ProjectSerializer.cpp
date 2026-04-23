@@ -243,6 +243,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
     // Track Layout
     {
         juce::ValueTree layoutTree ("TrackLayout");
+        layoutTree.setProperty ("trackLaneCount", trackLayout.getTrackLaneCount(), nullptr);
 
         juce::String orderStr;
         auto& order = trackLayout.getVisualOrder();
@@ -845,6 +846,11 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
     auto layoutTree = root.getChildWithName ("TrackLayout");
     if (layoutTree.isValid())
     {
+        if (layoutTree.hasProperty ("trackLaneCount"))
+            trackLayout.setTrackLaneCount (layoutTree.getProperty ("trackLaneCount", kDefaultTrackLaneCount));
+        else
+            trackLayout.setTrackLaneCount (kNumTracks);
+
         auto voTree = layoutTree.getChildWithName ("VisualOrder");
         if (voTree.isValid())
         {
@@ -946,6 +952,10 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             if (! group.trackIndices.empty())
                 trackLayout.addGroup (std::move (group));
         }
+    }
+    else
+    {
+        trackLayout.setTrackLaneCount (kNumTracks);
     }
 
     // Mixer state (V4+)
@@ -1568,4 +1578,27 @@ int ProjectSerializer::loadGlobalUiScalePercent()
     auto root = loadGlobalPrefsTree();
     return clampUiScalePercent (
         static_cast<int> (root.getProperty ("uiScalePercent", kDefaultUiScalePercent)));
+}
+
+//==============================================================================
+// Global tracker grid display persistence
+//==============================================================================
+
+void ProjectSerializer::saveGlobalVelocityLanesVisible (bool visible)
+{
+    auto prefsFile = getCurrentGlobalPrefsFile();
+    if (! prefsFile.getParentDirectory().createDirectory())
+        return;
+
+    auto root = loadGlobalPrefsTree();
+    root.setProperty ("velocityLanesVisible", visible, nullptr);
+
+    if (auto xml = root.createXml())
+        xml->writeTo (prefsFile);
+}
+
+bool ProjectSerializer::loadGlobalVelocityLanesVisible()
+{
+    auto root = loadGlobalPrefsTree();
+    return static_cast<bool> (root.getProperty ("velocityLanesVisible", true));
 }

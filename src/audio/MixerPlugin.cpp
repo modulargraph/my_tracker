@@ -243,11 +243,11 @@ void MixerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     int startSample = fc.bufferStartSample;
     int numSamples = fc.bufferNumSamples;
 
-    // DSP chain: EQ → Compressor → Pre-fader Sends → Volume/Pan
+    // DSP chain: EQ → Compressor → Volume/Pan → Post-fader Sends
     processEQ (buffer, startSample, numSamples);
     processCompressor (buffer, startSample, numSamples);
-    processSends (buffer, startSample, numSamples);
     processVolumeAndPan (buffer, startSample, numSamples);
+    processSends (buffer, startSample, numSamples);
 
     // Compute post-fader peak level for metering
     float peak = 0.0f;

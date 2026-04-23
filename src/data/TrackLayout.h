@@ -35,6 +35,7 @@ public:
         std::array<int, kNumTracks> trackFxLaneCounts {};
         std::array<int, kNumTracks> trackNoteLaneCounts {};
         int masterFxLaneCount = 1;
+        int trackLaneCount = kDefaultTrackLaneCount;
     };
 
     TrackLayout() { resetToDefault(); }
@@ -54,66 +55,87 @@ public:
         return 0;
     }
 
-    void moveTrack (int fromVisual, int toVisual)
+    bool moveTrack (int fromVisual, int toVisual)
     {
         if (fromVisual < 0 || fromVisual >= kNumTracks || toVisual < 0 || toVisual >= kNumTracks)
-            return;
+            return false;
         if (fromVisual == toVisual)
-            return;
+            return false;
 
-        int physTrack = visualOrder[static_cast<size_t> (fromVisual)];
+        auto candidateOrder = visualOrder;
+        int physTrack = candidateOrder[static_cast<size_t> (fromVisual)];
 
         // Remove from old position
         for (int i = fromVisual; i < kNumTracks - 1; ++i)
-            visualOrder[static_cast<size_t> (i)] = visualOrder[static_cast<size_t> (i + 1)];
+            candidateOrder[static_cast<size_t> (i)] = candidateOrder[static_cast<size_t> (i + 1)];
 
         // Insert at new position (shift right)
         int insertAt = toVisual;
         for (int i = kNumTracks - 1; i > insertAt; --i)
-            visualOrder[static_cast<size_t> (i)] = visualOrder[static_cast<size_t> (i - 1)];
+            candidateOrder[static_cast<size_t> (i)] = candidateOrder[static_cast<size_t> (i - 1)];
 
-        visualOrder[static_cast<size_t> (insertAt)] = physTrack;
+        candidateOrder[static_cast<size_t> (insertAt)] = physTrack;
+        if (! groupsAreConsecutiveInOrder (candidateOrder))
+            return false;
+
+        visualOrder = candidateOrder;
         normalizeGroups();
+        return true;
     }
 
-    void swapTracks (int visualA, int visualB)
+    bool swapTracks (int visualA, int visualB)
     {
         if (visualA < 0 || visualA >= kNumTracks || visualB < 0 || visualB >= kNumTracks)
-            return;
-        std::swap (visualOrder[static_cast<size_t> (visualA)],
-                   visualOrder[static_cast<size_t> (visualB)]);
+            return false;
+        if (visualA == visualB)
+            return false;
+        auto candidateOrder = visualOrder;
+        std::swap (candidateOrder[static_cast<size_t> (visualA)],
+                   candidateOrder[static_cast<size_t> (visualB)]);
+        if (! groupsAreConsecutiveInOrder (candidateOrder))
+            return false;
+
+        visualOrder = candidateOrder;
         normalizeGroups();
+        return true;
     }
 
     // Move a contiguous visual range one step left or right (delta = -1 or +1)
-    void moveVisualRange (int rangeStart, int rangeEnd, int delta)
+    bool moveVisualRange (int rangeStart, int rangeEnd, int delta)
     {
         if (delta != -1 && delta != 1)
-            return;
+            return false;
         if (rangeStart > rangeEnd) std::swap (rangeStart, rangeEnd);
         rangeStart = juce::jlimit (0, kNumTracks - 1, rangeStart);
         rangeEnd = juce::jlimit (0, kNumTracks - 1, rangeEnd);
-        if (delta == -1 && rangeStart <= 0) return;
-        if (delta == +1 && rangeEnd >= kNumTracks - 1) return;
+        if (delta == -1 && rangeStart <= 0) return false;
+        if (delta == +1 && rangeEnd >= kNumTracks - 1) return false;
+
+        auto candidateOrder = visualOrder;
 
         if (delta == -1)
         {
             // Swap the element just before the range with each element stepping right
-            int saved = visualOrder[static_cast<size_t> (rangeStart - 1)];
+            int saved = candidateOrder[static_cast<size_t> (rangeStart - 1)];
             for (int i = rangeStart - 1; i < rangeEnd; ++i)
-                visualOrder[static_cast<size_t> (i)] = visualOrder[static_cast<size_t> (i + 1)];
-            visualOrder[static_cast<size_t> (rangeEnd)] = saved;
+                candidateOrder[static_cast<size_t> (i)] = candidateOrder[static_cast<size_t> (i + 1)];
+            candidateOrder[static_cast<size_t> (rangeEnd)] = saved;
         }
         else
         {
             // Swap the element just after the range with each element stepping left
-            int saved = visualOrder[static_cast<size_t> (rangeEnd + 1)];
+            int saved = candidateOrder[static_cast<size_t> (rangeEnd + 1)];
             for (int i = rangeEnd + 1; i > rangeStart; --i)
-                visualOrder[static_cast<size_t> (i)] = visualOrder[static_cast<size_t> (i - 1)];
-            visualOrder[static_cast<size_t> (rangeStart)] = saved;
+                candidateOrder[static_cast<size_t> (i)] = candidateOrder[static_cast<size_t> (i - 1)];
+            candidateOrder[static_cast<size_t> (rangeStart)] = saved;
         }
 
+        if (! groupsAreConsecutiveInOrder (candidateOrder))
+            return false;
+
+        visualOrder = candidateOrder;
         normalizeGroups();
+        return true;
     }
 
     // Track names (indexed by physical track)
@@ -243,23 +265,47 @@ public:
     TrackGroup& getGroup (int index) { return groups[static_cast<size_t> (index)]; }
 
     const std::vector<TrackGroup>& getGroups() const { return groups; }
-    void addGroup (TrackGroup group)
+    bool addGroup (TrackGroup group)
     {
         if (! canCreateGroup())
-            return;
+            return false;
+        normalizeGroupForOrder (group, visualOrder);
+        if (group.trackIndices.empty() || ! groupIsConsecutiveInOrder (group, visualOrder))
+            return false;
         groups.push_back (std::move (group));
         normalizeGroups();
+        return true;
     }
 
     const std::array<int, kNumTracks>& getVisualOrder() const { return visualOrder; }
 
-    void setVisualOrder (const std::array<int, kNumTracks>& order)
+    int getTrackLaneCount() const { return trackLaneCount; }
+
+    void setTrackLaneCount (int count)
+    {
+        trackLaneCount = juce::jlimit (1, kNumTracks, count);
+    }
+
+    void addTrackLane()
+    {
+        setTrackLaneCount (trackLaneCount + 1);
+    }
+
+    void removeTrackLane()
+    {
+        setTrackLaneCount (trackLaneCount - 1);
+    }
+
+    bool setVisualOrder (const std::array<int, kNumTracks>& order)
     {
         if (! isValidVisualOrder (order))
-            return;
+            return false;
+        if (! groupsAreConsecutiveInOrder (order))
+            return false;
 
         visualOrder = order;
         normalizeGroups();
+        return true;
     }
 
     void normalizeGroups()
@@ -269,24 +315,7 @@ public:
 
         for (auto& group : groups)
         {
-            std::array<bool, kNumTracks> seen {};
-            std::vector<int> normalized;
-            normalized.reserve (group.trackIndices.size());
-
-            for (int visual = 0; visual < kNumTracks; ++visual)
-            {
-                int phys = visualOrder[static_cast<size_t> (visual)];
-                if (std::find (group.trackIndices.begin(), group.trackIndices.end(), phys) == group.trackIndices.end())
-                    continue;
-
-                if (seen[static_cast<size_t> (phys)])
-                    continue;
-
-                normalized.push_back (phys);
-                seen[static_cast<size_t> (phys)] = true;
-            }
-
-            group.trackIndices = std::move (normalized);
+            normalizeGroupForOrder (group, visualOrder);
         }
 
         groups.erase (std::remove_if (groups.begin(), groups.end(),
@@ -362,6 +391,7 @@ public:
         trackFxLaneCounts.fill (1);
         trackNoteLaneCounts.fill (1);
         masterFxLaneCount = 1;
+        trackLaneCount = kDefaultTrackLaneCount;
     }
 
     void clear() { resetToDefault(); }
@@ -376,6 +406,7 @@ public:
         s.trackFxLaneCounts = trackFxLaneCounts;
         s.trackNoteLaneCounts = trackNoteLaneCounts;
         s.masterFxLaneCount = masterFxLaneCount;
+        s.trackLaneCount = trackLaneCount;
         return s;
     }
 
@@ -388,6 +419,7 @@ public:
         trackFxLaneCounts = snapshot.trackFxLaneCounts;
         trackNoteLaneCounts = snapshot.trackNoteLaneCounts;
         masterFxLaneCount = juce::jlimit (1, 8, snapshot.masterFxLaneCount);
+        trackLaneCount = juce::jlimit (1, kNumTracks, snapshot.trackLaneCount);
         normalizeGroups();
     }
 
@@ -399,7 +431,8 @@ public:
             && a.trackNoteModes == b.trackNoteModes
             && a.trackFxLaneCounts == b.trackFxLaneCounts
             && a.trackNoteLaneCounts == b.trackNoteLaneCounts
-            && a.masterFxLaneCount == b.masterFxLaneCount;
+            && a.masterFxLaneCount == b.masterFxLaneCount
+            && a.trackLaneCount == b.trackLaneCount;
     }
 
 private:
@@ -425,6 +458,67 @@ private:
         return true;
     }
 
+    static void normalizeGroupForOrder (TrackGroup& group, const std::array<int, kNumTracks>& order)
+    {
+        std::array<bool, kNumTracks> seen {};
+        std::vector<int> normalized;
+        normalized.reserve (group.trackIndices.size());
+
+        for (int visual = 0; visual < kNumTracks; ++visual)
+        {
+            int phys = order[static_cast<size_t> (visual)];
+            if (std::find (group.trackIndices.begin(), group.trackIndices.end(), phys) == group.trackIndices.end())
+                continue;
+
+            if (seen[static_cast<size_t> (phys)])
+                continue;
+
+            normalized.push_back (phys);
+            seen[static_cast<size_t> (phys)] = true;
+        }
+
+        group.trackIndices = std::move (normalized);
+    }
+
+    static bool groupIsConsecutiveInOrder (const TrackGroup& group, const std::array<int, kNumTracks>& order)
+    {
+        if (group.trackIndices.size() <= 1)
+            return true;
+
+        int firstVisual = kNumTracks;
+        int lastVisual = -1;
+        int memberCount = 0;
+
+        for (int visual = 0; visual < kNumTracks; ++visual)
+        {
+            int phys = order[static_cast<size_t> (visual)];
+            if (std::find (group.trackIndices.begin(), group.trackIndices.end(), phys) == group.trackIndices.end())
+                continue;
+
+            firstVisual = juce::jmin (firstVisual, visual);
+            lastVisual = visual;
+            ++memberCount;
+        }
+
+        if (memberCount != static_cast<int> (group.trackIndices.size()))
+            return false;
+
+        return lastVisual - firstVisual + 1 == memberCount;
+    }
+
+    bool groupsAreConsecutiveInOrder (const std::array<int, kNumTracks>& order) const
+    {
+        for (const auto& group : groups)
+        {
+            TrackGroup normalized = group;
+            normalizeGroupForOrder (normalized, order);
+            if (! groupIsConsecutiveInOrder (normalized, order))
+                return false;
+        }
+
+        return true;
+    }
+
     std::array<int, kNumTracks> visualOrder {};
     std::vector<TrackGroup> groups;
     std::array<juce::String, kNumTracks> trackNames;
@@ -432,6 +526,7 @@ private:
     std::array<int, kNumTracks> trackFxLaneCounts {};
     std::array<int, kNumTracks> trackNoteLaneCounts {};
     int masterFxLaneCount = 1;
+    int trackLaneCount = kDefaultTrackLaneCount;
 };
 
 class TrackLayoutEditAction : public juce::UndoableAction

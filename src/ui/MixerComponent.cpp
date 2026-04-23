@@ -7,6 +7,23 @@ MixerComponent::MixerComponent (TrackerLookAndFeel& lnf, MixerState& state, Trac
 {
     setWantsKeyboardFocus (true);
     trackPeakLevels.fill (0.0f);
+
+    horizontalScrollbar.setAutoHide (false);
+    horizontalScrollbar.setSingleStepSize (1.0);
+    horizontalScrollbar.setColour (juce::ScrollBar::backgroundColourId,
+                                   lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId).brighter (0.08f));
+    horizontalScrollbar.setColour (juce::ScrollBar::trackColourId,
+                                   lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    horizontalScrollbar.setColour (juce::ScrollBar::thumbColourId,
+                                   lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.75f));
+    horizontalScrollbar.addListener (this);
+    addAndMakeVisible (horizontalScrollbar);
+    updateHorizontalScrollbar();
+}
+
+MixerComponent::~MixerComponent()
+{
+    horizontalScrollbar.removeListener (this);
 }
 
 //==============================================================================
@@ -15,23 +32,24 @@ MixerComponent::MixerComponent (TrackerLookAndFeel& lnf, MixerState& state, Trac
 
 int MixerComponent::getTotalStripCount() const
 {
-    // kNumTracks regular tracks + 2 send returns + N group buses + 1 master
+    // Active regular tracks + 2 send returns + N group buses + 1 master
     int numGroups = trackLayout.getNumGroups();
-    return kNumTracks + 2 + numGroups + 1;
+    return trackLayout.getTrackLaneCount() + 2 + numGroups + 1;
 }
 
 MixerComponent::StripInfo MixerComponent::getStripInfo (int visualIndex) const
 {
     StripInfo info;
 
-    if (visualIndex < kNumTracks)
+    const int trackLaneCount = trackLayout.getTrackLaneCount();
+    if (visualIndex < trackLaneCount)
     {
         info.type = StripType::Track;
         info.index = trackLayout.visualToPhysical (visualIndex);
         return info;
     }
 
-    int offset = kNumTracks;
+    int offset = trackLaneCount;
 
     // Delay return
     if (visualIndex == offset)
@@ -70,10 +88,11 @@ MixerComponent::StripInfo MixerComponent::getStripInfo (int visualIndex) const
 bool MixerComponent::isSeparatorPosition (int visualIndex) const
 {
     // Separators before send returns, group buses section, and master
-    if (visualIndex == kNumTracks) return true;  // before delay return
+    const int trackLaneCount = trackLayout.getTrackLaneCount();
+    if (visualIndex == trackLaneCount) return true;  // before delay return
     int numGroups = trackLayout.getNumGroups();
-    if (numGroups > 0 && visualIndex == kNumTracks + 2) return true;  // before group buses
-    if (visualIndex == kNumTracks + 2 + numGroups) return true;  // before master
+    if (numGroups > 0 && visualIndex == trackLaneCount + 2) return true;  // before group buses
+    if (visualIndex == trackLaneCount + 2 + numGroups) return true;  // before master
     return false;
 }
 
@@ -115,6 +134,21 @@ void MixerComponent::timerCallback()
         repaint();
 }
 
+void MixerComponent::scrollBarMoved (juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart)
+{
+    if (scrollBarThatHasMoved != &horizontalScrollbar)
+        return;
+
+    int newOffset = juce::jlimit (0, getMaxScrollOffset(), juce::roundToInt (newRangeStart));
+    if (scrollOffset == newOffset)
+        return;
+
+    scrollOffset = newOffset;
+    wheelScrollAccumulator = 0.0;
+    updateHorizontalScrollbar();
+    repaint();
+}
+
 //==============================================================================
 // Layout helpers
 //==============================================================================
@@ -136,10 +170,57 @@ int MixerComponent::getVisibleStripCount() const
     return juce::jmax (1, getWidth() / (kStripWidth + kStripGap));
 }
 
+int MixerComponent::getMaxScrollOffset() const
+{
+    return juce::jmax (0, getTotalStripCount() - getVisibleStripCount());
+}
+
+int MixerComponent::getMixerAreaHeight() const
+{
+    return juce::jmax (0, getHeight() - kHorizontalScrollbarHeight);
+}
+
 juce::Rectangle<int> MixerComponent::getStripBounds (int visualTrack) const
 {
     int x = getStripX (visualTrack);
-    return { x, 0, kStripWidth, getHeight() };
+    return { x, 0, kStripWidth, getMixerAreaHeight() };
+}
+
+void MixerComponent::setScrollOffset (int newOffset)
+{
+    int clampedOffset = juce::jlimit (0, getMaxScrollOffset(), newOffset);
+    if (scrollOffset == clampedOffset)
+        return;
+
+    scrollOffset = clampedOffset;
+    updateHorizontalScrollbar();
+    repaint();
+}
+
+void MixerComponent::scrollByStrips (int stripDelta)
+{
+    if (stripDelta != 0)
+        setScrollOffset (scrollOffset + stripDelta);
+}
+
+void MixerComponent::updateHorizontalScrollbar()
+{
+    int totalStrips = getTotalStripCount();
+    int visibleStrips = juce::jmin (getVisibleStripCount(), totalStrips);
+
+    selectedTrack = juce::jlimit (0, juce::jmax (0, totalStrips - 1), selectedTrack);
+    scrollOffset = juce::jlimit (0, getMaxScrollOffset(), scrollOffset);
+
+    horizontalScrollbar.setRangeLimits (0.0, static_cast<double> (totalStrips), juce::dontSendNotification);
+    horizontalScrollbar.setCurrentRange (static_cast<double> (scrollOffset),
+                                         static_cast<double> (visibleStrips),
+                                         juce::dontSendNotification);
+}
+
+void MixerComponent::resized()
+{
+    horizontalScrollbar.setBounds (getLocalBounds().removeFromBottom (kHorizontalScrollbarHeight));
+    updateHorizontalScrollbar();
 }
 
 int MixerComponent::getInsertsSectionHeight (int physTrack) const
@@ -173,7 +254,7 @@ void MixerComponent::paint (juce::Graphics& g)
         {
             int sepX = bounds.getX() - kSeparatorWidth;
             g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId).brighter (0.15f));
-            g.fillRect (sepX, 0, kSeparatorWidth, getHeight());
+            g.fillRect (sepX, 0, kSeparatorWidth, getMixerAreaHeight());
         }
 
         auto info = getStripInfo (vi);
@@ -200,13 +281,13 @@ void MixerComponent::paint (juce::Graphics& g)
     {
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
         g.setFont (lookAndFeel.getUIFont (14.0f, juce::Font::bold));
-        g.drawText ("<", 0, getHeight() / 2 - 10, 12, 20, juce::Justification::centred);
+        g.drawText ("<", 0, getMixerAreaHeight() / 2 - 10, 12, 20, juce::Justification::centred);
     }
     if (scrollOffset + visibleCount < totalStrips)
     {
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
         g.setFont (lookAndFeel.getUIFont (14.0f, juce::Font::bold));
-        g.drawText (">", getWidth() - 12, getHeight() / 2 - 10, 12, 20, juce::Justification::centred);
+        g.drawText (">", getWidth() - 12, getMixerAreaHeight() / 2 - 10, 12, 20, juce::Justification::centred);
     }
 }
 
@@ -229,7 +310,7 @@ void MixerComponent::paintStrip (juce::Graphics& g, int visualTrack, juce::Recta
 
     // Strip border
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
-    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getHeight()));
+    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getMixerAreaHeight()));
 
     // Layout sections top to bottom
     auto r = bounds;
@@ -461,7 +542,7 @@ void MixerComponent::paintSendReturnStrip (juce::Graphics& g, int returnIndex,
 
     // Strip border
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
-    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getHeight()));
+    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getMixerAreaHeight()));
 
     auto r = bounds;
 
@@ -533,7 +614,7 @@ void MixerComponent::paintGroupBusStrip (juce::Graphics& g, int groupIndex,
 
     // Strip border
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
-    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getHeight()));
+    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getMixerAreaHeight()));
 
     auto r = bounds;
 
@@ -610,7 +691,7 @@ void MixerComponent::paintMasterStrip (juce::Graphics& g, juce::Rectangle<int> b
 
     // Strip border
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
-    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getHeight()));
+    g.drawVerticalLine (bounds.getRight(), 0.0f, static_cast<float> (getMixerAreaHeight()));
 
     auto r = bounds;
 
@@ -699,7 +780,7 @@ MixerComponent::HitResult MixerComponent::hitTestStrip (juce::Point<int> pos) co
     MixerHitTestContext ctx;
     ctx.scrollOffset     = scrollOffset;
     ctx.componentWidth   = getWidth();
-    ctx.componentHeight  = getHeight();
+    ctx.componentHeight  = getMixerAreaHeight();
     ctx.totalStripCount  = getTotalStripCount();
 
     ctx.getStripBounds = [this] (int vi) { return getStripBounds (vi); };
@@ -1086,36 +1167,23 @@ void MixerComponent::mouseUp (const juce::MouseEvent&)
     dragTrack = -1;
 }
 
-void MixerComponent::mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel)
+void MixerComponent::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)
 {
-    auto hit = hitTestStrip (event.getPosition());
-    if (hit.visualTrack < 0)
-    {
-        // Horizontal scroll if no strip hit
-        int totalStrips = getTotalStripCount();
-        scrollOffset = juce::jlimit (0, juce::jmax (0, totalStrips - getVisibleStripCount()),
-                                      scrollOffset - static_cast<int> (wheel.deltaY * 3.0f));
-        repaint();
+    double deltaX = static_cast<double> (wheel.deltaX);
+    double deltaY = static_cast<double> (wheel.deltaY);
+    double dominantDelta = (std::abs (deltaX) > std::abs (deltaY)) ? deltaX : deltaY;
+
+    if (std::abs (dominantDelta) < 0.0001)
         return;
-    }
 
-    // Adjust parameter under cursor
-    selectedTrack = hit.visualTrack;
-    currentSection = hit.section;
-    if (hit.param >= 0)
-        currentParam = hit.param;
+    wheelScrollAccumulator += -dominantDelta * 3.0;
 
-    double step = getParamStep (hit.section, (hit.param >= 0) ? hit.param : 0);
-    double delta = (wheel.deltaY > 0.0f ? 1.0 : -1.0) * step;
+    int stripDelta = static_cast<int> (wheelScrollAccumulator);
+    if (stripDelta == 0)
+        return;
 
-    int paramIdx = (hit.param >= 0) ? hit.param : 0;
-    double current = getParamValue (hit.visualTrack, hit.section, paramIdx);
-    double minVal = getParamMin (hit.section, paramIdx);
-    double maxVal = getParamMax (hit.section, paramIdx);
-    double newVal = juce::jlimit (minVal, maxVal, current + delta);
-
-    setParamValue (hit.visualTrack, hit.section, paramIdx, newVal);
-    repaint();
+    wheelScrollAccumulator -= static_cast<double> (stripDelta);
+    scrollByStrips (stripDelta);
 }
 
 //==============================================================================

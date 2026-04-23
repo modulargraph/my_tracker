@@ -105,9 +105,9 @@ void TrackOutputPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     int startSample = fc.bufferStartSample;
     int numSamples = fc.bufferNumSamples;
 
-    // DSP chain: Pre-fader Sends -> Volume/Pan
-    processSends (buffer, startSample, numSamples);
+    // DSP chain: Volume/Pan -> Post-fader Sends
     processVolumeAndPan (buffer, startSample, numSamples);
+    processSends (buffer, startSample, numSamples);
 
     // Compute post-fader peak level for metering
     float peak = 0.0f;

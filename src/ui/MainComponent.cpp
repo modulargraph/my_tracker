@@ -824,6 +824,7 @@ MainComponent::MainComponent()
 
     // Create the grid
     trackerGrid = std::make_unique<TrackerGrid> (patternData, trackerLookAndFeel, trackLayout);
+    trackerGrid->setVelocityLanesVisible (ProjectSerializer::loadGlobalVelocityLanesVisible());
     trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     trackerGrid->setUndoManager (&undoManager);
     addAndMakeVisible (*trackerGrid);
@@ -1190,6 +1191,23 @@ void MainComponent::setUiScalePercent (int scalePercent, bool persist)
     repaint();
 }
 
+void MainComponent::setVelocityLanesVisible (bool visible, bool persist)
+{
+    trackerGrid->setVelocityLanesVisible (visible);
+
+    if (persist)
+        ProjectSerializer::saveGlobalVelocityLanesVisible (visible);
+
+    resized();
+    updateStatusBar();
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::toggleVelocityLanes()
+{
+    setVelocityLanesVisible (! trackerGrid->areVelocityLanesVisible(), true);
+}
+
 void MainComponent::updateUiScaleLabel()
 {
     uiScaleLabel.setText ("Scale", juce::dontSendNotification);
@@ -1485,6 +1503,7 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
     commands.add (cmdToggleSongMode);
     commands.add (cmdToggleInstrumentPanel);
     commands.add (cmdToggleMetronome);
+    commands.add (cmdToggleVelocityLanes);
     commands.add (cmdAudioPluginSettings);
 }
 
@@ -1571,6 +1590,10 @@ void MainComponent::getCommandInfo (juce::CommandID commandID, juce::Application
         case cmdToggleMetronome:
             result.setInfo ("Toggle Metronome", "Toggle the metronome on/off", "View", 0);
             result.addDefaultKeypress ('K', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier);
+            break;
+        case cmdToggleVelocityLanes:
+            result.setInfo ("Show Velocity Lanes", "Show/hide per-note velocity columns", "View", 0);
+            result.setTicked (trackerGrid == nullptr || trackerGrid->areVelocityLanesVisible());
             break;
         case cmdAudioPluginSettings:
             result.setInfo ("Audio & Plugin Settings...", "Configure audio output and plugin scan paths", "File", 0);
@@ -1676,6 +1699,9 @@ bool MainComponent::perform (const InvocationInfo& info)
             toolbar->setMetronomeEnabled (enabled);
             return true;
         }
+        case cmdToggleVelocityLanes:
+            toggleVelocityLanes();
+            return true;
         case cmdAudioPluginSettings:
             showAudioPluginSettings();
             return true;
@@ -1726,6 +1752,7 @@ juce::PopupMenu MainComponent::getMenuForIndex (int menuIndex, const juce::Strin
         menu.addSeparator();
         menu.addCommandItem (&commandManager, cmdToggleSongMode);
         menu.addCommandItem (&commandManager, cmdToggleMetronome);
+        menu.addCommandItem (&commandManager, cmdToggleVelocityLanes);
     }
     else if (menuIndex == 3)
     {
@@ -1901,7 +1928,7 @@ void MainComponent::updateStatusBar()
                      ? juce::String ("MASTER")
                      : juce::String::formatted ("%02d", trackerGrid->getCursorTrack() + 1);
 
-    const char* subColNames[] = { "Note", "Inst", "Vol", "FX" };
+    const char* subColNames[] = { "Note", "Inst", "Vel", "FX" };
     auto subCol = subColNames[static_cast<int> (trackerGrid->getCursorSubColumn())];
 
     statusLabel.setText (juce::String (playState) + "  Row:" + row + "  Track:" + track
@@ -2074,6 +2101,13 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
 
     if (isMasterColumn)
     {
+        int trackLanes = trackLayout.getTrackLaneCount();
+        menu.addItem (26, "Add Track (" + juce::String (trackLanes) + " -> "
+                         + juce::String (trackLanes + 1) + ")", trackLanes < kNumTracks);
+        menu.addItem (27, "Remove Last Track (" + juce::String (trackLanes) + " -> "
+                         + juce::String (trackLanes - 1) + ")", trackLanes > 1);
+        menu.addSeparator();
+
         int masterFxLanes = trackLayout.getMasterFxLaneCount();
         menu.addItem (24, "Add Master FX Lane (" + juce::String (masterFxLanes) + " -> "
                          + juce::String (masterFxLanes + 1) + ")", masterFxLanes < 8);
@@ -2083,7 +2117,23 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
         menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }),
                             [this] (int result)
                             {
-                                if (result == 24)
+                                if (result == 26)
+                                {
+                                    performUndoableTrackLayoutChange ([this]
+                                    {
+                                        trackLayout.addTrackLane();
+                                    });
+                                }
+                                else if (result == 27)
+                                {
+                                    performUndoableTrackLayoutChange ([this]
+                                    {
+                                        trackLayout.removeTrackLane();
+                                    });
+                                    trackerGrid->setCursorPosition (trackerGrid->getCursorRow(),
+                                                                    TrackerGrid::kMasterLaneTrack);
+                                }
+                                else if (result == 24)
                                 {
                                     performUndoableTrackLayoutChange ([this]
                                     {
@@ -2120,12 +2170,13 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
 
     // Selection bounds are in visual space; get visual range
     int rangeStart, rangeEnd;
+    const int trackLaneCount = trackLayout.getTrackLaneCount();
     if (trackerGrid->hasSelection)
     {
         int minRow, maxRow, minViTrack, maxViTrack;
         trackerGrid->getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
-        rangeStart = juce::jlimit (0, kNumTracks - 1, minViTrack);
-        rangeEnd = juce::jlimit (0, kNumTracks - 1, maxViTrack);
+        rangeStart = juce::jlimit (0, trackLaneCount - 1, minViTrack);
+        rangeEnd = juce::jlimit (0, trackLaneCount - 1, maxViTrack);
     }
     else
     {
@@ -2134,7 +2185,9 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
     }
 
     menu.addItem (10, "Move Track Left", rangeStart > 0);
-    menu.addItem (11, "Move Track Right", rangeEnd < kNumTracks - 1);
+    menu.addItem (11, "Move Track Right", rangeEnd < trackLaneCount - 1);
+    menu.addItem (26, "Add Track (" + juce::String (trackLaneCount) + " -> "
+                     + juce::String (trackLaneCount + 1) + ")", trackLaneCount < kNumTracks);
 
     // Group selected tracks (if selection spans multiple tracks)
     if (trackerGrid->hasSelection)
@@ -2223,6 +2276,13 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                                     delete aw;
                                 }), true);
                             }
+                            else if (result == 26)
+                            {
+                                performUndoableTrackLayoutChange ([this]
+                                {
+                                    trackLayout.addTrackLane();
+                                });
+                            }
                             else if (result == 13 && groupIdx >= 0)
                             {
                                 performUndoableTrackLayoutChange ([this, track]
@@ -2233,6 +2293,11 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
 
                                     // Remove this track from its group.
                                     auto& group = trackLayout.getGroup (currentGroupIdx);
+                                    auto [groupFirst, groupLast] = trackLayout.getGroupVisualRange (currentGroupIdx);
+                                    int trackVisual = trackLayout.physicalToVisual (track);
+                                    if (trackVisual != groupFirst && trackVisual != groupLast)
+                                        return;
+
                                     group.trackIndices.erase (
                                         std::remove (group.trackIndices.begin(), group.trackIndices.end(), track),
                                         group.trackIndices.end());
@@ -2323,6 +2388,11 @@ void MainComponent::performUndoableTrackLayoutChange (const std::function<void()
 
     trackerGrid->setCursorPosition (trackerGrid->getCursorRow(), trackerGrid->getCursorTrack());
     trackerGrid->repaint();
+    if (mixerComponent != nullptr)
+    {
+        mixerComponent->resized();
+        mixerComponent->repaint();
+    }
     if (trackerGrid->onPatternDataChanged)
         trackerGrid->onPatternDataChanged();
 }
@@ -2382,6 +2452,11 @@ void MainComponent::newProject()
     updateStatusBar();
     updateToolbar();
     updateInstrumentPanel();
+    if (mixerComponent != nullptr)
+    {
+        mixerComponent->resized();
+        mixerComponent->repaint();
+    }
     fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
     trackerGrid->repaint();
     if (automationPanelVisible)
@@ -2478,6 +2553,11 @@ void MainComponent::openProject()
                               updateStatusBar();
                               updateToolbar();
                               updateInstrumentPanel();
+                              if (mixerComponent != nullptr)
+                              {
+                                  mixerComponent->resized();
+                                  mixerComponent->repaint();
+                              }
                               fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
                               if (automationPanelVisible)
                                   refreshAutomationPanel();
@@ -2824,7 +2904,7 @@ void MainComponent::doCopy()
         int minRow, maxRow, minViTrack, maxViTrack;
         trackerGrid->getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
         int copyStartVi = juce::jmax (0, minViTrack);
-        int copyEndVi = juce::jmin (kNumTracks - 1, maxViTrack);
+        int copyEndVi = juce::jmin (trackLayout.getTrackLaneCount() - 1, maxViTrack);
         if (copyStartVi > copyEndVi)
         {
             clip.numRows = 0;
@@ -2881,7 +2961,7 @@ void MainComponent::doPaste()
         for (int t = 0; t < clip.numTracks; ++t)
         {
             int vi = destViTrack + t;
-            if (vi >= kNumTracks) break;
+            if (vi >= trackLayout.getTrackLaneCount()) break;
             int phys = trackLayout.visualToPhysical (vi);
             MultiCellEditAction::CellRecord rec;
             rec.row = row;
@@ -2938,7 +3018,7 @@ void MainComponent::doCut()
         {
             for (int vi = minViTrack; vi <= maxViTrack; ++vi)
             {
-                if (vi >= kNumTracks)
+                if (vi == trackLayout.getTrackLaneCount())
                 {
                     for (int lane = 0; lane < trackLayout.getMasterFxLaneCount(); ++lane)
                     {
@@ -2946,10 +3026,10 @@ void MainComponent::doCut()
                         auto newSlot = oldSlot;
                         newSlot.clear();
                         if (! sameFx (oldSlot, newSlot))
-                            masterFxRecords.push_back ({ r, lane, oldSlot, newSlot });
+                        masterFxRecords.push_back ({ r, lane, oldSlot, newSlot });
                     }
                 }
-                else
+                else if (vi >= 0 && vi < trackLayout.getTrackLaneCount())
                 {
                     int phys = trackLayout.visualToPhysical (vi);
                     MultiCellEditAction::CellRecord rec;

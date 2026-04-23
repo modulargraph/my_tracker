@@ -7,6 +7,7 @@ namespace TrackLayoutSerializer
 void save (juce::ValueTree& root, const TrackLayout& trackLayout)
 {
     juce::ValueTree layoutTree ("TrackLayout");
+    layoutTree.setProperty ("trackLaneCount", trackLayout.getTrackLaneCount(), nullptr);
 
     juce::String orderStr;
     auto& order = trackLayout.getVisualOrder();
@@ -128,6 +129,11 @@ void load (const juce::ValueTree& root, TrackLayout& trackLayout)
     auto layoutTree = root.getChildWithName ("TrackLayout");
     if (layoutTree.isValid())
     {
+        if (layoutTree.hasProperty ("trackLaneCount"))
+            trackLayout.setTrackLaneCount (layoutTree.getProperty ("trackLaneCount", kDefaultTrackLaneCount));
+        else
+            trackLayout.setTrackLaneCount (kNumTracks);
+
         auto voTree = layoutTree.getChildWithName ("VisualOrder");
         if (voTree.isValid())
         {
@@ -229,6 +235,10 @@ void load (const juce::ValueTree& root, TrackLayout& trackLayout)
             if (! group.trackIndices.empty())
                 trackLayout.addGroup (std::move (group));
         }
+    }
+    else
+    {
+        trackLayout.setTrackLaneCount (kNumTracks);
     }
 }
 

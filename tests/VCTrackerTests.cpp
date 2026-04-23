@@ -53,6 +53,36 @@ bool vectorsClose (const std::vector<double>& a, const std::vector<double>& b, d
     return true;
 }
 
+juce::KeyPress makeTextKey (char ch)
+{
+    return juce::KeyPress (static_cast<int> (ch), juce::ModifierKeys(), ch);
+}
+
+char hexDigitFor (int value)
+{
+    static constexpr char digits[] = "0123456789ABCDEF";
+    return digits[value & 0x0F];
+}
+
+bool moveCursorToFxColumn (TrackerGrid& grid)
+{
+    const juce::KeyPress tabKey (juce::KeyPress::tabKey);
+    for (int i = 0; i < 8 && grid.getCursorSubColumn() != SubColumn::FX; ++i)
+    {
+        if (! grid.keyPressed (tabKey))
+            return false;
+    }
+
+    return grid.getCursorSubColumn() == SubColumn::FX;
+}
+
+bool enterFxCommand (TrackerGrid& grid, char letter, int param)
+{
+    return grid.keyPressed (makeTextKey (letter))
+        && grid.keyPressed (makeTextKey (hexDigitFor (param >> 4)))
+        && grid.keyPressed (makeTextKey (hexDigitFor (param)));
+}
+
 juce::String runProjectRoundTrip (const juce::String& fileStem,
                                   const PatternData& source,
                                   double bpm,
@@ -1817,6 +1847,144 @@ bool testFxParamTransportSequenceOrdering()
     return true;
 }
 
+bool testSampleFxCommandsEnterAndRoundTrip()
+{
+    struct FxExample
+    {
+        char letter;
+        int param;
+        bool masterLane;
+    };
+
+    const std::array<FxExample, 10> examples = {{
+        { 'B', 0x01, false },
+        { 'P', 0x80, false },
+        { 'T', 0x0C, false },
+        { 'G', 0x04, false },
+        { 'Y', 0x7F, false },
+        { 'R', 0x40, false },
+        { 'S', 0x37, false },
+        { 'D', 0x24, false },
+        { 'F', 0x82, true  },
+        { 'V', 0x7F, false },
+    }};
+
+    const auto& commandList = getFxCommandList();
+    if (commandList.size() != examples.size())
+    {
+        std::cerr << "sample FX command count mismatch\n";
+        return false;
+    }
+
+    for (const auto& example : examples)
+    {
+        bool found = false;
+        for (const auto& command : commandList)
+        {
+            if (command.letter == example.letter)
+            {
+                found = command.command == fxLetterToCommand (example.letter)
+                    && command.format.isNotEmpty()
+                    && command.format[0] == example.letter;
+                break;
+            }
+        }
+
+        if (! found)
+        {
+            std::cerr << "sample FX command missing or mismapped: " << example.letter << "\n";
+            return false;
+        }
+    }
+
+    PatternData source;
+    TrackLayout trackLayout;
+    TrackerLookAndFeel lnf;
+    TrackerGrid grid (source, lnf, trackLayout);
+    grid.setEditStep (0);
+
+    struct EnteredCommand
+    {
+        FxExample example;
+        int row;
+    };
+
+    std::vector<EnteredCommand> entered;
+    int trackRow = 0;
+    int masterRow = 16;
+
+    for (const auto& example : examples)
+    {
+        const int row = example.masterLane ? masterRow++ : trackRow++;
+        grid.setCursorPosition (row, example.masterLane ? TrackerGrid::kMasterLaneTrack : 0);
+
+        if (! moveCursorToFxColumn (grid) || ! enterFxCommand (grid, example.letter, example.param))
+        {
+            std::cerr << "failed to enter sample FX command: " << example.letter << "\n";
+            return false;
+        }
+
+        const auto& pattern = source.getPattern (0);
+        const auto slot = example.masterLane ? pattern.getMasterFxSlot (row, 0)
+                                             : pattern.getCell (row, 0).getFxSlot (0);
+        if (slot.getCommandLetter() != example.letter || slot.fxParam != example.param)
+        {
+            std::cerr << "sample FX command stored incorrectly: " << example.letter << "\n";
+            return false;
+        }
+
+        entered.push_back ({ example, row });
+    }
+
+    Arrangement arrangement;
+    MixerState mixerState;
+    DelayParams delayParams;
+    ReverbParams reverbParams;
+    std::map<int, juce::File> loadedSamples;
+    std::map<int, InstrumentParams> instrumentParams;
+
+    PatternData loaded;
+    double loadedBpm = 0.0;
+    int loadedRpb = 0;
+    std::map<int, juce::File> loadedSamplesOut;
+    std::map<int, InstrumentParams> instrumentParamsOut;
+    Arrangement arrangementOut;
+    TrackLayout trackLayoutOut;
+    MixerState mixerStateOut;
+    DelayParams delayOut;
+    ReverbParams reverbOut;
+
+    auto err = runProjectRoundTrip ("tracker_adjust_tests_sample_fx_commands",
+                                    source, 120.0, 4,
+                                    loadedSamples, instrumentParams,
+                                    arrangement, trackLayout, mixerState,
+                                    delayParams, reverbParams, 0, {},
+                                    loaded, loadedBpm, loadedRpb,
+                                    loadedSamplesOut, instrumentParamsOut,
+                                    arrangementOut, trackLayoutOut,
+                                    mixerStateOut, delayOut, reverbOut);
+    if (err.isNotEmpty())
+    {
+        std::cerr << "sample FX command round-trip failed: " << err << "\n";
+        return false;
+    }
+
+    const auto& loadedPattern = loaded.getPattern (0);
+    for (const auto& entry : entered)
+    {
+        const auto slot = entry.example.masterLane
+                              ? loadedPattern.getMasterFxSlot (entry.row, 0)
+                              : loadedPattern.getCell (entry.row, 0).getFxSlot (0);
+        if (slot.getCommandLetter() != entry.example.letter || slot.fxParam != entry.example.param)
+        {
+            std::cerr << "sample FX command round-trip mismatch: " << entry.example.letter << "\n";
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool testEmptyArrangementRoundTrip()
 {
     // Verify empty arrangement round-trips correctly
@@ -1970,6 +2138,84 @@ bool testTrackLayoutFxLaneCountRoundTrip()
         || trackLayoutOut.getTrackFxLaneCount (2) != 8)
     {
         std::cerr << "FX lane counts mismatch after round-trip\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testTrackLayoutTrackLaneCountDefaultsAndRoundTrip()
+{
+    TrackLayout defaults;
+    if (defaults.getTrackLaneCount() != kDefaultTrackLaneCount)
+    {
+        std::cerr << "default empty project track lane count should be "
+                  << kDefaultTrackLaneCount << ", got "
+                  << defaults.getTrackLaneCount() << "\n";
+        return false;
+    }
+
+    defaults.setTrackLaneCount (0);
+    if (defaults.getTrackLaneCount() != 1)
+    {
+        std::cerr << "track lane count should clamp to at least 1\n";
+        return false;
+    }
+
+    defaults.setTrackLaneCount (kNumTracks + 1);
+    if (defaults.getTrackLaneCount() != kNumTracks)
+    {
+        std::cerr << "track lane count should clamp to kNumTracks\n";
+        return false;
+    }
+
+    defaults.resetToDefault();
+    if (defaults.getTrackLaneCount() != kDefaultTrackLaneCount)
+    {
+        std::cerr << "resetToDefault should restore the empty project lane count\n";
+        return false;
+    }
+
+    PatternData source;
+    TrackLayout trackLayout;
+    trackLayout.setTrackLaneCount (7);
+
+    Arrangement arrangement;
+    MixerState mixerState;
+    DelayParams delayParams;
+    ReverbParams reverbParams;
+    std::map<int, juce::File> loadedSamples;
+    std::map<int, InstrumentParams> instrumentParams;
+
+    PatternData loaded;
+    double loadedBpm = 0.0;
+    int loadedRpb = 0;
+    std::map<int, juce::File> loadedSamplesOut;
+    std::map<int, InstrumentParams> instrumentParamsOut;
+    Arrangement arrangementOut;
+    TrackLayout trackLayoutOut;
+    MixerState mixerStateOut;
+    DelayParams delayOut;
+    ReverbParams reverbOut;
+
+    auto err = runProjectRoundTrip ("tracker_adjust_tests_track_lanes",
+                                    source, 120.0, 4,
+                                    loadedSamples, instrumentParams,
+                                    arrangement, trackLayout, mixerState,
+                                    delayParams, reverbParams, 0, {},
+                                    loaded, loadedBpm, loadedRpb,
+                                    loadedSamplesOut, instrumentParamsOut,
+                                    arrangementOut, trackLayoutOut,
+                                    mixerStateOut, delayOut, reverbOut);
+    if (err.isNotEmpty())
+    {
+        std::cerr << "track lane count round-trip failed: " << err << "\n";
+        return false;
+    }
+
+    if (trackLayoutOut.getTrackLaneCount() != 7)
+    {
+        std::cerr << "track lane count mismatch after round-trip\n";
         return false;
     }
 
@@ -4967,11 +5213,35 @@ bool testTrackLayoutGroupNormalizationAndLimits()
         return false;
     }
 
+    auto groupedOrder = layout.getVisualOrder();
     layout.moveTrack (0, 5);
-    std::vector<int> expectedOrder { 1, 2, 0 };
-    if (layout.getGroup (0).trackIndices != expectedOrder)
+    std::vector<int> expectedOrder { 0, 1, 2 };
+    if (layout.getVisualOrder() != groupedOrder || layout.getGroup (0).trackIndices != expectedOrder)
     {
-        std::cerr << "Group track indices should stay sorted by visual order after reordering\n";
+        std::cerr << "Moving one track out of a group should be rejected\n";
+        return false;
+    }
+
+    layout.swapTracks (3, 1);
+    if (layout.getVisualOrder() != groupedOrder || layout.getGroup (0).trackIndices != expectedOrder)
+    {
+        std::cerr << "Moving an ungrouped track into the middle of a group should be rejected\n";
+        return false;
+    }
+
+    layout.swapTracks (0, 2);
+    std::vector<int> swappedWithinGroup { 2, 1, 0 };
+    if (layout.getGroup (0).trackIndices != swappedWithinGroup)
+    {
+        std::cerr << "Reordering tracks within a group should remain allowed\n";
+        return false;
+    }
+
+    auto withinGroupOrder = layout.getVisualOrder();
+    layout.moveVisualRange (3, 3, -1);
+    if (layout.getVisualOrder() != withinGroupOrder || layout.getGroup (0).trackIndices != swappedWithinGroup)
+    {
+        std::cerr << "Moving an ungrouped range into a group should be rejected\n";
         return false;
     }
 
@@ -4982,6 +5252,17 @@ bool testTrackLayoutGroupNormalizationAndLimits()
     if (layout.getVisualOrder() != beforeOrder)
     {
         std::cerr << "Invalid visual order should be ignored\n";
+        return false;
+    }
+
+    TrackLayout invalidGroup;
+    TrackGroup nonConsecutive;
+    nonConsecutive.name = "Gap";
+    nonConsecutive.trackIndices = { 0, 2 };
+    invalidGroup.addGroup (std::move (nonConsecutive));
+    if (invalidGroup.getNumGroups() != 0)
+    {
+        std::cerr << "Adding a non-consecutive group should be rejected\n";
         return false;
     }
 
@@ -5260,6 +5541,85 @@ bool testTrackerGridClampsCursorNoteLaneOnTrackChange()
     return true;
 }
 
+bool testTrackerGridCanHideVelocityLanes()
+{
+    if (TrackerGrid::getCellWidth (1, 2, false)
+        != TrackerGrid::kCellPadding
+            + 2 * TrackerGrid::kNoteLaneWithoutVelocityWidth
+            + TrackerGrid::kFxWidth)
+    {
+        std::cerr << "Velocity-hidden cell width mismatch\n";
+        return false;
+    }
+
+    PatternData patternData;
+    TrackLayout trackLayout;
+    TrackerLookAndFeel lnf;
+    TrackerGrid grid (patternData, lnf, trackLayout);
+
+    trackLayout.setTrackNoteLaneCount (0, 2);
+    grid.setCursorPosition (0, 0);
+
+    const juce::KeyPress tabKey (juce::KeyPress::tabKey);
+    grid.keyPressed (tabKey);
+    grid.keyPressed (tabKey);
+    if (grid.getCursorSubColumn() != SubColumn::Volume)
+    {
+        std::cerr << "Expected visible velocity lane after two tabs\n";
+        return false;
+    }
+
+    grid.setVelocityLanesVisible (false);
+    if (grid.areVelocityLanesVisible() || grid.getCursorSubColumn() != SubColumn::Instrument)
+    {
+        std::cerr << "Hiding velocity lanes should move cursor to instrument\n";
+        return false;
+    }
+
+    PatternData hiddenPatternData;
+    TrackLayout hiddenTrackLayout;
+    hiddenTrackLayout.setTrackNoteLaneCount (0, 2);
+    TrackerGrid hiddenGrid (hiddenPatternData, lnf, hiddenTrackLayout);
+    hiddenGrid.setVelocityLanesVisible (false);
+
+    if (! hiddenGrid.keyPressed (tabKey) || hiddenGrid.getCursorSubColumn() != SubColumn::Instrument)
+    {
+        std::cerr << "First tab should move from note to instrument with velocity hidden\n";
+        return false;
+    }
+
+    if (! hiddenGrid.keyPressed (tabKey)
+        || hiddenGrid.getCursorSubColumn() != SubColumn::Note
+        || hiddenGrid.getCursorNoteLane() != 1)
+    {
+        std::cerr << "Second tab should skip velocity and move to next note lane\n";
+        return false;
+    }
+
+    if (! hiddenGrid.keyPressed (tabKey) || hiddenGrid.getCursorSubColumn() != SubColumn::Instrument)
+    {
+        std::cerr << "Third tab should move to second instrument lane\n";
+        return false;
+    }
+
+    if (! hiddenGrid.keyPressed (tabKey) || hiddenGrid.getCursorSubColumn() != SubColumn::FX)
+    {
+        std::cerr << "Fourth tab should move to FX lane\n";
+        return false;
+    }
+
+    const juce::KeyPress shiftTabKey (juce::KeyPress::tabKey, juce::ModifierKeys::shiftModifier, 0);
+    if (! hiddenGrid.keyPressed (shiftTabKey)
+        || hiddenGrid.getCursorSubColumn() != SubColumn::Instrument
+        || hiddenGrid.getCursorNoteLane() != 1)
+    {
+        std::cerr << "Reverse tab should land on last visible note sub-column\n";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -5302,9 +5662,11 @@ int main()
         { "InstrumentRoutingBankProgramSplit", &testInstrumentRoutingBankProgramSplit },
         { "FxParamTransportByteRoundTrip", &testFxParamTransportByteRoundTrip },
         { "FxParamTransportSequenceOrdering", &testFxParamTransportSequenceOrdering },
+        { "SampleFxCommandsEnterAndRoundTrip", &testSampleFxCommandsEnterAndRoundTrip },
         { "EmptyArrangementRoundTrip", &testEmptyArrangementRoundTrip },
         { "PatternMultiFxSlotRoundTrip", &testPatternMultiFxSlotRoundTrip },
         { "TrackLayoutFxLaneCountRoundTrip", &testTrackLayoutFxLaneCountRoundTrip },
+        { "TrackLayoutTrackLaneCountDefaultsAndRoundTrip", &testTrackLayoutTrackLaneCountDefaultsAndRoundTrip },
         { "SymbolicFxTokenRoundTrip", &testSymbolicFxTokenRoundTrip },
         { "MasterLaneRoundTrip", &testMasterLaneRoundTrip },
         { "MixerMuteSoloRoundTrip", &testMixerMuteSoloRoundTrip },
@@ -5354,6 +5716,7 @@ int main()
         { "PluginAutomationPreservesParameterSelection", &testPluginAutomationPreservesParameterSelection },
         { "PluginAutomationMultiPluginTrack", &testPluginAutomationMultiPluginTrack },
         { "TrackerGridClampsCursorNoteLaneOnTrackChange", &testTrackerGridClampsCursorNoteLaneOnTrackChange },
+        { "TrackerGridCanHideVelocityLanes", &testTrackerGridCanHideVelocityLanes },
     };
 
     int failures = 0;

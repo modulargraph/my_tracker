@@ -110,18 +110,24 @@ public:
     static constexpr int kSubColSpace = 2; // Space between sub-columns (was 4)
     static constexpr int kGroupHeaderHeight = 16;
 
-    // Width of one note lane (Note + space + Inst + space + Vol + space)
-    static constexpr int kNoteLaneWidth = kNoteWidth + kSubColSpace + kInstWidth
-                                        + kSubColSpace + kVolWidth + kSubColSpace;
+    // Width of one note lane.
+    static constexpr int kNoteLaneWithoutVelocityWidth = kNoteWidth + kSubColSpace + kInstWidth + kSubColSpace;
+    static constexpr int kNoteLaneWithVelocityWidth = kNoteLaneWithoutVelocityWidth + kVolWidth + kSubColSpace;
+    static constexpr int kNoteLaneWidth = kNoteLaneWithVelocityWidth;
 
     // Base cell width (1 note lane, 1 FX lane): padding + NoteLane + FX
     static constexpr int kBaseCellWidth = kCellPadding + kNoteLaneWidth + kFxWidth;
 
+    static int getNoteLaneWidth (bool showVelocityLanes = true)
+    {
+        return showVelocityLanes ? kNoteLaneWithVelocityWidth : kNoteLaneWithoutVelocityWidth;
+    }
+
     // Compute cell width for a track with the given number of note and FX lanes
-    static int getCellWidth (int fxLaneCount, int noteLaneCount = 1)
+    static int getCellWidth (int fxLaneCount, int noteLaneCount = 1, bool showVelocityLanes = true)
     {
         return kCellPadding
-             + noteLaneCount * kNoteLaneWidth
+             + noteLaneCount * getNoteLaneWidth (showVelocityLanes)
              + fxLaneCount * kFxWidth + (fxLaneCount - 1) * kSubColSpace;
     }
 
@@ -130,6 +136,9 @@ public:
 
     // Current cursor FX lane index (which FX lane the cursor is in)
     int getCursorFxLane() const { return cursorFxLane; }
+
+    void setVelocityLanesVisible (bool visible);
+    bool areVelocityLanesVisible() const { return velocityLanesVisible; }
 
     // FX command dropdown
     void showFxCommandPopup();
@@ -155,6 +164,7 @@ private:
     int currentOctave = 4;
     int currentInstrument = 0;
     int rowsPerBeat = 4;
+    bool velocityLanesVisible = true;
 
     // Hex entry state for multi-digit input
     int hexDigitCount = 0;
@@ -184,8 +194,9 @@ private:
     int scrollOffset = 0;
     int horizontalScrollOffset = 0;
     int getVisibleTrackCount() const;
-    int getTotalVisualColumns() const { return kNumTracks + 1; }
-    bool isMasterVisualColumn (int visualIndex) const { return visualIndex == kNumTracks; }
+    int getRegularVisualColumnCount() const { return trackLayout.getTrackLaneCount(); }
+    int getTotalVisualColumns() const { return getRegularVisualColumnCount() + 1; }
+    bool isMasterVisualColumn (int visualIndex) const { return visualIndex == getRegularVisualColumnCount(); }
     int visualToTrackIndex (int visualIndex) const;
     int trackToVisualIndex (int trackIndex) const;
     bool isMasterTrack (int trackIndex) const { return trackIndex == kMasterLaneTrack; }
@@ -232,6 +243,8 @@ private:
     int getTrackXOffset (int visualIndex) const;  // pixel X for a visual track index
     int getTrackWidth (int visualIndex) const;     // pixel width for a visual track
     int visualTrackAtPixel (int pixelX) const;     // visual track index at pixel X (relative to row number area)
+    int getVisibleNoteLaneWidth() const { return getNoteLaneWidth (velocityLanesVisible); }
+    SubColumn getLastVisibleNoteSubColumn() const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackerGrid)
 };

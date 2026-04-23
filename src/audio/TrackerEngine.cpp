@@ -52,6 +52,14 @@ int getRowTempoCommand (const Pattern& pattern, int row)
     return bpm;
 }
 
+float getTrackFaderGain (const TrackMixState& mixState)
+{
+    if (mixState.volume <= -99.0)
+        return 0.0f;
+
+    return juce::Decibels::decibelsToGain (static_cast<float> (mixState.volume));
+}
+
 void appendSymbolicTrackFx (juce::MidiMessageSequence& midiSeq, const FxSlot& slot, double ccTime)
 {
     switch (getSlotCommandLetter (slot))
@@ -1092,6 +1100,11 @@ void TrackerEngine::ensureTrackHasInstrument (int trackIndex, int instrumentInde
         else
             currentTrackInstrument[static_cast<size_t> (trackIndex)] = -1;
     }
+
+    if (mixerStatePtr != nullptr && trackIndex < kNumTracks)
+        if (auto* fxPlugin = track->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
+            fxPlugin->setTrackSendGainLinear (
+                getTrackFaderGain (mixerStatePtr->tracks[static_cast<size_t> (trackIndex)]));
 }
 
 void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
@@ -1184,6 +1197,9 @@ void TrackerEngine::prepareTracksForInstrumentUsage (const std::array<std::vecto
             fxPlugin->setGlobalModState (sampler.getOrCreateGlobalModState (firstInst));
             fxPlugin->setGlobalModStates (globalStates);
             fxPlugin->setSendBuffers (&sampler.getSendBuffers());
+            if (mixerStatePtr != nullptr)
+                fxPlugin->setTrackSendGainLinear (
+                    getTrackFaderGain (mixerStatePtr->tracks[static_cast<size_t> (t)]));
             fxPlugin->onTempoChange = nullptr;
         }
     }
@@ -1584,6 +1600,10 @@ void TrackerEngine::setupChannelStripAndOutput (int trackIndex)
         output->setMixState (mixerStatePtr->tracks[static_cast<size_t> (trackIndex)]);
         output->setSendBuffers (&sampler.getSendBuffers());
     }
+
+    if (auto* fxPlugin = track->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
+        fxPlugin->setTrackSendGainLinear (
+            getTrackFaderGain (mixerStatePtr->tracks[static_cast<size_t> (trackIndex)]));
 
     // Also remove any legacy MixerPlugin if present (migrating from old chain)
     auto* legacyMixer = track->pluginList.findFirstPluginOfType<MixerPlugin>();

@@ -1054,7 +1054,7 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     if (std::abs (outputGain - 1.0f) > 0.0001f)
         buffer.applyGain (startSample, numSamples, outputGain);
 
-    // Instrument-level sends bypass track mixer sends by design.
+    // Instrument-level sends are instrument-specific, but still follow this track's fader.
     if (sendBuffers != nullptr)
     {
         auto sendByteToDb = [] (int value) -> float
@@ -1069,16 +1069,17 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         const float delaySendDb = (overrides.delaySendOverride >= 0)
                                       ? sendByteToDb (overrides.delaySendOverride)
                                       : static_cast<float> (params.delaySend);
+        const float trackSendGain = trackSendGainLinear.load (std::memory_order_relaxed);
 
-        if (reverbSendDb > -99.0f)
+        if (trackSendGain > 0.0f && reverbSendDb > -99.0f)
         {
-            float reverbGain = juce::Decibels::decibelsToGain (reverbSendDb);
+            float reverbGain = juce::Decibels::decibelsToGain (reverbSendDb) * trackSendGain;
             sendBuffers->addToReverb (buffer, startSample, numSamples, reverbGain);
         }
 
-        if (delaySendDb > -99.0f)
+        if (trackSendGain > 0.0f && delaySendDb > -99.0f)
         {
-            float delayGain = juce::Decibels::decibelsToGain (delaySendDb);
+            float delayGain = juce::Decibels::decibelsToGain (delaySendDb) * trackSendGain;
             sendBuffers->addToDelay (buffer, startSample, numSamples, delayGain);
         }
     }

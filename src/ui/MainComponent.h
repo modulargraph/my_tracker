@@ -72,6 +72,7 @@ public:
         cmdToggleSongMode    = 0x1052,
         cmdToggleInstrumentPanel = 0x1053,
         cmdToggleMetronome       = 0x1054,
+        cmdToggleVelocityLanes   = 0x1055,
         cmdAudioPluginSettings   = 0x1060
     };
 
@@ -169,6 +170,8 @@ private:
     void saveProjectAs();
     void toggleArrangementPanel();
     void toggleSongMode();
+    void toggleVelocityLanes();
+    void setVelocityLanesVisible (bool visible, bool persist);
     void syncArrangementToEdit();
     void showHelpOverlay();
     void updateInstrumentPanel();

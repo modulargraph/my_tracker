@@ -52,6 +52,10 @@ public:
     static void saveGlobalUiScalePercent (int scalePercent);
     static int loadGlobalUiScalePercent();
 
+    // Global tracker grid display preference (independent of project files)
+    static void saveGlobalVelocityLanesVisible (bool visible);
+    static bool loadGlobalVelocityLanesVisible();
+
 private:
     static juce::ValueTree patternToValueTree (const Pattern& pattern, int index);
     static void valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern, int version);
