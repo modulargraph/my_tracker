@@ -48,6 +48,10 @@ public:
     static void saveGlobalPluginScanPaths (const juce::StringArray& paths);
     static juce::StringArray loadGlobalPluginScanPaths();
 
+    // Global UI scale persistence (independent of project files)
+    static void saveGlobalUiScalePercent (int scalePercent);
+    static int loadGlobalUiScalePercent();
+
 private:
     static juce::ValueTree patternToValueTree (const Pattern& pattern, int index);
     static void valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern, int version);

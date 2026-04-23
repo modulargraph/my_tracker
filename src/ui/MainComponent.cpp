@@ -17,6 +17,17 @@
 
 namespace
 {
+constexpr int kMinUiScalePercent = 80;
+constexpr int kMaxUiScalePercent = 150;
+constexpr int kUiScaleStepPercent = 5;
+
+int snapUiScalePercent (int scalePercent)
+{
+    auto clamped = juce::jlimit (kMinUiScalePercent, kMaxUiScalePercent, scalePercent);
+    auto steps = (clamped - kMinUiScalePercent + kUiScaleStepPercent / 2) / kUiScaleStepPercent;
+    return kMinUiScalePercent + steps * kUiScaleStepPercent;
+}
+
 void sortPluginsByManufacturerAndName (juce::Array<juce::PluginDescription>& plugins)
 {
     std::sort (plugins.begin(), plugins.end(),
@@ -310,6 +321,32 @@ MainComponent::MainComponent()
         trackerEngine.setPreviewVolume (static_cast<float> (previewVolumeSlider.getValue()));
     };
     addAndMakeVisible (previewVolumeSlider);
+
+    uiScaleLabel.setText ("Scale", juce::dontSendNotification);
+    uiScaleLabel.setJustificationType (juce::Justification::centredRight);
+    uiScaleLabel.setColour (juce::Label::textColourId,
+                            trackerLookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.7f));
+    uiScaleLabel.setFont (trackerLookAndFeel.getMonoFont (12.0f));
+    addAndMakeVisible (uiScaleLabel);
+
+    uiScaleSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    uiScaleSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 46, 20);
+    uiScaleSlider.setRange (kMinUiScalePercent, kMaxUiScalePercent, kUiScaleStepPercent);
+    uiScaleSlider.setDoubleClickReturnValue (true, 100.0);
+    uiScaleSlider.textFromValueFunction = [] (double value)
+    {
+        return juce::String (juce::roundToInt (value)) + "%";
+    };
+    uiScaleSlider.valueFromTextFunction = [] (const juce::String& text)
+    {
+        auto digits = text.retainCharacters ("0123456789");
+        return static_cast<double> (digits.isEmpty() ? 100 : digits.getIntValue());
+    };
+    uiScaleSlider.onValueChange = [this]
+    {
+        setUiScalePercent (juce::roundToInt (uiScaleSlider.getValue()), true);
+    };
+    addAndMakeVisible (uiScaleSlider);
 
     // Create arrangement panel (hidden by default)
     arrangementComponent = std::make_unique<ArrangementComponent> (arrangement, patternData, trackerLookAndFeel);
@@ -855,6 +892,7 @@ MainComponent::MainComponent()
     bpmLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
     bpmLabel.setFont (trackerLookAndFeel.getMonoFont (12.0f));
 
+    setUiScalePercent (ProjectSerializer::loadGlobalUiScalePercent(), false);
     updateStatusBar();
     updateToolbar();
 
@@ -946,6 +984,14 @@ void MainComponent::resized()
     statusLabel.setBounds (statusBar.removeFromLeft (statusBar.getWidth() / 2));
 
     auto rightStatus = statusBar;
+    constexpr int kScaleStatusWidth = 180;
+    constexpr int kScaleStatusGap = 8;
+    constexpr int kScaleLabelWidth = 44;
+    auto scaleStatus = rightStatus.removeFromRight (juce::jmin (kScaleStatusWidth, rightStatus.getWidth()));
+    scaleStatus.removeFromLeft (juce::jmin (kScaleStatusGap, scaleStatus.getWidth()));
+    uiScaleLabel.setBounds (scaleStatus.removeFromLeft (juce::jmin (kScaleLabelWidth, scaleStatus.getWidth())));
+    uiScaleSlider.setBounds (scaleStatus.reduced (0, 2));
+
     octaveLabel.setBounds (rightStatus.removeFromLeft (rightStatus.getWidth() / 2));
     bpmLabel.setBounds (rightStatus);
 
@@ -1036,6 +1082,27 @@ void MainComponent::resized()
             break;
         }
     }
+}
+
+void MainComponent::setUiScalePercent (int scalePercent, bool persist)
+{
+    uiScalePercent = snapUiScalePercent (scalePercent);
+
+    juce::Desktop::getInstance().setGlobalScaleFactor (static_cast<float> (uiScalePercent) / 100.0f);
+    uiScaleSlider.setValue (uiScalePercent, juce::dontSendNotification);
+    updateUiScaleLabel();
+
+    if (persist)
+        ProjectSerializer::saveGlobalUiScalePercent (uiScalePercent);
+
+    resized();
+    repaint();
+}
+
+void MainComponent::updateUiScaleLabel()
+{
+    uiScaleLabel.setText ("Scale", juce::dontSendNotification);
+    uiScaleSlider.setTooltip ("Interface scale: " + juce::String (uiScalePercent) + "%");
 }
 
 bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)

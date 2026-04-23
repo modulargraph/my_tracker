@@ -128,6 +128,9 @@ private:
     juce::Label bpmLabel;
     juce::Label previewVolumeLabel;
     juce::Slider previewVolumeSlider;
+    juce::Label uiScaleLabel;
+    juce::Slider uiScaleSlider;
+    int uiScalePercent = 100;
 
     // Temporary status message system (Phase 4)
     juce::String temporaryStatusMessage;
@@ -138,6 +141,8 @@ private:
     void timerCallback() override;
     void updateStatusBar();
     void updateToolbar();
+    void setUiScalePercent (int scalePercent, bool persist);
+    void updateUiScaleLabel();
     void loadSampleForCurrentTrack();
     void switchToPattern (int index);
     void showPatternLengthEditor();
