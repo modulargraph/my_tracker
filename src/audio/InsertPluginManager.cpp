@@ -258,11 +258,9 @@ void InsertPluginManager::snapshotInsertPluginStates()
             if (auto* ext = dynamic_cast<te::ExternalPlugin*> (getInsertPlugin (trackIndex, slotIndex)))
             {
                 ext->flushPluginStateToValueTree();
-                slot.pluginState = ext->state.createCopy();
-            }
-            else
-            {
-                slot.pluginState = {};
+                auto stateCopy = ext->state.createCopy();
+                if (stateCopy.isValid())
+                    slot.pluginState = stateCopy;
             }
         }
     }

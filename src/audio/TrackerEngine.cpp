@@ -2060,11 +2060,9 @@ void TrackerEngine::snapshotInsertPluginStates()
             if (auto* ext = dynamic_cast<te::ExternalPlugin*> (getInsertPlugin (trackIndex, slotIndex)))
             {
                 ext->flushPluginStateToValueTree();
-                slot.pluginState = ext->state.createCopy();
-            }
-            else
-            {
-                slot.pluginState = {};
+                auto stateCopy = ext->state.createCopy();
+                if (stateCopy.isValid())
+                    slot.pluginState = stateCopy;
             }
         }
     }
@@ -2100,7 +2098,9 @@ void TrackerEngine::snapshotPluginInstrumentStates()
             if (auto* ext = dynamic_cast<te::ExternalPlugin*> (instanceIt->second.get()))
             {
                 ext->flushPluginStateToValueTree();
-                info.pluginState = ext->state.createCopy();
+                auto stateCopy = ext->state.createCopy();
+                if (stateCopy.isValid())
+                    info.pluginState = stateCopy;
             }
         }
     }
