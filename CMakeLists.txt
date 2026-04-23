@@ -164,6 +164,29 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     target_compile_options(VCTracker PRIVATE "-fno-aligned-allocation")
 endif()
 
+add_executable(PluginScanWorker
+    src/audio/PluginScanWorker.cpp)
+
+target_compile_features(PluginScanWorker PRIVATE cxx_std_20)
+
+target_compile_definitions(PluginScanWorker PRIVATE
+    JUCE_PLUGINHOST_AU=1
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_STRICT_REFCOUNTEDPOINTER=1)
+
+target_link_libraries(PluginScanWorker PRIVATE
+    juce::juce_audio_processors
+    juce::juce_audio_utils
+    juce::juce_gui_basics
+    juce::juce_recommended_warning_flags)
+
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    target_compile_options(PluginScanWorker PRIVATE "-fno-aligned-allocation")
+endif()
+
 add_executable(VCTrackerTests
     tests/VCTrackerTests.cpp
     src/data/Pattern.cpp
@@ -207,9 +230,16 @@ add_test(NAME VCTrackerTests COMMAND VCTrackerTests)
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # --- Out-of-process plugin validator (tiny C binary) ---
     add_executable(PluginValidator src/audio/PluginValidator.c)
-    add_dependencies(VCTracker PluginValidator)
+    add_dependencies(VCTracker PluginScanWorker PluginValidator)
 
-    # Copy PluginValidator into app bundle (before codesigning)
+    # Copy scanner helpers into app bundle (before codesigning)
+    add_custom_command(TARGET VCTracker POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:PluginScanWorker>"
+            "$<TARGET_BUNDLE_DIR:VCTracker>/Contents/MacOS/PluginScanWorker"
+        COMMENT "Copying PluginScanWorker into app bundle"
+        VERBATIM)
+
     add_custom_command(TARGET VCTracker POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:PluginValidator>"
@@ -239,6 +269,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
             if(XATTR_COMMAND)
                 add_custom_command(TARGET VCTracker POST_BUILD
                     COMMAND ${XATTR_COMMAND} -cr "$<TARGET_BUNDLE_DIR:VCTracker>"
+                    COMMAND ${XATTR_COMMAND} -wx com.apple.FinderInfo "0000000000000000000000000000000000000000000000000000000000000000" "$<TARGET_BUNDLE_DIR:VCTracker>"
                     COMMAND ${CODESIGN_COMMAND} --force --deep --sign - "$<TARGET_BUNDLE_DIR:VCTracker>"
                     VERBATIM)
             else()
@@ -249,6 +280,10 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
             add_custom_command(TARGET VCTrackerTests POST_BUILD
                 COMMAND ${CODESIGN_COMMAND} --force --sign - "$<TARGET_FILE:VCTrackerTests>"
+                VERBATIM)
+
+            add_custom_command(TARGET PluginScanWorker POST_BUILD
+                COMMAND ${CODESIGN_COMMAND} --force --sign - "$<TARGET_FILE:PluginScanWorker>"
                 VERBATIM)
         else()
             message(WARNING "codesign not found; VCTracker targets will not be signed")

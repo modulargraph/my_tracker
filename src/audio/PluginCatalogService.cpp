@@ -1,147 +1,223 @@
 #include "PluginCatalogService.h"
 
+namespace
+{
+constexpr int kPluginScanTimeoutMs = 30000;
+
+juce::File getPluginDataDirectory()
+{
+    auto dataRoot = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+    auto dataDir = dataRoot.getChildFile ("VCTracker");
+
+    if (! dataDir.exists() && dataRoot.getChildFile ("Tracker Adjust").exists())
+        dataDir = dataRoot.getChildFile ("Tracker Adjust");
+
+    dataDir.createDirectory();
+    return dataDir;
+}
+
+bool readWorkerResult (const juce::File& resultFile,
+                       juce::OwnedArray<juce::PluginDescription>& result)
+{
+    auto xml = juce::parseXML (resultFile);
+
+    if (xml == nullptr || ! xml->hasTagName ("KNOWNPLUGINS"))
+        return false;
+
+    for (auto* child : xml->getChildIterator())
+    {
+        juce::PluginDescription description;
+
+        if (description.loadFromXml (*child))
+            result.add (new juce::PluginDescription (description));
+    }
+
+    return true;
+}
+
+class OutOfProcessPluginScanner final : public juce::KnownPluginList::CustomScanner
+{
+public:
+    explicit OutOfProcessPluginScanner (juce::File workerToUse)
+        : worker (std::move (workerToUse)),
+          tempDirectory (juce::File::getSpecialLocation (juce::File::tempDirectory)
+                             .getChildFile ("VCTrackerPluginScan"))
+    {
+        tempDirectory.createDirectory();
+    }
+
+    bool findPluginTypesFor (juce::AudioPluginFormat& format,
+                             juce::OwnedArray<juce::PluginDescription>& result,
+                             const juce::String& fileOrIdentifier) override
+    {
+        if (! worker.existsAsFile())
+        {
+            DBG ("Plugin scan worker missing: " + worker.getFullPathName());
+            return false;
+        }
+
+        auto resultFile = tempDirectory.getChildFile (juce::Uuid().toString() + ".xml");
+        resultFile.deleteFile();
+
+        juce::StringArray arguments;
+        arguments.add (worker.getFullPathName());
+        arguments.add ("--format");
+        arguments.add (format.getName());
+        arguments.add ("--plugin");
+        arguments.add (fileOrIdentifier);
+        arguments.add ("--output");
+        arguments.add (resultFile.getFullPathName());
+
+        juce::ChildProcess child;
+
+        if (! child.start (arguments, 0))
+        {
+            DBG ("Failed to start PluginScanWorker for: " + fileOrIdentifier);
+            return false;
+        }
+
+        const auto finished = child.waitForProcessToFinish (kPluginScanTimeoutMs);
+
+        if (! finished)
+        {
+            child.kill();
+            DBG ("Plugin scan worker timed out: " + fileOrIdentifier);
+            return false;
+        }
+
+        if (child.getExitCode() != 0)
+        {
+            DBG ("Plugin scan worker failed (exit "
+                 + juce::String (child.getExitCode()) + "): " + fileOrIdentifier);
+            resultFile.deleteFile();
+            return false;
+        }
+
+        const auto parsed = readWorkerResult (resultFile, result);
+        resultFile.deleteFile();
+
+        if (! parsed)
+            DBG ("Plugin scan worker returned invalid result: " + fileOrIdentifier);
+
+        return parsed;
+    }
+
+private:
+    juce::File worker;
+    juce::File tempDirectory;
+};
+
+void notifyScanCompleteOnMessageThread (PluginCatalogService& service)
+{
+    if (service.onScanComplete != nullptr)
+    {
+        auto* servicePtr = &service;
+
+        juce::MessageManager::callAsync ([servicePtr]
+        {
+            if (servicePtr->onScanComplete)
+                servicePtr->onScanComplete();
+        });
+    }
+}
+} // namespace
+
 PluginCatalogService::PluginCatalogService (te::Engine& e)
     : engine (e)
 {
+    loadPersistedKnownPluginList();
 }
 
 juce::File PluginCatalogService::getDeadPluginsFile()
 {
-    auto dataRoot = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
-    auto dataDir = dataRoot.getChildFile ("VCTracker");
-    if (! dataDir.exists() && dataRoot.getChildFile ("Tracker Adjust").exists())
-        dataDir = dataRoot.getChildFile ("Tracker Adjust");
-    dataDir.createDirectory();
-    return dataDir.getChildFile ("dead-plugins.txt");
+    return getPluginDataDirectory().getChildFile ("dead-plugins.txt");
+}
+
+juce::File PluginCatalogService::getKnownPluginsFile()
+{
+    return getPluginDataDirectory().getChildFile ("known-plugins.xml");
+}
+
+juce::File PluginCatalogService::getFailedPluginsFile()
+{
+    return getPluginDataDirectory().getChildFile ("failed-plugins.txt");
 }
 
 void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths)
 {
-    if (scanning.load())
+    if (scanning.exchange (true))
         return;
-
-    scanning.store (true);
 
     auto& formatManager = engine.getPluginManager().pluginFormatManager;
     auto& knownList = engine.getPluginManager().knownPluginList;
     auto deadPluginsFile = getDeadPluginsFile();
+    auto worker = findPluginScanWorker();
 
-    // Scan each format
-    for (int i = 0; i < formatManager.getNumFormats(); ++i)
+    if (! worker.existsAsFile())
     {
-        auto* format = formatManager.getFormat (i);
-        if (format == nullptr)
-            continue;
+        DBG ("PluginScanWorker binary not found; plugin scan cancelled");
+        scanning.store (false);
+        notifyScanCompleteOnMessageThread (*this);
+        return;
+    }
 
-        auto formatName = format->getName();
+    juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal (knownList, deadPluginsFile);
+    knownList.setCustomScanner (std::make_unique<OutOfProcessPluginScanner> (worker));
 
-        // Only scan VST3 and AudioUnit formats
-        if (formatName != "VST3" && formatName != "AudioUnit")
-            continue;
-
-        // For AudioUnit, scan paths are not user-configurable — the OS provides them
-        if (formatName == "AudioUnit")
+    try
+    {
+        // Scan each format. The directory scanner stays in this process, but
+        // every plugin binary load happens in PluginScanWorker.
+        for (int i = 0; i < formatManager.getNumFormats(); ++i)
         {
-            auto defaultPaths = format->getDefaultLocationsToSearch();
+            auto* format = formatManager.getFormat (i);
+            if (format == nullptr)
+                continue;
 
-            // Pre-validate AU bundles out-of-process before scanning
-            prevalidatePluginBundles (knownList, *format, defaultPaths);
+            auto formatName = format->getName();
 
-            juce::PluginDirectoryScanner scanner (knownList, *format, defaultPaths,
-                                                   true,   // recursive
-                                                   deadPluginsFile,
-                                                   true);  // allow plugins that require ASIO
+            // Only scan VST3 and AudioUnit formats
+            if (formatName != "VST3" && formatName != "AudioUnit")
+                continue;
 
-            juce::String pluginName;
-
-            try
-            {
-                while (scanner.scanNextFile (true, pluginName))
-                {
-                    // scanning...
-                }
-            }
-            catch (const std::exception& e)
-            {
-                DBG ("Plugin scan exception (AudioUnit): " + juce::String (e.what()));
-            }
-            catch (...)
-            {
-                DBG ("Plugin scan unknown exception (AudioUnit)");
-            }
-        }
-        else
-        {
-            // VST3: use user-provided scan paths plus defaults
             juce::FileSearchPath searchPath;
-            for (auto& path : scanPaths)
-                searchPath.add (juce::File (path));
 
-            // Also add the format's default locations
+            if (formatName == "VST3")
+                for (auto& path : scanPaths)
+                    searchPath.add (juce::File (path));
+
             auto defaultPaths = format->getDefaultLocationsToSearch();
             for (int p = 0; p < defaultPaths.getNumPaths(); ++p)
                 searchPath.addIfNotAlreadyThere (defaultPaths[p]);
 
-            // Pre-validate VST3 bundles out-of-process before scanning
-            prevalidatePluginBundles (knownList, *format, searchPath);
-
             juce::PluginDirectoryScanner scanner (knownList, *format, searchPath,
                                                    true,   // recursive
                                                    deadPluginsFile,
-                                                   true);  // allow plugins that require ASIO
+                                                   true);  // allow plugins that require async instantiation
 
             juce::String pluginName;
+            while (scanner.scanNextFile (true, pluginName)) {}
 
-            // VST3 plugins may call macOS APIs (e.g. TSMGetInputSourceProperty)
-            // during DLL loading that assert they're on the main dispatch queue.
-            // Dispatch each scanNextFile call to the message thread to avoid
-            // dispatch_assert_queue_fail crashes (e.g. NI Vari Comp).
-            bool hasMore = true;
-
-            while (hasMore)
+            for (auto& failedFile : scanner.getFailedFiles())
             {
-                juce::WaitableEvent done;
-                bool scanResult = false;
-                juce::String stepName;
-
-                juce::MessageManager::callAsync ([&]
-                {
-                    try
-                    {
-                        scanResult = scanner.scanNextFile (true, stepName);
-                    }
-                    catch (const std::exception& e)
-                    {
-                        DBG ("Plugin scan exception (VST3): " + juce::String (e.what()));
-                        scanResult = false;
-                    }
-                    catch (...)
-                    {
-                        DBG ("Plugin scan unknown exception (VST3)");
-                        scanResult = false;
-                    }
-
-                    done.signal();
-                });
-
-                done.wait (-1);
-                pluginName = stepName;
-                hasMore = scanResult;
+                knownList.addToBlacklist (failedFile);
+                DBG ("Plugin scan failed; blacklisted: " + failedFile);
             }
         }
     }
-
-    scanning.store (false);
-
-    // Notify on the message thread
-    if (onScanComplete != nullptr)
+    catch (const std::exception& e)
     {
-        juce::MessageManager::callAsync ([this]
-        {
-            if (onScanComplete)
-                onScanComplete();
-        });
+        DBG ("Plugin scan exception: " + juce::String (e.what()));
     }
+    catch (...)
+    {
+        DBG ("Plugin scan unknown exception");
+    }
+
+    knownList.setCustomScanner (nullptr);
+    savePersistedKnownPluginList();
+    scanning.store (false);
+    notifyScanCompleteOnMessageThread (*this);
 }
 
 juce::Array<juce::PluginDescription> PluginCatalogService::getAllPlugins() const
@@ -233,99 +309,45 @@ juce::StringArray PluginCatalogService::getDefaultScanPaths()
     return paths;
 }
 
-//==============================================================================
-// Out-of-process plugin pre-validation
-//==============================================================================
+void PluginCatalogService::loadPersistedKnownPluginList()
+{
+    auto& knownList = engine.getPluginManager().knownPluginList;
 
-void PluginCatalogService::prevalidatePluginBundles (
-    juce::KnownPluginList& knownList,
-    juce::AudioPluginFormat& format,
-    const juce::FileSearchPath& searchPath)
+    if (auto xml = juce::parseXML (getKnownPluginsFile()))
+        knownList.recreateFromXml (*xml);
+
+    juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal (knownList,
+                                                                       getDeadPluginsFile());
+    savePersistedKnownPluginList();
+}
+
+void PluginCatalogService::savePersistedKnownPluginList()
+{
+    auto& knownList = engine.getPluginManager().knownPluginList;
+
+    if (auto xml = knownList.createXml())
+        xml->writeTo (getKnownPluginsFile());
+
+    getFailedPluginsFile().replaceWithText (knownList.getBlacklistedFiles().joinIntoString ("\n"),
+                                            true,
+                                            true);
+}
+
+juce::File PluginCatalogService::findPluginScanWorker() const
 {
    #if JUCE_MAC
-    // Locate the PluginValidator helper binary inside the app bundle
     auto appFile = juce::File::getSpecialLocation (juce::File::currentApplicationFile);
-    auto validatorPath = appFile.getChildFile ("Contents/MacOS/PluginValidator");
+    auto bundledWorker = appFile.getChildFile ("Contents/MacOS/PluginScanWorker");
 
-    if (! validatorPath.existsAsFile())
-    {
-        // Fallback: next to the executable (development builds)
-        auto exeFile = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
-        validatorPath = exeFile.getSiblingFile ("PluginValidator");
-    }
-
-    if (! validatorPath.existsAsFile())
-    {
-        DBG ("PluginValidator binary not found — skipping pre-validation");
-        return;
-    }
-
-    // Get all plugin file paths the scanner would enumerate
-    auto pluginFiles = format.searchPathsForPlugins (searchPath, true);
-
-    // Skip already-known (successfully scanned) plugins
-    for (auto& known : knownList.getTypes())
-        pluginFiles.removeString (known.fileOrIdentifier);
-
-    // Skip already-blacklisted plugins
-    for (auto& bl : knownList.getBlacklistedFiles())
-        pluginFiles.removeString (bl);
-
-    if (pluginFiles.isEmpty())
-        return;
-
-    DBG ("Pre-validating " + juce::String (pluginFiles.size()) + " plugin bundles...");
-
-    auto validatorCmd = validatorPath.getFullPathName();
-
-    for (auto& pluginPath : pluginFiles)
-    {
-        juce::ChildProcess child;
-        auto command = validatorCmd.quoted() + " " + juce::String (pluginPath).quoted();
-
-        if (child.start (command))
-        {
-            bool finished = child.waitForProcessToFinish (10000); // 10 s timeout
-
-            if (! finished)
-            {
-                child.kill();
-                knownList.addToBlacklist (pluginPath);
-                DBG ("Plugin pre-validation TIMEOUT — blacklisted: " + pluginPath);
-            }
-            else
-            {
-                auto exitCode = child.getExitCode();
-
-                if (exitCode == 42)
-                {
-                    // dlopen succeeded — safe to scan
-                }
-                else if (exitCode == 99 || exitCode == 0)
-                {
-                    // 99 = signal handler caught crash
-                    //  0 = killed by uncaught signal (JUCE returns 0 for signal deaths)
-                    knownList.addToBlacklist (pluginPath);
-                    DBG ("Plugin pre-validation CRASHED (exit "
-                         + juce::String ((int) exitCode) + ") — blacklisted: " + pluginPath);
-                }
-                else
-                {
-                    // 1 = usage error, 2 = bundle not found, 3 = dlopen failed gracefully
-                    // Let the real scanner try its own loading path
-                    DBG ("Plugin pre-validation: dlopen issue (exit "
-                         + juce::String ((int) exitCode) + "): " + pluginPath);
-                }
-            }
-        }
-        else
-        {
-            DBG ("Failed to start PluginValidator for: " + pluginPath);
-        }
-    }
-
-    DBG ("Pre-validation complete");
-   #else
-    juce::ignoreUnused (knownList, format, searchPath);
+    if (bundledWorker.existsAsFile())
+        return bundledWorker;
    #endif
+
+    auto exeFile = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
+    auto siblingWorker = exeFile.getSiblingFile ("PluginScanWorker");
+
+    if (siblingWorker.existsAsFile())
+        return siblingWorker;
+
+    return {};
 }
