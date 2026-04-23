@@ -174,6 +174,7 @@ private:
     void updateTrackSampleMarkers();
     void cycleTab (int direction);
     void switchToTab (Tab tab);
+    void focusContentForTab (Tab tab);
     void showAudioPluginSettings();
     void refreshAutomationPanel (bool forcePopulate = true);
     void populateAutomationPlugins();

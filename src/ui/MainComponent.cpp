@@ -871,7 +871,7 @@ MainComponent::MainComponent()
     // Playback cursor update timer
     startTimerHz (30);
 
-    // Register as key listener on the grid, sample editor, file browser, mixer, and effects
+    // Keep global navigation shortcuts available from every focusable content area.
     trackerGrid->addKeyListener (this);
     trackerGrid->addKeyListener (commandManager.getKeyMappings());
     sampleEditor->addKeyListener (this);
@@ -882,8 +882,11 @@ MainComponent::MainComponent()
     mixerComponent->addKeyListener (commandManager.getKeyMappings());
     sendEffectsComponent->addKeyListener (this);
     sendEffectsComponent->addKeyListener (commandManager.getKeyMappings());
+    instrumentPanel->addKeyListener (this);
     instrumentPanel->addKeyListener (commandManager.getKeyMappings());
+    automationPanel->addKeyListener (this);
     automationPanel->addKeyListener (commandManager.getKeyMappings());
+    arrangementComponent->addKeyListener (this);
     arrangementComponent->addKeyListener (commandManager.getKeyMappings());
 
     setSize (1280, 720);
@@ -904,8 +907,11 @@ MainComponent::~MainComponent()
     juce::MenuBarModel::setMacMainMenu (nullptr);
    #endif
     arrangementComponent->removeKeyListener (commandManager.getKeyMappings());
+    arrangementComponent->removeKeyListener (this);
     automationPanel->removeKeyListener (commandManager.getKeyMappings());
+    automationPanel->removeKeyListener (this);
     instrumentPanel->removeKeyListener (commandManager.getKeyMappings());
+    instrumentPanel->removeKeyListener (this);
     sendEffectsComponent->removeKeyListener (commandManager.getKeyMappings());
     mixerComponent->removeKeyListener (this);
     mixerComponent->removeKeyListener (commandManager.getKeyMappings());
@@ -2414,8 +2420,10 @@ void MainComponent::showHelpOverlay()
             // Column 2: Pattern + Editing + File
             columns[1] = {
                 { "PATTERN & TRACKS", {
-                    "Cmd+Left/Right    Switch pattern",
-                    "Cmd+Shift+Right   Add new pattern",
+                    "Cmd+Shift+Left   Prev pattern",
+                    "Cmd+Shift+Right  Next pattern",
+                    "Cmd+Opt+Shift+Right Add pattern",
+                    "Cmd+Left/Right   Octave note",
                     "Cmd+Down/Up       Instrument +/-",
                     "Cmd+M             Mute track",
                     "Cmd+Shift+M       Solo track" }},
@@ -2435,6 +2443,7 @@ void MainComponent::showHelpOverlay()
             // Column 3: Tabs + Mixer + Browser + View
             columns[2] = {
                 { "TABS", {
+                    "Opt+Left/Right    Cycle tabs",
                     "Shift+F1          Tracker",
                     "Shift+F2          Inst Edit",
                     "Shift+F3          Inst Type",
@@ -2444,10 +2453,10 @@ void MainComponent::showHelpOverlay()
                     "Escape            Return to Tracker",
                     "` (in edit tabs)  Params / Mod" }},
                 { "MIXER", {
-                    "Left / Right      Navigate params",
-                    "Up / Down         Adjust value",
-                    "Shift+Up/Down     Large adjust",
-                    "Tab / Shift+Tab   Switch track",
+                    "Up / Down         Navigate params",
+                    "Left / Right      Adjust value",
+                    "Shift+Left/Right  Large adjust",
+                    "Tab / Shift+Tab   Switch strip",
                     "M / S             Mute / Solo" }},
                 { "VIEW", {
                     "Cmd+Shift+A       Arrangement",
@@ -2937,7 +2946,11 @@ void MainComponent::cycleTab (int direction)
 
 void MainComponent::switchToTab (Tab tab)
 {
-    if (activeTab == tab) return;
+    if (activeTab == tab)
+    {
+        focusContentForTab (tab);
+        return;
+    }
 
     // Stop file preview when leaving browser tab
     if (activeTab == Tab::Browser)
@@ -2988,7 +3001,11 @@ void MainComponent::switchToTab (Tab tab)
     if (tab == Tab::Tracker && automationPanelVisible)
         refreshAutomationPanel();
 
-    // Focus the right component
+    focusContentForTab (tab);
+}
+
+void MainComponent::focusContentForTab (Tab tab)
+{
     switch (tab)
     {
         case Tab::Tracker:
