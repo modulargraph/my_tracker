@@ -207,8 +207,13 @@ public:
     void applyPatternAutomation (const PatternAutomationData& automationData,
                                  int patternLength, int rowsPerBeat);
 
-    /** Apply automation values for a specific playback row (used by live playback updates). */
-    void applyAutomationForPlaybackRow (const PatternAutomationData& automationData, int row);
+    /** Apply automation values for a specific playback row (used by live playback updates).
+     *  The optional exclusion is used while recording a live VST parameter so
+     *  playback automation does not fight the user's current gesture. */
+    void applyAutomationForPlaybackRow (const PatternAutomationData& automationData,
+                                        int row,
+                                        const juce::String& excludedPluginId = {},
+                                        int excludedParamIndex = -1);
 
     /** Reset all plugin parameters modified by automation to their baseline values.
      *  Called when switching patterns or stopping playback. */
@@ -216,6 +221,12 @@ public:
 
     /** Resolve a plugin ID string to an AudioPluginInstance (public for automation panel). */
     juce::AudioPluginInstance* resolvePluginInstance (const juce::String& pluginId);
+
+    /** Returns true when a parameter change matches the most recent value written
+     *  by tracker automation and should not be treated as a manual VST UI gesture. */
+    bool shouldSuppressPluginAutoLearnChange (const juce::String& pluginId,
+                                              int paramIndex,
+                                              float currentValue) const;
 
 private:
     std::unique_ptr<te::Engine> engine;
@@ -270,11 +281,20 @@ private:
         int paramIndex = -1;
         float baselineValue = 0.0f;
     };
+    struct AutomatedParamWrite
+    {
+        juce::String pluginId;
+        int paramIndex = -1;
+        float value = 0.0f;
+    };
     std::vector<AutomatedParam> lastAutomatedParams;
+    std::vector<AutomatedParamWrite> recentAutomatedParamWrites;
     AutomatedParam* findAutomatedParam (const juce::String& pluginId, int paramIndex);
     const AutomatedParam* findAutomatedParam (const juce::String& pluginId, int paramIndex) const;
     void forgetAutomatedParamsForPlugin (const juce::String& pluginId);
     void forgetAutomatedParamsForInsertTrack (int trackIndex);
+    const AutomatedParamWrite* findRecentAutomatedParamWrite (const juce::String& pluginId, int paramIndex) const;
+    void rememberAutomatedParamWrite (const juce::String& pluginId, int paramIndex, float value);
 
     // Ensure the plugin instrument is loaded on its owner track
     void ensurePluginInstrumentLoaded (int instrumentIndex);

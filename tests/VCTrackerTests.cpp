@@ -4582,6 +4582,7 @@ bool testPluginAutomationSetAvailablePluginsIsNotReentrant()
     std::vector<AutomatablePluginInfo> plugins { pluginInfo };
 
     int callbackCount = 0;
+    int parameterCallbackCount = 0;
     automationComponent.onPluginSelected = [&] (const juce::String&)
     {
         ++callbackCount;
@@ -4591,12 +4592,22 @@ bool testPluginAutomationSetAvailablePluginsIsNotReentrant()
         if (callbackCount < 4)
             automationComponent.setAvailablePlugins (plugins);
     };
+    automationComponent.onParameterSelected = [&] (const juce::String&, int)
+    {
+        ++parameterCallbackCount;
+    };
 
     automationComponent.setAvailablePlugins (plugins);
 
     if (callbackCount != 0)
     {
         std::cerr << "setAvailablePlugins should not dispatch reentrant plugin selection callbacks\n";
+        return false;
+    }
+
+    if (parameterCallbackCount != 0)
+    {
+        std::cerr << "setAvailablePlugins should not dispatch parameter selection callbacks\n";
         return false;
     }
 

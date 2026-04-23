@@ -2512,6 +2512,7 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             constexpr float kLearnThreshold = 0.004f;
             int changedParam = -1;
             float maxDelta = kLearnThreshold;
+            const auto pluginId = "inst:" + juce::String (instrumentIndex);
 
             for (int i = 0; i < params.size(); ++i)
             {
@@ -2522,6 +2523,9 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
                 float current = p->getValue();
                 float delta = std::abs (current - autoLearnParamSnapshot[static_cast<size_t> (i)]);
                 autoLearnParamSnapshot[static_cast<size_t> (i)] = current;
+
+                if (engine.shouldSuppressPluginAutoLearnChange (pluginId, i, current))
+                    continue;
 
                 if (delta > maxDelta)
                 {
@@ -2724,6 +2728,12 @@ void TrackerEngine::closePluginInstrumentEditor (int instrumentIndex)
 // Plugin automation (Phase 5)
 //==============================================================================
 
+namespace
+{
+    constexpr float kAutomationParameterEpsilon = 1.0e-5f;
+    constexpr float kAutoLearnAutomationSuppressTolerance = 1.0e-3f;
+}
+
 juce::AudioPluginInstance* TrackerEngine::resolvePluginInstance (const juce::String& pluginId)
 {
     if (pluginId.startsWith ("inst:"))
@@ -2787,6 +2797,13 @@ void TrackerEngine::forgetAutomatedParamsForPlugin (const juce::String& pluginId
                                                    return ap.pluginId == pluginId;
                                                }),
                                lastAutomatedParams.end());
+
+    recentAutomatedParamWrites.erase (std::remove_if (recentAutomatedParamWrites.begin(), recentAutomatedParamWrites.end(),
+                                                      [&pluginId] (const AutomatedParamWrite& write)
+                                                      {
+                                                          return write.pluginId == pluginId;
+                                                      }),
+                                      recentAutomatedParamWrites.end());
 }
 
 void TrackerEngine::forgetAutomatedParamsForInsertTrack (int trackIndex)
@@ -2799,6 +2816,50 @@ void TrackerEngine::forgetAutomatedParamsForInsertTrack (int trackIndex)
                                                    return ap.pluginId.startsWith (pluginIdPrefix);
                                                }),
                                lastAutomatedParams.end());
+
+    recentAutomatedParamWrites.erase (std::remove_if (recentAutomatedParamWrites.begin(), recentAutomatedParamWrites.end(),
+                                                      [&pluginIdPrefix] (const AutomatedParamWrite& write)
+                                                      {
+                                                          return write.pluginId.startsWith (pluginIdPrefix);
+                                                      }),
+                                      recentAutomatedParamWrites.end());
+}
+
+const TrackerEngine::AutomatedParamWrite* TrackerEngine::findRecentAutomatedParamWrite (const juce::String& pluginId,
+                                                                                        int paramIndex) const
+{
+    for (const auto& write : recentAutomatedParamWrites)
+    {
+        if (write.pluginId == pluginId && write.paramIndex == paramIndex)
+            return &write;
+    }
+
+    return nullptr;
+}
+
+void TrackerEngine::rememberAutomatedParamWrite (const juce::String& pluginId, int paramIndex, float value)
+{
+    for (auto& write : recentAutomatedParamWrites)
+    {
+        if (write.pluginId == pluginId && write.paramIndex == paramIndex)
+        {
+            write.value = value;
+            return;
+        }
+    }
+
+    recentAutomatedParamWrites.push_back ({ pluginId, paramIndex, value });
+}
+
+bool TrackerEngine::shouldSuppressPluginAutoLearnChange (const juce::String& pluginId,
+                                                         int paramIndex,
+                                                         float currentValue) const
+{
+    auto* recentWrite = findRecentAutomatedParamWrite (pluginId, paramIndex);
+    if (recentWrite == nullptr)
+        return false;
+
+    return std::abs (currentValue - recentWrite->value) <= kAutoLearnAutomationSuppressTolerance;
 }
 
 void TrackerEngine::applyPatternAutomation (const PatternAutomationData& automationData,
@@ -2812,6 +2873,7 @@ void TrackerEngine::applyPatternAutomation (const PatternAutomationData& automat
     // tracked param, which deadlocks when the audio thread is processing the
     // plugin (playInStopEnabled = true means the graph is always live).
     lastAutomatedParams.clear();
+    recentAutomatedParamWrites.clear();
 
     if (automationData.isEmpty())
         return;
@@ -2849,16 +2911,24 @@ void TrackerEngine::applyPatternAutomation (const PatternAutomationData& automat
     applyAutomationForPlaybackRow (automationData, 0);
 }
 
-void TrackerEngine::applyAutomationForPlaybackRow (const PatternAutomationData& automationData, int row)
+void TrackerEngine::applyAutomationForPlaybackRow (const PatternAutomationData& automationData,
+                                                   int row,
+                                                   const juce::String& excludedPluginId,
+                                                   int excludedParamIndex)
 {
     if (automationData.isEmpty())
+    {
+        recentAutomatedParamWrites.clear();
         return;
+    }
 
     const float rowPosition = static_cast<float> (juce::jmax (0, row));
 
     for (const auto& lane : automationData.lanes)
     {
         if (lane.isEmpty())
+            continue;
+        if (excludedParamIndex >= 0 && lane.parameterId == excludedParamIndex && lane.pluginId == excludedPluginId)
             continue;
 
         auto* audioPlugin = resolvePluginInstance (lane.pluginId);
@@ -2890,7 +2960,13 @@ void TrackerEngine::applyAutomationForPlaybackRow (const PatternAutomationData& 
         auto& lock = audioPlugin->getCallbackLock();
         if (lock.tryEnter())
         {
-            param->setValue (value);
+            auto appliedValue = param->getValue();
+            if (std::abs (appliedValue - value) > kAutomationParameterEpsilon)
+            {
+                param->setValue (value);
+                appliedValue = param->getValue();
+            }
+            rememberAutomatedParamWrite (lane.pluginId, lane.parameterId, appliedValue);
             lock.exit();
         }
     }
@@ -2916,7 +2992,13 @@ void TrackerEngine::resetAutomationParameters()
         auto& lock = audioPlugin->getCallbackLock();
         if (lock.tryEnter())
         {
-            param->setValue (ap.baselineValue);
+            auto appliedValue = param->getValue();
+            if (std::abs (appliedValue - ap.baselineValue) > kAutomationParameterEpsilon)
+            {
+                param->setValue (ap.baselineValue);
+                appliedValue = param->getValue();
+            }
+            rememberAutomatedParamWrite (ap.pluginId, ap.paramIndex, appliedValue);
             lock.exit();
         }
     }

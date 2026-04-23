@@ -234,6 +234,7 @@ void PluginEditorContent::pollAutoLearnParameterChanges()
     constexpr float kLearnThreshold = 0.004f;
     int changedParam = -1;
     float maxDelta = kLearnThreshold;
+    const auto pluginId = "inst:" + juce::String (instrumentIndex);
 
     for (int i = 0; i < params.size(); ++i)
     {
@@ -244,6 +245,9 @@ void PluginEditorContent::pollAutoLearnParameterChanges()
         float current = p->getValue();
         float delta = std::abs (current - autoLearnParamSnapshot[static_cast<size_t> (i)]);
         autoLearnParamSnapshot[static_cast<size_t> (i)] = current;
+
+        if (engine.shouldSuppressPluginAutoLearnChange (pluginId, i, current))
+            continue;
 
         if (delta > maxDelta)
         {
