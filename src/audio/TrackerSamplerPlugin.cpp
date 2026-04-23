@@ -10,6 +10,7 @@ const char* TrackerSamplerPlugin::xmlTypeName = "TrackerSampler";
 TrackerSamplerPlugin::TrackerSamplerPlugin (te::PluginCreationInfo info)
     : te::Plugin (info)
 {
+    clearPendingParamHighBits();
 }
 
 TrackerSamplerPlugin::~TrackerSamplerPlugin()
@@ -27,9 +28,15 @@ void TrackerSamplerPlugin::deinitialise()
     voice.reset();
     fadeOutVoice.reset();
     pendingSampleOffset = -1;
-    pendingSampleOffsetHighBit = 0;
-    hasPendingSampleOffsetHighBit = false;
+    clearPendingParamHighBits();
     directionOverride = -1;
+    sliceOverride = -1;
+}
+
+void TrackerSamplerPlugin::clearPendingParamHighBits()
+{
+    pendingParamHighBits.fill (FxParamTransport::kNoPendingParamHighBit);
+    legacyPendingParamHighBit = FxParamTransport::kNoPendingParamHighBit;
 }
 
 void TrackerSamplerPlugin::setSampleBank (std::shared_ptr<const SampleBank> bank)
@@ -146,7 +153,8 @@ void TrackerSamplerPlugin::triggerNote (Voice& v, int note, float vel,
             auto boundaries = SamplePlaybackLayout::getSliceBoundariesNorm (paramsRef);
 
             int numSlices = static_cast<int> (boundaries.size()) - 1;
-            int sliceIndex = juce::jlimit (0, numSlices - 1, paramsRef.selectedSlice);
+            int sliceIndex = sliceOverride >= 0 ? sliceOverride : paramsRef.selectedSlice;
+            sliceIndex = juce::jlimit (0, numSlices - 1, sliceIndex);
 
             v.sliceStart = boundaries[static_cast<size_t> (sliceIndex)] * totalSmp;
             v.sliceEnd = boundaries[static_cast<size_t> (sliceIndex + 1)] * totalSmp;
@@ -414,7 +422,7 @@ void TrackerSamplerPlugin::renderSlice (Voice& v, juce::AudioBuffer<float>& buff
     if (params.playMode == InstrumentParams::PlayMode::Slice)
     {
         // Slice mode plays the selected slice melodically; Beat Slice uses
-        // the note number as the slice index and keeps playback unpitched.
+        // the note number as the slice index while still accepting FX pitch.
         pitchRatio = getPitchRatio (v.midiNote, bank, params);
     }
     else
@@ -577,6 +585,32 @@ void TrackerSamplerPlugin::applyPositionCommandToVoice (Voice& v, int positionBy
     v.playbackPos = regionStart + frac * regionLen;
 }
 
+void TrackerSamplerPlugin::applySliceCommandToVoice (Voice& v, int sliceByte)
+{
+    if (v.state != Voice::State::Playing || v.bank == nullptr || v.bank->totalSamples <= 0)
+        return;
+
+    const auto& params = v.params;
+    if (params.playMode != InstrumentParams::PlayMode::Slice || params.slicePoints.empty())
+        return;
+
+    const auto boundaries = SamplePlaybackLayout::getSliceBoundariesNorm (params);
+    const int numSlices = static_cast<int> (boundaries.size()) - 1;
+    if (numSlices <= 0)
+        return;
+
+    const int sliceIndex = juce::jlimit (0, numSlices - 1, sliceByte);
+    const double totalSmp = static_cast<double> (v.bank->totalSamples);
+    v.sliceStart = boundaries[static_cast<size_t> (sliceIndex)] * totalSmp;
+    v.sliceEnd = boundaries[static_cast<size_t> (sliceIndex + 1)] * totalSmp;
+
+    if (v.sliceEnd <= v.sliceStart)
+        return;
+
+    v.playbackPos = v.playingForward ? v.sliceStart
+                                      : juce::jmax (v.sliceStart, v.sliceEnd - 1.0);
+}
+
 //==============================================================================
 // Voice rendering dispatcher
 //==============================================================================
@@ -644,14 +678,11 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         return InstrumentParams {};
     };
 
-    auto decodeControllerByte = [this] (int controllerValue)
+    auto decodeControllerByte = [this] (int valueController, int controllerValue)
     {
-        const int lowBits = controllerValue & 0x7F;
-        const int decoded = hasPendingSampleOffsetHighBit
-                                ? ((pendingSampleOffsetHighBit << 7) | lowBits)
-                                : lowBits;
-        hasPendingSampleOffsetHighBit = false;
-        return decoded;
+        return FxParamTransport::consumeByteFromController (valueController, controllerValue,
+                                                            pendingParamHighBits,
+                                                            legacyPendingParamHighBit);
     };
 
     // --- Handle stop request before new note (avoids stopping a just-triggered note) ---
@@ -734,12 +765,15 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 if (m.getControllerNumber() == 0) // Bank Select MSB
                 {
                     currentBankMsb = m.getControllerValue() & 0x7F;
-                    hasPendingSampleOffsetHighBit = false;
+                }
+                else if (auto valueController = FxParamTransport::getValueControllerForHighBitController (m.getControllerNumber());
+                         valueController >= 0)
+                {
+                    pendingParamHighBits[static_cast<size_t> (valueController)] = m.getControllerValue() & 0x1;
                 }
                 else if (m.getControllerNumber() == FxParamTransport::kParamHighBitCc)
                 {
-                    pendingSampleOffsetHighBit = m.getControllerValue() & 0x1;
-                    hasPendingSampleOffsetHighBit = true;
+                    legacyPendingParamHighBit = m.getControllerValue() & 0x1;
                 }
                 // B (direction) and P (position) modify independent voice state:
                 // B sets voice.playingForward, P sets voice.playbackPos via
@@ -751,14 +785,14 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 // directionOverride and pendingSampleOffset is applied afterwards.
                 else if (m.getControllerNumber() == 37) // Bxx direction
                 {
-                    const int value = decodeControllerByte (m.getControllerValue());
+                    const int value = decodeControllerByte (m.getControllerNumber(), m.getControllerValue());
                     directionOverride = (value == 0) ? 0 : 1;
                     if (voice.state == Voice::State::Playing)
                         voice.playingForward = (directionOverride == 1);
                 }
                 else if (m.getControllerNumber() == 38) // Pxx
                 {
-                    pendingSampleOffset = decodeControllerByte (m.getControllerValue());
+                    pendingSampleOffset = decodeControllerByte (m.getControllerNumber(), m.getControllerValue());
                     if (voice.state == Voice::State::Playing)
                         applyPositionCommandToVoice (voice, pendingSampleOffset);
                 }
@@ -766,7 +800,9 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 {
                     directionOverride = -1;
                     pendingSampleOffset = -1;
-                    hasPendingSampleOffsetHighBit = false;
+                    sliceOverride = -1;
+                    clearPendingParamHighBits();
+                    pitchOffset.store (0.0f, std::memory_order_relaxed);
                     if (voice.state == Voice::State::Playing)
                     {
                         voice.playingForward =
@@ -775,9 +811,17 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                                 : ! voice.params.reversed;
                     }
                 }
-                else
+                else if (m.getControllerNumber() == 31) // Txx tune
                 {
-                    hasPendingSampleOffsetHighBit = false;
+                    const int value = decodeControllerByte (m.getControllerNumber(), m.getControllerValue());
+                    pitchOffset.store (static_cast<float> (static_cast<int8_t> (value & 0xFF)),
+                                       std::memory_order_relaxed);
+                }
+                else if (m.getControllerNumber() == 41) // Lxx slice select
+                {
+                    sliceOverride = decodeControllerByte (m.getControllerNumber(), m.getControllerValue());
+                    if (voice.state == Voice::State::Playing)
+                        applySliceCommandToVoice (voice, sliceOverride);
                 }
             }
             else if (m.isNoteOn())

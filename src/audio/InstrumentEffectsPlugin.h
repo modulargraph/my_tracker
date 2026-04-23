@@ -1,9 +1,11 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <map>
 #include <JuceHeader.h>
 #include <tracktion_engine/tracktion_engine.h>
+#include "FxParamTransport.h"
 #include "InstrumentParams.h"
 #include "SendBuffers.h"
 
@@ -112,8 +114,10 @@ private:
         int lastSpeedTempo = 0;
         int trackerSpeed = 6; // ticks per row
 
-        // 8-bit FX parameter transport helper (high bit from CC#118)
-        int pendingParamHighBit = 0;
+        // 8-bit FX parameter transport helpers. CC#118 is a legacy fallback;
+        // generated pattern FX uses per-value-controller high-bit CCs.
+        std::array<int, 128> pendingParamHighBits {};
+        int pendingParamHighBit = FxParamTransport::kNoPendingParamHighBit;
 
         // Current base MIDI note for pitch effects
         int currentNote = -1;
@@ -133,6 +137,17 @@ private:
         bool tremoloActive = false;
         double arpTickAccum = 0.0;
 
+        FxState()
+        {
+            resetPendingParamHighBits();
+        }
+
+        void resetPendingParamHighBits()
+        {
+            pendingParamHighBits.fill (FxParamTransport::kNoPendingParamHighBit);
+            pendingParamHighBit = FxParamTransport::kNoPendingParamHighBit;
+        }
+
         void reset()
         {
             arpParam = 0; arpPhase = 0; arpTickAccum = 0.0;
@@ -144,7 +159,7 @@ private:
             volumeSlide = 0.0f; volSlideUp = 0; volSlideDown = 0;
             sampleOffset = 0; lastSpeedTempo = 0;
             trackerSpeed = 6;
-            pendingParamHighBit = 0;
+            resetPendingParamHighBits();
             currentNote = -1;
             tuneOffset = 0.0f;
             stepSlideOffset = 0.0f;

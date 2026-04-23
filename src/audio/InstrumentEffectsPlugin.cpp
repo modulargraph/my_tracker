@@ -716,9 +716,11 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     };
 
     // Process MIDI to track current instrument and handle CCs/global notes
-    auto decodeFxParam = [this] (int ccValue)
+    auto decodeFxParam = [this] (int valueController, int ccValue)
     {
-        return FxParamTransport::consumeByteFromController (ccValue, fxState.pendingParamHighBit);
+        return FxParamTransport::consumeByteFromController (valueController, ccValue,
+                                                            fxState.pendingParamHighBits,
+                                                            fxState.pendingParamHighBit);
     };
 
     if (fc.bufferForMidiMessages != nullptr)
@@ -768,7 +770,12 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 {
                     bankSelectMsb = ccVal & 0x7F;
                 }
-                else if (ccNum == FxParamTransport::kParamHighBitCc) // FX parameter bit 7 extension
+                else if (auto valueController = FxParamTransport::getValueControllerForHighBitController (ccNum);
+                         valueController >= 0)
+                {
+                    fxState.pendingParamHighBits[static_cast<size_t> (valueController)] = ccVal & 0x1;
+                }
+                else if (ccNum == FxParamTransport::kParamHighBitCc) // legacy/global FX parameter bit 7 extension
                 {
                     fxState.pendingParamHighBit = ccVal & 0x1;
                 }
@@ -789,7 +796,7 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     fxState.portaTargetOffset = 0.0f;
                     overrides.delaySendOverride = -1;
                     overrides.reverbSendOverride = -1;
-                    fxState.pendingParamHighBit = 0;
+                    fxState.resetPendingParamHighBits();
                 }
                 else if (ccNum == 28) // Portamento target note (don't retrigger)
                 {
@@ -812,18 +819,18 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 }
                 else if (ccNum == 31) // Txx tune (signed two's complement)
                 {
-                    const int fxParam = decodeFxParam (ccVal);
+                    const int fxParam = decodeFxParam (ccNum, ccVal);
                     fxState.tuneOffset = static_cast<float> (static_cast<int8_t> (fxParam & 0xFF));
                 }
                 else if (ccNum == 32) // Gxx portamento speed in steps
                 {
-                    const int fxParam = decodeFxParam (ccVal);
+                    const int fxParam = decodeFxParam (ccNum, ccVal);
                     if (fxParam > 0)
                         fxState.portaSteps = fxParam;
                 }
                 else if (ccNum == 33 || ccNum == 34) // Sxy/Dxy step slide
                 {
-                    const int fxParam = decodeFxParam (ccVal);
+                    const int fxParam = decodeFxParam (ccNum, ccVal);
                     const float semitones = static_cast<float> ((fxParam >> 4) & 0xF);
                     const int steps = fxParam & 0xF;
                     const float signedDelta = (ccNum == 33) ? semitones : -semitones;
@@ -844,15 +851,15 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 }
                 else if (ccNum == 35) // Yxx delay send override
                 {
-                    overrides.delaySendOverride = decodeFxParam (ccVal);
+                    overrides.delaySendOverride = decodeFxParam (ccNum, ccVal);
                 }
                 else if (ccNum == 36) // Rxx reverb send override
                 {
-                    overrides.reverbSendOverride = decodeFxParam (ccVal);
+                    overrides.reverbSendOverride = decodeFxParam (ccNum, ccVal);
                 }
                 else if (ccNum == 40) // Vxx volume FX override
                 {
-                    overrides.volumeFxRaw = decodeFxParam (ccVal);
+                    overrides.volumeFxRaw = decodeFxParam (ccNum, ccVal);
                 }
                 else if (ccNum == 85) // Mod mode override (from Exy effect, encoded as dest*2+mode)
                 {

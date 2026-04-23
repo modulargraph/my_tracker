@@ -52,6 +52,7 @@ private:
     // Navigation
     int& currentColumn() { return section == 0 ? delayColumn : reverbColumn; }
     int currentColumnCount() const { return section == 0 ? kDelayColumns : kReverbColumns; }
+    void moveFocusHorizontal (int direction);
 
     // Value adjustment
     void adjustCurrentValue (int direction, bool fine, bool large);

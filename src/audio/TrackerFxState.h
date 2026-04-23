@@ -2,6 +2,7 @@
 
 #include <array>
 #include "InstrumentParams.h"
+#include "FxParamTransport.h"
 
 // Per-track overrides (set via effect commands, only accessed on audio thread)
 struct TrackOverrides
@@ -58,8 +59,12 @@ struct TrackerFxState
     int lastSpeedTempo = 0;
     int trackerSpeed = 6; // ticks per row
 
-    // 8-bit FX parameter transport helper (high bit from CC#118)
-    int pendingParamHighBit = 0;
+    // 8-bit FX parameter transport helpers.
+    // CC#118 is kept as a legacy/global fallback; current generated FX uses a
+    // per-value-controller high-bit CC so simultaneous row FX cannot overwrite
+    // each other's upper bit before their low bits are decoded.
+    std::array<int, 128> pendingParamHighBits {};
+    int pendingParamHighBit = FxParamTransport::kNoPendingParamHighBit;
 
     // Current base MIDI note for pitch effects
     int currentNote = -1;
@@ -79,6 +84,17 @@ struct TrackerFxState
     bool tremoloActive = false;
     double arpTickAccum = 0.0;
 
+    TrackerFxState()
+    {
+        resetPendingParamHighBits();
+    }
+
+    void resetPendingParamHighBits()
+    {
+        pendingParamHighBits.fill (FxParamTransport::kNoPendingParamHighBit);
+        pendingParamHighBit = FxParamTransport::kNoPendingParamHighBit;
+    }
+
     void reset()
     {
         arpParam = 0; arpPhase = 0; arpTickAccum = 0.0;
@@ -90,7 +106,7 @@ struct TrackerFxState
         volumeSlide = 0.0f; volSlideUp = 0; volSlideDown = 0;
         sampleOffset = 0; lastSpeedTempo = 0;
         trackerSpeed = 6;
-        pendingParamHighBit = 0;
+        resetPendingParamHighBits();
         currentNote = -1;
         tuneOffset = 0.0f;
         stepSlideOffset = 0.0f;

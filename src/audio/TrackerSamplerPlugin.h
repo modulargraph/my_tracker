@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <map>
 #include <memory>
 #include <JuceHeader.h>
@@ -154,10 +155,11 @@ private:
 
     // Sample offset from 9xx effect (set via CC#9, consumed on next note-on)
     int pendingSampleOffset = -1;
-    int pendingSampleOffsetHighBit = 0;
-    bool hasPendingSampleOffsetHighBit = false;
+    std::array<int, 128> pendingParamHighBits {};
+    int legacyPendingParamHighBit = -1;
     int currentBankMsb = 0;
     int directionOverride = -1; // -1 = instrument default, 0 = backward, 1 = forward
+    int sliceOverride = -1;     // -1 = instrument selectedSlice
 
     // Audio thread state
     double outputSampleRate = 44100.0;
@@ -185,7 +187,9 @@ private:
     void renderGranular (Voice& v, juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
                          const SampleBank& bank, const InstrumentParams& params);
     void applyPositionCommandToVoice (Voice& v, int positionByte);
+    void applySliceCommandToVoice (Voice& v, int sliceByte);
     void prepareGranularGrain (Voice& v, const SampleBank& bank, const InstrumentParams& params);
+    void clearPendingParamHighBits();
 
     double getPitchRatio (int midiNote, const SampleBank& bank, const InstrumentParams& params) const;
     float interpolateSample (const SampleBank& bank, int channel, double pos) const;

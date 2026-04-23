@@ -317,27 +317,27 @@ double getParamStep (Section section, int paramIndex)
 {
     switch (section)
     {
-        case Section::EQ:      return paramIndex == 3 ? 50.0 : 0.5;
+        case Section::EQ:      return paramIndex == 3 ? 250.0 : 1.0;
         case Section::Comp:
             switch (paramIndex)
             {
-                case 0:  return 1.0;
-                case 1:  return 0.5;
-                case 2:  return 1.0;
-                case 3:  return 10.0;
+                case 0:  return 2.0;
+                case 1:  return 1.0;
+                case 2:  return 5.0;
+                case 3:  return 25.0;
                 default: return 0.1;
             }
         case Section::Limiter:
             switch (paramIndex)
             {
-                case 0:  return 0.5;
-                case 1:  return 5.0;
+                case 0:  return 1.0;
+                case 1:  return 25.0;
                 default: return 0.1;
             }
         case Section::Inserts: return 1.0;
-        case Section::Sends:   return 2.0;
-        case Section::Pan:     return 1.0;
-        case Section::Volume:  return 0.5;
+        case Section::Sends:   return 5.0;
+        case Section::Pan:     return 5.0;
+        case Section::Volume:  return 1.0;
     }
     return 1.0;
 }

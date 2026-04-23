@@ -1713,12 +1713,10 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     if (! velocityLanesVisible && cursorSubColumn == SubColumn::Volume)
         cursorSubColumn = SubColumn::Instrument;
 
-    // Ctrl+Up/Down: semitone transpose with preview (Note sub-column only)
-    // Cmd+Left/Right: octave transpose with preview (Note sub-column only)
-    if (((ctrl && ! shift && ! cmd
-          && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey))
-         || (cmd && ! shift && ! ctrl
-             && (keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey)))
+    // Ctrl+Arrow: transpose current note with preview (Up/Down = semitone, Left/Right = octave)
+    if ((ctrl && ! shift && ! cmd
+         && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey
+             || keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey))
         && cursorSubColumn == SubColumn::Note && ! isMasterTrack (cursorTrack))
     {
         auto& pat = pattern.getCurrentPattern();

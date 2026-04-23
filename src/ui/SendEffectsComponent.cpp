@@ -442,21 +442,9 @@ juce::String SendEffectsComponent::getColumnValue() const
 // Keyboard navigation
 //==============================================================================
 
-bool SendEffectsComponent::keyPressed (const juce::KeyPress& key)
+void SendEffectsComponent::moveFocusHorizontal (int direction)
 {
-    auto keyCode = key.getKeyCode();
-    bool shift = key.getModifiers().isShiftDown();
-
-    // Tab / Shift+Tab: switch between DELAY and REVERB sections
-    if (keyCode == juce::KeyPress::tabKey)
-    {
-        section = shift ? 0 : 1;
-        repaint();
-        return true;
-    }
-
-    // Left/Right: move between columns (seamless across sections)
-    if (keyCode == juce::KeyPress::leftKey)
+    if (direction < 0)
     {
         if (currentColumn() > 0)
         {
@@ -464,15 +452,13 @@ bool SendEffectsComponent::keyPressed (const juce::KeyPress& key)
         }
         else if (section == 1 && reverbColumn == 0)
         {
-            // At reverb col 0 — jump to last delay column
             section = 0;
             delayColumn = kDelayColumns - 1;
         }
-        // At delay col 0 — stop (boundary)
-        repaint();
-        return true;
+        return;
     }
-    if (keyCode == juce::KeyPress::rightKey)
+
+    if (direction > 0)
     {
         if (currentColumn() < currentColumnCount() - 1)
         {
@@ -480,11 +466,35 @@ bool SendEffectsComponent::keyPressed (const juce::KeyPress& key)
         }
         else if (section == 0 && delayColumn == kDelayColumns - 1)
         {
-            // At last delay column — jump to reverb col 0
             section = 1;
             reverbColumn = 0;
         }
-        // At last reverb column — stop (boundary)
+    }
+}
+
+bool SendEffectsComponent::keyPressed (const juce::KeyPress& key)
+{
+    auto keyCode = key.getKeyCode();
+    bool shift = key.getModifiers().isShiftDown();
+
+    // Tab / Shift+Tab: alias for Right/Left.
+    if (keyCode == juce::KeyPress::tabKey)
+    {
+        moveFocusHorizontal (shift ? -1 : 1);
+        repaint();
+        return true;
+    }
+
+    // Left/Right: move between columns (seamless across sections)
+    if (keyCode == juce::KeyPress::leftKey)
+    {
+        moveFocusHorizontal (-1);
+        repaint();
+        return true;
+    }
+    if (keyCode == juce::KeyPress::rightKey)
+    {
+        moveFocusHorizontal (1);
         repaint();
         return true;
     }

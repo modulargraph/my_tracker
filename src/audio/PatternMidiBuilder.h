@@ -23,6 +23,7 @@ namespace PatternMidiBuilder
     static constexpr int kCcSamplerPosition  = 38;
     static constexpr int kCcFxNoteReset   = 39;
     static constexpr int kCcFxVolume      = 40;
+    static constexpr int kCcSamplerSlice  = 41;
 
     // Extract tempo ('F') command value from a pattern row's master lane.
     // Returns the BPM value (clamped 20..300) or -1 if no tempo command is present.

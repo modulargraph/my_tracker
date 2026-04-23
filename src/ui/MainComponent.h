@@ -20,6 +20,21 @@ class SendEffectsComponent;
 class ToolbarComponent;
 class TrackerGrid;
 
+struct MidiGeneratorSettings
+{
+    int keyRoot = 0;
+    int scale = 0;
+    int progression = 0;
+    int outputMode = 0;
+    int chordStyle = 0;
+    int chordRhythm = 0;
+    int bassPattern = 0;
+    int bars = 8;
+    int transpose = 0;
+    int randomAmount = 20;
+    bool startAtCursor = false;
+};
+
 class MainComponent : public juce::Component,
                       public juce::KeyListener,
                       public juce::ApplicationCommandTarget,
@@ -148,6 +163,9 @@ private:
     void switchToPattern (int index);
     void showPatternLengthEditor();
     void showPatternNameEditor();
+    void showMidiGeneratorDialog (int targetTrack = -1);
+    void applyGeneratedMidiToTrack (int targetTrack, const MidiGeneratorSettings& settings);
+    void transposeNotesInRange (int startRow, int endRow, int startVisualTrack, int endVisualTrack, int semitones);
     void showTrackHeaderMenu (int track, juce::Point<int> screenPos);
     void showRenameTrackDialog (int track);
     void performUndoableTrackLayoutChange (const std::function<void()>& changeFn);
@@ -187,6 +205,7 @@ private:
     void refreshAutomationPanel (bool forcePopulate = true);
     void populateAutomationPlugins();
     void navigateToAutomationParam (const juce::String& pluginId, int paramIndex);
+    void applyAutomationAtPlaybackPosition (int playPatternIndex, int playRow);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

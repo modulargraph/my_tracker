@@ -3,6 +3,21 @@
 namespace MixerStripPainter
 {
 
+namespace
+{
+    constexpr int kEqBandLabelHeight = 14;
+    constexpr int kEqFreqReadoutHeight = 14;
+    constexpr int kEqFooterGap = 2;
+
+    juce::String formatEqFrequency (double frequencyHz)
+    {
+        if (frequencyHz >= 1000.0)
+            return juce::String (frequencyHz / 1000.0, 1) + "kHz";
+
+        return juce::String (static_cast<int> (std::round (frequencyHz))) + "Hz";
+    }
+}
+
 //==============================================================================
 // Generic bar/knob painting
 //==============================================================================
@@ -153,6 +168,9 @@ void paintGenericEqSection (juce::Graphics& g, TrackerLookAndFeel& lnf,
                             juce::Rectangle<int> bounds, bool /*isSelected*/, int selectedParam)
 {
     auto inner = bounds.reduced (4, 2);
+    auto freqArea = inner.removeFromBottom (kEqFreqReadoutHeight);
+    inner.removeFromBottom (kEqFooterGap);
+    auto labelArea = inner.removeFromBottom (kEqBandLabelHeight);
     int barWidth = (inner.getWidth() - 8) / 3;
     auto volumeCol = lnf.findColour (TrackerLookAndFeel::volumeColourId);
     auto selCol = lnf.findColour (TrackerLookAndFeel::fxColourId);
@@ -167,7 +185,7 @@ void paintGenericEqSection (juce::Graphics& g, TrackerLookAndFeel& lnf,
     for (int i = 0; i < 3; ++i)
     {
         int x = inner.getX() + i * (barWidth + 4);
-        auto barArea = juce::Rectangle<int> (x, inner.getY(), barWidth, inner.getHeight() - 18);
+        auto barArea = juce::Rectangle<int> (x, inner.getY(), barWidth, inner.getHeight());
 
         bool paramSelected = (selectedParam == i);
         auto col = paramSelected ? selCol : volumeCol;
@@ -176,16 +194,19 @@ void paintGenericEqSection (juce::Graphics& g, TrackerLookAndFeel& lnf,
         g.setFont (lnf.getMonoFont (10.5f));
         g.setColour (paramSelected ? selCol : lnf.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.6f));
         juce::String valStr = (bands[i].value >= 0.0 ? "+" : "") + juce::String (bands[i].value, 1);
-        g.drawText (bands[i].label + juce::String (" ") + valStr, x, barArea.getBottom() + 1, barWidth, 16, juce::Justification::centred);
+        g.drawText (bands[i].label + juce::String (" ") + valStr, x, labelArea.getY(), barWidth, labelArea.getHeight(), juce::Justification::centred);
     }
 
     if (selectedParam == 3)
     {
-        g.setFont (lnf.getMonoFont (10.5f));
+        g.setColour (selCol.withAlpha (0.16f));
+        g.fillRect (freqArea);
+        g.setColour (selCol.withAlpha (0.45f));
+        g.drawRect (freqArea, 1);
+
+        g.setFont (lnf.getMonoFont (10.0f));
         g.setColour (selCol);
-        juce::String freqStr = juce::String (static_cast<int> (midFreq)) + "Hz";
-        g.drawText (freqStr, inner.getX(), inner.getBottom() - 12, inner.getWidth(), 10,
-                    juce::Justification::centred);
+        g.drawText ("MID " + formatEqFrequency (midFreq), freqArea, juce::Justification::centred);
     }
 }
 

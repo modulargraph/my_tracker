@@ -178,6 +178,16 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.setFont (lookAndFeel.getMonoFont (13.0f));
     x += 28;
 
+    // MIDI generator
+    midiGeneratorBounds = { x, 6, 30, 24 };
+    g.setColour (juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (midiGeneratorBounds.toFloat(), 3.0f);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.drawText ("GEN", midiGeneratorBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
+    x += 34;
+
     // Automation panel toggle
     automationToggleBounds = { x, 6, 32, 24 };
     g.setColour (automationOn ? juce::Colour (0xff5c8abf) : juce::Colour (0xff3a3a3a));
@@ -252,6 +262,11 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
     if (fxRefBounds.contains (pos) && onShowFxReference)
     {
         onShowFxReference();
+        return;
+    }
+    if (midiGeneratorBounds.contains (pos) && onShowMidiGenerator)
+    {
+        onShowMidiGenerator();
         return;
     }
     if (automationToggleBounds.contains (pos) && onToggleAutomation)

@@ -1847,6 +1847,63 @@ bool testFxParamTransportSequenceOrdering()
     return true;
 }
 
+bool testFxParamTransportIndependentHighBits()
+{
+    static constexpr int kDirectionCc = 37;
+    static constexpr int kPositionCc = 38;
+
+    const int directionHighCc = FxParamTransport::getHighBitControllerForValueController (kDirectionCc);
+    const int positionHighCc = FxParamTransport::getHighBitControllerForValueController (kPositionCc);
+
+    if (directionHighCc == FxParamTransport::kParamHighBitCc
+        || positionHighCc == FxParamTransport::kParamHighBitCc
+        || directionHighCc == positionHighCc)
+    {
+        std::cerr << "FX byte transport should assign independent high-bit CCs for B/P\n";
+        return false;
+    }
+
+    std::array<int, 128> pendingHighBits {};
+    pendingHighBits.fill (FxParamTransport::kNoPendingParamHighBit);
+    int legacyHighBit = FxParamTransport::kNoPendingParamHighBit;
+
+    // Simulate a host/list implementation that groups same-time high-bit CCs
+    // before value CCs. B00 must stay zero while P80 keeps its high bit.
+    const std::array<std::pair<int, int>, 4> events {{
+        { directionHighCc, 0 },
+        { positionHighCc, 1 },
+        { kDirectionCc, 0 },
+        { kPositionCc, 0 },
+    }};
+
+    int decodedDirection = -1;
+    int decodedPosition = -1;
+
+    for (const auto& [ccNum, ccVal] : events)
+    {
+        const int valueController = FxParamTransport::getValueControllerForHighBitController (ccNum);
+        if (valueController >= 0)
+            pendingHighBits[static_cast<size_t> (valueController)] = ccVal & 0x1;
+        else if (ccNum == kDirectionCc)
+            decodedDirection = FxParamTransport::consumeByteFromController (ccNum, ccVal,
+                                                                            pendingHighBits,
+                                                                            legacyHighBit);
+        else if (ccNum == kPositionCc)
+            decodedPosition = FxParamTransport::consumeByteFromController (ccNum, ccVal,
+                                                                           pendingHighBits,
+                                                                           legacyHighBit);
+    }
+
+    if (decodedDirection != 0 || decodedPosition != 0x80)
+    {
+        std::cerr << "FX byte transport mixed B/P decode mismatch: B="
+                  << decodedDirection << " P=" << decodedPosition << "\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testSampleFxCommandsEnterAndRoundTrip()
 {
     struct FxExample
@@ -1856,7 +1913,7 @@ bool testSampleFxCommandsEnterAndRoundTrip()
         bool masterLane;
     };
 
-    const std::array<FxExample, 10> examples = {{
+    const std::array<FxExample, 11> examples = {{
         { 'B', 0x01, false },
         { 'P', 0x80, false },
         { 'T', 0x0C, false },
@@ -1867,6 +1924,7 @@ bool testSampleFxCommandsEnterAndRoundTrip()
         { 'D', 0x24, false },
         { 'F', 0x82, true  },
         { 'V', 0x7F, false },
+        { 'L', 0x03, false },
     }};
 
     const auto& commandList = getFxCommandList();
@@ -5662,6 +5720,7 @@ int main()
         { "InstrumentRoutingBankProgramSplit", &testInstrumentRoutingBankProgramSplit },
         { "FxParamTransportByteRoundTrip", &testFxParamTransportByteRoundTrip },
         { "FxParamTransportSequenceOrdering", &testFxParamTransportSequenceOrdering },
+        { "FxParamTransportIndependentHighBits", &testFxParamTransportIndependentHighBits },
         { "SampleFxCommandsEnterAndRoundTrip", &testSampleFxCommandsEnterAndRoundTrip },
         { "EmptyArrangementRoundTrip", &testEmptyArrangementRoundTrip },
         { "PatternMultiFxSlotRoundTrip", &testPatternMultiFxSlotRoundTrip },

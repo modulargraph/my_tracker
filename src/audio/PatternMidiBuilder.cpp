@@ -58,6 +58,9 @@ void appendSymbolicTrackFx (juce::MidiMessageSequence& midiSeq, const FxSlot& sl
         case 'V':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxVolume, slot.fxParam, ccTime);
             break;
+        case 'L':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcSamplerSlice, slot.fxParam, ccTime);
+            break;
         case 'F':
             // Tempo is handled via master lane tempo points.
             break;
