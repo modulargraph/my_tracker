@@ -124,6 +124,7 @@ public:
     // Mixer DSP: set a pointer to the MixerState for per-track processing
     void setMixerState (MixerState* state);
     void refreshMixerPlugins();
+    void rebuildMixerPluginChains();
 
     // Insert plugin management
     bool addInsertPlugin (int trackIndex, const juce::PluginDescription& desc);
@@ -236,6 +237,7 @@ private:
 
     // Plugin editor windows (keyed by "track:slot")
     std::map<juce::String, std::unique_ptr<juce::DocumentWindow>> pluginEditorWindows;
+    void closePluginEditorsForTrack (int trackIndex);
     void refreshTransportLoopRangeFromClip();
     static constexpr int kPreviewDurationMs = 30000;
     static constexpr int kPluginPreviewDurationMs = 500;
@@ -258,6 +260,8 @@ private:
     std::map<int, te::Plugin::Ptr> pluginInstrumentInstances;
     // Plugin instrument editor windows (keyed by instrument index)
     std::map<int, std::unique_ptr<juce::DocumentWindow>> pluginInstrumentEditorWindows;
+    void clearPluginInstrumentInternal (int instrumentIndex, bool notifyAutomation);
+    void unloadAllPluginInstruments (bool notifyAutomation);
 
     // Automation state tracking
     struct AutomatedParam
@@ -269,6 +273,8 @@ private:
     std::vector<AutomatedParam> lastAutomatedParams;
     AutomatedParam* findAutomatedParam (const juce::String& pluginId, int paramIndex);
     const AutomatedParam* findAutomatedParam (const juce::String& pluginId, int paramIndex) const;
+    void forgetAutomatedParamsForPlugin (const juce::String& pluginId);
+    void forgetAutomatedParamsForInsertTrack (int trackIndex);
 
     // Ensure the plugin instrument is loaded on its owner track
     void ensurePluginInstrumentLoaded (int instrumentIndex);
