@@ -26,6 +26,7 @@ inline const std::vector<FxCommandInfo>& getFxCommandList()
         { 9, 'F', "Fxx", "Tempo",           "BPM (master lane only)" },
         { 10, 'V', "Vxx", "Volume",         "00=silence, 7F=unity, FF=+10dB" },
         { 11, 'L', "Lxx", "Slice",           "00-based slice index for Slice mode" },
+        { 12, 'N', "Nxx", "Note Nudge",      "signed milliseconds (two's complement)" },
     };
     return commands;
 }
@@ -45,6 +46,7 @@ inline int fxLetterToCommand (char letter)
         case 'F': case 'f': return 9;
         case 'V': case 'v': return 10;
         case 'L': case 'l': return 11;
+        case 'N': case 'n': return 12;
         default: return 0;
     }
 }

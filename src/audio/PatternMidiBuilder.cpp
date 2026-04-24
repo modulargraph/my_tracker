@@ -61,6 +61,9 @@ void appendSymbolicTrackFx (juce::MidiMessageSequence& midiSeq, const FxSlot& sl
         case 'L':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcSamplerSlice, slot.fxParam, ccTime);
             break;
+        case 'N':
+            // Note timing is handled by the pattern scheduler, not by MIDI CC state.
+            break;
         case 'F':
             // Tempo is handled via master lane tempo points.
             break;
