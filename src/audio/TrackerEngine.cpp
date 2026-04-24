@@ -31,6 +31,9 @@ constexpr int kCcFxVolume = 40;
 constexpr int kCcSamplerSlice = 41;
 constexpr int kCcSamplerHardCut = 86;
 
+constexpr int kMinTempoCommandBpm = 20;
+constexpr int kMaxTempoCommandBpm = 300;
+
 char getSlotCommandLetter (const FxSlot& slot)
 {
     return slot.getCommandLetter();
@@ -63,11 +66,17 @@ int getRowTempoCommand (const Pattern& pattern, int row)
     for (int lane = 0; lane < laneCount; ++lane)
     {
         const auto& slot = pattern.getMasterFxSlot (row, lane);
-        if (getSlotCommandLetter (slot) == 'F')
-            bpm = juce::jlimit (20, 300, slot.fxParam);
+        if (getSlotCommandLetter (slot) == 'F' && slot.fxParam >= kMinTempoCommandBpm)
+            bpm = juce::jlimit (kMinTempoCommandBpm, kMaxTempoCommandBpm, slot.fxParam);
     }
 
     return bpm;
+}
+
+void setFirstTempoBpmWithoutRemapping (te::TempoSequence& tempoSequence, double bpm)
+{
+    if (auto* tempo = tempoSequence.getTempo (0))
+        tempo->set (tempo->getStartBeat(), bpm, tempo->getCurve(), false);
 }
 
 float getTrackFaderGain (const TrackMixState& mixState)
@@ -330,7 +339,7 @@ void TrackerEngine::rebuildTempoSequenceFromPatternMasterLane (const Pattern& pa
     while (tempoSequence.getNumTempos() > 1)
         tempoSequence.removeTempo (tempoSequence.getNumTempos() - 1, false);
 
-    tempoSequence.getTempos()[0]->setBpm (baseBpm);
+    setFirstTempoBpmWithoutRemapping (tempoSequence, baseBpm);
 
     std::map<double, int> tempoPoints;
     for (int row = 0; row < pattern.numRows; ++row)
@@ -346,7 +355,7 @@ void TrackerEngine::rebuildTempoSequenceFromPatternMasterLane (const Pattern& pa
     for (const auto& [beat, bpm] : tempoPoints)
     {
         if (beat <= 0.0)
-            tempoSequence.getTempos()[0]->setBpm (bpm);
+            setFirstTempoBpmWithoutRemapping (tempoSequence, bpm);
         else
             tempoSequence.insertTempo (te::BeatPosition::fromBeats (beat), bpm, 0.0f);
     }
@@ -366,7 +375,7 @@ void TrackerEngine::rebuildTempoSequenceFromArrangementMasterLane (const std::ve
     while (tempoSequence.getNumTempos() > 1)
         tempoSequence.removeTempo (tempoSequence.getNumTempos() - 1, false);
 
-    tempoSequence.getTempos()[0]->setBpm (baseBpm);
+    setFirstTempoBpmWithoutRemapping (tempoSequence, baseBpm);
 
     std::map<double, int> tempoPoints;
     double beatOffset = 0.0;
@@ -397,7 +406,7 @@ void TrackerEngine::rebuildTempoSequenceFromArrangementMasterLane (const std::ve
     for (const auto& [beat, bpm] : tempoPoints)
     {
         if (beat <= 0.0)
-            tempoSequence.getTempos()[0]->setBpm (bpm);
+            setFirstTempoBpmWithoutRemapping (tempoSequence, bpm);
         else
             tempoSequence.insertTempo (te::BeatPosition::fromBeats (beat), bpm, 0.0f);
     }
@@ -1196,10 +1205,10 @@ void TrackerEngine::setBpm (double bpm)
     if (edit == nullptr)
         return;
 
-    const double clampedBpm = juce::jlimit (20.0, 999.0, bpm);
-    edit->tempoSequence.getTempos()[0]->setBpm (clampedBpm);
+    const double clampedBpm = juce::jlimit (te::TempoSetting::minBPM, te::TempoSetting::maxBPM, bpm);
+    setFirstTempoBpmWithoutRemapping (edit->tempoSequence, clampedBpm);
     if (sendEffectsPlugin != nullptr)
-        sendEffectsPlugin->setTempoBpm (clampedBpm);
+        sendEffectsPlugin->setTempoBpm (getBpm());
 }
 
 double TrackerEngine::getBpm() const

@@ -26,7 +26,8 @@ namespace PatternMidiBuilder
     static constexpr int kCcSamplerSlice  = 41;
 
     // Extract tempo ('F') command value from a pattern row's master lane.
-    // Returns the BPM value (clamped 20..300) or -1 if no tempo command is present.
+    // Returns the BPM value (clamped 20..300), or -1 if no complete tempo
+    // command is present.
     int getRowTempoCommand (const Pattern& pattern, int row);
 
     // Convert a single FX slot into MIDI CC messages appended to a sequence.

@@ -580,10 +580,16 @@ MainComponent::MainComponent()
 
     toolbar->onBpmDrag = [this] (double delta)
     {
-        trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() + delta));
+        applyBpmChange (trackerEngine.getBpm() + delta, false);
+    };
+
+    toolbar->onBpmDragEnd = [this]
+    {
+        if (trackerEngine.isPlaying())
+            resyncPlaybackForCurrentMode();
+
         updateStatusBar();
         updateToolbar();
-        markDirty();
     };
 
     toolbar->onRpbDrag = [this] (int delta)
@@ -1935,18 +1941,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     // NOTE: use keyCode, not textChar — macOS zeroes textChar when Cmd is held for punctuation keys
     if (cmd && ! shift && keyCode == '[')
     {
-        trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() - 1.0));
-        updateStatusBar();
-        updateToolbar();
-        markDirty();
+        applyBpmChange (trackerEngine.getBpm() - 1.0, true);
         return true;
     }
     if (cmd && ! shift && keyCode == ']')
     {
-        trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() + 1.0));
-        updateStatusBar();
-        updateToolbar();
-        markDirty();
+        applyBpmChange (trackerEngine.getBpm() + 1.0, true);
         return true;
     }
 
@@ -1979,18 +1979,12 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
 
     if (keyCode == juce::KeyPress::F9Key)
     {
-        trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() - 1.0));
-        updateStatusBar();
-        updateToolbar();
-        markDirty();
+        applyBpmChange (trackerEngine.getBpm() - 1.0, true);
         return true;
     }
     if (keyCode == juce::KeyPress::F10Key)
     {
-        trackerEngine.setBpm (juce::jlimit (20.0, 999.0, trackerEngine.getBpm() + 1.0));
-        updateStatusBar();
-        updateToolbar();
-        markDirty();
+        applyBpmChange (trackerEngine.getBpm() + 1.0, true);
         return true;
     }
     if (keyCode == juce::KeyPress::F11Key)
@@ -3987,6 +3981,18 @@ int MainComponent::resolveInstrumentForTrackDrop (int track) const
     }
 
     return juce::jlimit (0, 255, track);
+}
+
+void MainComponent::applyBpmChange (double bpm, bool resyncIfPlaying)
+{
+    trackerEngine.setBpm (bpm);
+
+    if (resyncIfPlaying)
+        resyncPlaybackForCurrentMode();
+
+    updateStatusBar();
+    updateToolbar();
+    markDirty();
 }
 
 void MainComponent::resyncPlaybackForCurrentMode()

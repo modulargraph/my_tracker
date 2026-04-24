@@ -408,8 +408,12 @@ void ToolbarComponent::mouseUp (const juce::MouseEvent&)
 {
     if (dragTarget != DragTarget::None)
     {
+        const auto completedTarget = dragTarget;
         dragTarget = DragTarget::None;
         repaint();
+
+        if (completedTarget == DragTarget::Bpm && onBpmDragEnd)
+            onBpmDragEnd();
     }
 }
 

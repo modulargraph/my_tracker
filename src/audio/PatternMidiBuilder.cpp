@@ -7,6 +7,12 @@
 namespace PatternMidiBuilder
 {
 
+namespace
+{
+constexpr int kMinTempoCommandBpm = 20;
+constexpr int kMaxTempoCommandBpm = 300;
+}
+
 int getRowTempoCommand (const Pattern& pattern, int row)
 {
     if (row < 0 || row >= pattern.numRows)
@@ -20,8 +26,8 @@ int getRowTempoCommand (const Pattern& pattern, int row)
     for (int lane = 0; lane < laneCount; ++lane)
     {
         const auto& slot = pattern.getMasterFxSlot (row, lane);
-        if (slot.getCommandLetter() == 'F')
-            bpm = juce::jlimit (20, 300, slot.fxParam);
+        if (slot.getCommandLetter() == 'F' && slot.fxParam >= kMinTempoCommandBpm)
+            bpm = juce::jlimit (kMinTempoCommandBpm, kMaxTempoCommandBpm, slot.fxParam);
     }
 
     return bpm;

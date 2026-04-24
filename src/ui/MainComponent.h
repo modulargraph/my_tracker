@@ -188,6 +188,7 @@ private:
     void performUndoableTrackLayoutChange (const std::function<void()>& changeFn);
     void removePatternAndRepairArrangement (int index);
     int resolveInstrumentForTrackDrop (int track) const;
+    void applyBpmChange (double bpm, bool resyncIfPlaying);
     void resyncPlaybackForCurrentMode();
     void updateMuteSoloState();
     void doCopy();

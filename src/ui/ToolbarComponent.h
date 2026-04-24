@@ -43,6 +43,7 @@ public:
     std::function<void()> onPatternLengthClick;
     std::function<void (int delta)> onLengthDrag;
     std::function<void (double delta)> onBpmDrag;
+    std::function<void()> onBpmDragEnd;
     std::function<void (int delta)> onStepDrag;
     std::function<void (int delta)> onOctaveDrag;
     std::function<void()> onModeToggle;
