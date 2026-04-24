@@ -867,6 +867,8 @@ bool MixerComponent::resetHitParamToDefault (const HitResult& hit)
 
 bool MixerComponent::keyPressed (const juce::KeyPress& key)
 {
+    coerceCurrentSectionForSelectedTrack();
+
     auto keyCode = key.getKeyCode();
     bool shift = key.getModifiers().isShiftDown();
 
@@ -918,6 +920,7 @@ bool MixerComponent::keyPressed (const juce::KeyPress& key)
             if (selectedTrack < totalStrips - 1)
                 selectedTrack++;
         }
+        coerceCurrentSectionForSelectedTrack();
         ensureTrackVisible();
         repaint();
         return true;
@@ -1225,12 +1228,27 @@ void MixerComponent::mouseWheelMove (const juce::MouseEvent&, const juce::MouseW
 
 void MixerComponent::adjustCurrentParam (double direction)
 {
+    coerceCurrentSectionForSelectedTrack();
+
     double step = getParamStep (currentSection, currentParam) * direction;
     double current = getParamValue (selectedTrack, currentSection, currentParam);
     double minVal = getParamMin (currentSection, currentParam);
     double maxVal = getParamMax (currentSection, currentParam);
     double newVal = juce::jlimit (minVal, maxVal, current + step);
     setParamValue (selectedTrack, currentSection, currentParam, newVal);
+}
+
+void MixerComponent::coerceCurrentSectionForSelectedTrack()
+{
+    auto info = getStripInfo (selectedTrack);
+    auto coerced = MixerNavigation::coerceSectionForStrip (currentSection, info.type);
+    if (coerced != currentSection)
+    {
+        currentSection = coerced;
+        currentParam = 0;
+    }
+
+    currentParam = juce::jlimit (0, getParamCountForSection (currentSection) - 1, currentParam);
 }
 
 void MixerComponent::nextSection()

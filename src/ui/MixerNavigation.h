@@ -50,9 +50,46 @@ inline Section cycleSection (const std::array<Section, N>& order, Section curren
     return order[static_cast<std::size_t> (idx)];
 }
 
+template <std::size_t N>
+inline bool containsSection (const std::array<Section, N>& order, Section current)
+{
+    return std::find (order.begin(), order.end(), current) != order.end();
+}
+
 //==============================================================================
 // Public API
 //==============================================================================
+
+inline bool isSectionAvailable (Section section, StripType type)
+{
+    switch (type)
+    {
+        case StripType::Master:                        return containsSection (kMasterOrder,     section);
+        case StripType::DelayReturn:
+        case StripType::ReverbReturn:                  return containsSection (kSendReturnOrder, section);
+        case StripType::GroupBus:                      return containsSection (kGroupBusOrder,   section);
+        case StripType::Track:     [[fallthrough]];
+        default:                                       return containsSection (kTrackOrder,      section);
+    }
+}
+
+inline Section firstSectionForStrip (StripType type)
+{
+    switch (type)
+    {
+        case StripType::Master:                        return kMasterOrder.front();
+        case StripType::DelayReturn:
+        case StripType::ReverbReturn:                  return kSendReturnOrder.front();
+        case StripType::GroupBus:                      return kGroupBusOrder.front();
+        case StripType::Track:     [[fallthrough]];
+        default:                                       return kTrackOrder.front();
+    }
+}
+
+inline Section coerceSectionForStrip (Section section, StripType type)
+{
+    return isSectionAvailable (section, type) ? section : firstSectionForStrip (type);
+}
 
 inline Section nextSection (Section current, StripType type)
 {

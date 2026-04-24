@@ -13,6 +13,7 @@
 #include "FxParamTransport.h"
 #include "LoopRegion.h"
 #include "MixerState.h"
+#include "MixerNavigation.h"
 #include "PatternData.h"
 #include "Pattern.h"
 #include "PluginAutomationData.h"
@@ -488,6 +489,32 @@ bool testPanMappingCenterAndExtremes()
     if (PanMapping::cc10ToPan (63) >= 0.0f || PanMapping::cc10ToPan (65) <= 0.0f)
     {
         std::cerr << "CC10 pan should be negative below 64 and positive above 64\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testMixerNavigationCoercesSendReturnSections()
+{
+    using Section = MixerNavigation::Section;
+    using StripType = MixerNavigation::StripType;
+
+    if (MixerNavigation::coerceSectionForStrip (Section::Sends, StripType::DelayReturn) != Section::EQ)
+    {
+        std::cerr << "delay return should coerce unsupported sends section to EQ\n";
+        return false;
+    }
+
+    if (MixerNavigation::coerceSectionForStrip (Section::Comp, StripType::ReverbReturn) != Section::EQ)
+    {
+        std::cerr << "reverb return should coerce unsupported comp section to EQ\n";
+        return false;
+    }
+
+    if (MixerNavigation::coerceSectionForStrip (Section::Pan, StripType::ReverbReturn) != Section::Pan)
+    {
+        std::cerr << "reverb return should preserve supported pan section\n";
         return false;
     }
 
@@ -5863,6 +5890,7 @@ int main()
         { "SendBuffersStartSampleAlignmentAndConsume", &testSendBuffersStartSampleAlignmentAndConsume },
         { "SendBuffersClipToPreparedCapacity", &testSendBuffersClipToPreparedCapacity },
         { "PanMappingCenterAndExtremes", &testPanMappingCenterAndExtremes },
+        { "MixerNavigationCoercesSendReturnSections", &testMixerNavigationCoercesSendReturnSections },
         { "InstrumentRoutingRoundTripFullRange", &testInstrumentRoutingRoundTripFullRange },
         { "InstrumentRoutingClampsOutOfRange", &testInstrumentRoutingClampsOutOfRange },
         { "ArrangementRemapAfterPatternRemoved", &testArrangementRemapAfterPatternRemoved },
