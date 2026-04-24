@@ -63,7 +63,7 @@ public:
     // MenuBarModel
     juce::StringArray getMenuBarNames() override;
     juce::PopupMenu getMenuForIndex (int menuIndex, const juce::String& menuName) override;
-    void menuItemSelected (int /*menuItemID*/, int /*topLevelMenuIndex*/) override {}
+    void menuItemSelected (int menuItemID, int topLevelMenuIndex) override;
 
     juce::ApplicationCommandManager commandManager;
 
@@ -91,6 +91,7 @@ public:
         cmdToggleMetronome       = 0x1054,
         cmdToggleVelocityLanes   = 0x1055,
         cmdToggleAudioUnitEquivalents = 0x1056,
+        cmdToggleInstrumentColourTrails = 0x1057,
         cmdAudioPluginSettings   = 0x1060
     };
 
@@ -134,6 +135,8 @@ private:
     bool arrangementVisible = false;
     bool instrumentPanelVisible = true;
     bool showAudioUnitEquivalents = false;
+    bool instrumentColourTrailsEnabled = true;
+    int colourSchemeIndex = 0;
     bool songMode = false;
     enum class FollowMode { Off, Center, Page };
     FollowMode followMode = FollowMode::Off;
@@ -207,6 +210,10 @@ private:
     void toggleSongMode();
     void toggleVelocityLanes();
     void setVelocityLanesVisible (bool visible, bool persist);
+    void toggleInstrumentColourTrails();
+    void setInstrumentColourTrailsEnabled (bool enabled, bool persist);
+    void setColourSchemeIndex (int schemeIndex, bool persist);
+    void applyLookAndFeelColours();
     void toggleAudioUnitEquivalents();
     void setAudioUnitEquivalentsVisible (bool visible, bool persist);
     void syncArrangementToEdit();

@@ -3,6 +3,7 @@
 #include "Pattern.h"
 #include "PatternData.h"
 #include "PluginAutomationData.h"
+#include "TrackerLookAndFeel.h"
 
 namespace
 {
@@ -145,6 +146,11 @@ bool isLegacyEmbeddedSamplePath (const juce::File& projectFile,
 int clampUiScalePercent (int scalePercent)
 {
     return juce::jlimit (kMinUiScalePercent, kMaxUiScalePercent, scalePercent);
+}
+
+int clampColourSchemeIndex (int schemeIndex)
+{
+    return TrackerLookAndFeel::clampColourSchemeIndex (schemeIndex);
 }
 } // namespace
 
@@ -1683,6 +1689,46 @@ bool ProjectSerializer::loadGlobalVelocityLanesVisible()
 {
     auto root = loadGlobalPrefsTree();
     return static_cast<bool> (root.getProperty ("velocityLanesVisible", true));
+}
+
+void ProjectSerializer::saveGlobalInstrumentColourTrailsEnabled (bool enabled)
+{
+    auto prefsFile = getCurrentGlobalPrefsFile();
+    if (! prefsFile.getParentDirectory().createDirectory())
+        return;
+
+    auto root = loadGlobalPrefsTree();
+    root.setProperty ("instrumentColourTrailsEnabled", enabled, nullptr);
+
+    if (auto xml = root.createXml())
+        xml->writeTo (prefsFile);
+}
+
+bool ProjectSerializer::loadGlobalInstrumentColourTrailsEnabled()
+{
+    auto root = loadGlobalPrefsTree();
+    return static_cast<bool> (root.getProperty ("instrumentColourTrailsEnabled", true));
+}
+
+void ProjectSerializer::saveGlobalColourSchemeIndex (int schemeIndex)
+{
+    auto prefsFile = getCurrentGlobalPrefsFile();
+    if (! prefsFile.getParentDirectory().createDirectory())
+        return;
+
+    auto root = loadGlobalPrefsTree();
+    root.setProperty ("colourSchemeIndex", clampColourSchemeIndex (schemeIndex), nullptr);
+
+    if (auto xml = root.createXml())
+        xml->writeTo (prefsFile);
+}
+
+int ProjectSerializer::loadGlobalColourSchemeIndex()
+{
+    auto root = loadGlobalPrefsTree();
+    return clampColourSchemeIndex (
+        static_cast<int> (root.getProperty ("colourSchemeIndex",
+                                            TrackerLookAndFeel::getDefaultColourSchemeIndex())));
 }
 
 //==============================================================================

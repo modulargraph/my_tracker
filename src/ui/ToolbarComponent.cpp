@@ -95,7 +95,7 @@ void ToolbarComponent::paint (juce::Graphics& g)
     instrumentBounds = { x, 0, 60, kToolbarHeight };
     g.setColour (dragTarget == DragTarget::Instrument
                      ? juce::Colour (0xff88aacc)
-                     : lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId));
+                     : lookAndFeel.getInstrumentColour (instrument).brighter (0.18f));
     g.drawText (instStr, instrumentBounds, juce::Justification::centredLeft);
     x += 64;
 

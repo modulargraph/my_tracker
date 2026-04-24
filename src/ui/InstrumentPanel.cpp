@@ -106,9 +106,9 @@ void InstrumentPanel::paint (juce::Graphics& g)
         }
 
         // Index with type indicator
-        auto indexColour = lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
+        auto indexColour = lookAndFeel.getInstrumentColour (inst).brighter (0.12f);
         if (slot.isPlugin)
-            indexColour = juce::Colour (0xff89b4fa); // Blue tint for plugin instruments
+            indexColour = indexColour.interpolatedWith (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId), 0.35f);
         g.setColour (indexColour.withAlpha (slot.hasData ? 1.0f : 0.4f));
         g.drawText (juce::String::formatted ("%02X", inst), 6, y, 22, kSlotHeight,
                     juce::Justification::centredLeft);

@@ -28,9 +28,21 @@ public:
         groupHeaderColourId     = 0x2000010
     };
 
+    static int getDefaultColourSchemeIndex();
+    static int getColourSchemeCount();
+    static juce::String getColourSchemeName (int schemeIndex);
+    static int clampColourSchemeIndex (int schemeIndex);
+    static juce::Colour getInstrumentColourForScheme (int schemeIndex, int instrument);
+
+    void setColourScheme (int schemeIndex);
+    int getColourSchemeIndex() const { return colourSchemeIndex; }
+    juce::Colour getInstrumentColour (int instrument) const;
+
     juce::Font getMonoFont (float height) const;
     juce::Font getUIFont (float height, int styleFlags = juce::Font::plain) const;
 
 private:
+    int colourSchemeIndex = 0;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackerLookAndFeel)
 };

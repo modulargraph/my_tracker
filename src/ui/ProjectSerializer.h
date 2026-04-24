@@ -55,6 +55,10 @@ public:
     // Global tracker grid display preference (independent of project files)
     static void saveGlobalVelocityLanesVisible (bool visible);
     static bool loadGlobalVelocityLanesVisible();
+    static void saveGlobalInstrumentColourTrailsEnabled (bool enabled);
+    static bool loadGlobalInstrumentColourTrailsEnabled();
+    static void saveGlobalColourSchemeIndex (int schemeIndex);
+    static int loadGlobalColourSchemeIndex();
 
     // Global plugin picker display preference (independent of project files)
     static void saveGlobalPluginMenuAudioUnitsVisible (bool visible);

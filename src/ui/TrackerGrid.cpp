@@ -4,6 +4,7 @@
 #include "NoteUtils.h"
 #include "PatternEditUtils.h"
 #include "Clipboard.h"
+#include <array>
 #include <map>
 
 namespace
@@ -11,6 +12,16 @@ namespace
 using PatternEditUtils::applyPatternEdit;
 using PatternEditUtils::sameCell;
 using PatternEditUtils::sameFxSlot;
+
+bool isPlayableNote (int note)
+{
+    return note >= 0 && note < 254;
+}
+
+bool isStopOrKillNote (int note)
+{
+    return note == 254 || note == 255;
+}
 }
 
 TrackerGrid::TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf, TrackLayout& layout)
@@ -29,6 +40,15 @@ void TrackerGrid::setVelocityLanesVisible (bool visible)
         cursorSubColumn = SubColumn::Instrument;
 
     ensureCursorVisible();
+    repaint();
+}
+
+void TrackerGrid::setInstrumentColourTrailsEnabled (bool enabled)
+{
+    if (instrumentColourTrailsEnabled == enabled)
+        return;
+
+    instrumentColourTrailsEnabled = enabled;
     repaint();
 }
 
@@ -325,6 +345,23 @@ void TrackerGrid::drawCells (juce::Graphics& g)
     for (int ti = 0; ti < visibleTracks && (horizontalScrollOffset + ti) < getTotalVisualColumns(); ++ti)
         totalVisibleWidth += getTrackWidth (horizontalScrollOffset + ti);
 
+    std::map<int, InstrumentTrailMap> instrumentTrailMaps;
+    if (instrumentColourTrailsEnabled)
+    {
+        for (int ti = 0; ti < visibleTracks && (horizontalScrollOffset + ti) < getTotalVisualColumns(); ++ti)
+        {
+            const int vi = horizontalScrollOffset + ti;
+            const int physTrack = visualToTrackIndex (vi);
+            if (isMasterTrack (physTrack))
+                continue;
+
+            const int noteLaneCount = trackLayout.getTrackNoteLaneCount (physTrack);
+            instrumentTrailMaps.emplace (physTrack, buildInstrumentTrailMap (pat, physTrack, noteLaneCount));
+        }
+    }
+
+    static const std::vector<int> emptyTrailInstruments;
+
     for (int i = 0; i < visibleRows; ++i)
     {
         int row = scrollOffset + i;
@@ -358,7 +395,14 @@ void TrackerGrid::drawCells (juce::Graphics& g)
             else
             {
                 int fxLanes = trackLayout.getTrackFxLaneCount (physTrack);
-                drawCell (g, pat.getCell (row, physTrack), xPos, y, cellW, isCursor, isCurrentRow, isPlayRow, physTrack, fxLanes);
+                const auto trailIt = instrumentTrailMaps.find (physTrack);
+                const auto& laneTrailInstruments = (trailIt != instrumentTrailMaps.end()
+                                                    && row >= 0
+                                                    && row < static_cast<int> (trailIt->second.size()))
+                                                       ? trailIt->second[static_cast<size_t> (row)]
+                                                       : emptyTrailInstruments;
+                drawCell (g, pat.getCell (row, physTrack), xPos, y, cellW, isCursor, isCurrentRow, isPlayRow,
+                          physTrack, fxLanes, laneTrailInstruments);
             }
 
             // Vertical grid line
@@ -376,11 +420,14 @@ void TrackerGrid::drawCells (juce::Graphics& g)
 }
 
 void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, int width,
-                            bool isCursor, bool isCurrentRow, bool isPlaybackRow, int track, int fxLaneCount)
+                            bool isCursor, bool isCurrentRow, bool isPlaybackRow, int track, int fxLaneCount,
+                            const std::vector<int>& laneTrailInstruments)
 {
     int noteLaneCount = trackLayout.getTrackNoteLaneCount (track);
 
-    fillCellBackground (g, x, y, width, isCursor, isCurrentRow, isPlaybackRow);
+    auto instrumentTrailColour = getInstrumentTrailColour (laneTrailInstruments);
+    fillCellBackground (g, x, y, width, isCursor, isCurrentRow, isPlaybackRow,
+                        instrumentTrailColour, instrumentTrailColour.getAlpha() > 0);
 
     // Draw sub-columns with distinct colors
     g.setFont (lookAndFeel.getMonoFont (12.0f));
@@ -391,10 +438,19 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
     for (int nl = 0; nl < noteLaneCount; ++nl)
     {
         auto noteSlot = cell.getNoteLane (nl);
+        const int trailInstrument = nl < static_cast<int> (laneTrailInstruments.size())
+                                        ? laneTrailInstruments[static_cast<size_t> (nl)]
+                                        : -1;
+        const bool hasLaneColour = trailInstrument >= 0;
+        const auto laneColour = trailInstrument >= 0 ? getInstrumentTextColour (trailInstrument)
+                                                     : juce::Colours::transparentBlack;
 
         // Note sub-column
         juce::String noteStr = noteSlot.hasNote() ? noteToString (noteSlot.note) : "---";
-        auto noteColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId);
+        auto noteColour = isCursor ? juce::Colours::white
+                                   : (noteSlot.hasNote() && hasLaneColour
+                                          ? laneColour
+                                          : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
 
         if (isCursor && cursorSubColumn == SubColumn::Note && cursorNoteLane == nl)
             drawCursorSubColumnHighlight (g, textX - 1, y, kNoteWidth + 2);
@@ -404,7 +460,10 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
 
         // Instrument sub-column
         juce::String instStr = noteSlot.instrument >= 0 ? juce::String::formatted ("%02X", noteSlot.instrument) : "..";
-        auto instColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
+        auto instColour = isCursor ? juce::Colours::white
+                                   : (noteSlot.instrument >= 0 && hasLaneColour
+                                          ? laneColour
+                                          : lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId));
         if (isCursor && cursorSubColumn == SubColumn::Instrument && cursorNoteLane == nl)
             drawCursorSubColumnHighlight (g, textX - 1, y, kInstWidth + 2);
         g.setColour (instColour);
@@ -448,7 +507,8 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
 void TrackerGrid::drawMasterCell (juce::Graphics& g, const Pattern& pat, int row, int x, int y, int width,
                                   bool isCursor, bool isCurrentRow, bool isPlaybackRow)
 {
-    fillCellBackground (g, x, y, width, isCursor, isCurrentRow, isPlaybackRow);
+    fillCellBackground (g, x, y, width, isCursor, isCurrentRow, isPlaybackRow,
+                        juce::Colours::transparentBlack, false);
 
     g.setFont (lookAndFeel.getMonoFont (12.0f));
     auto fxColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
@@ -476,8 +536,16 @@ void TrackerGrid::drawMasterCell (juce::Graphics& g, const Pattern& pat, int row
 }
 
 void TrackerGrid::fillCellBackground (juce::Graphics& g, int x, int y, int width,
-                                      bool isCursor, bool isCurrentRow, bool isPlaybackRow) const
+                                      bool isCursor, bool isCurrentRow, bool isPlaybackRow,
+                                      juce::Colour instrumentTrailColour,
+                                      bool hasInstrumentTrailColour) const
 {
+    if (hasInstrumentTrailColour)
+    {
+        g.setColour (instrumentTrailColour.withAlpha (0.10f));
+        g.fillRect (x, y, width, kRowHeight);
+    }
+
     if (isCursor)
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::cursorCellColourId));
     else if (isPlaybackRow)
@@ -489,6 +557,97 @@ void TrackerGrid::fillCellBackground (juce::Graphics& g, int x, int y, int width
 
     if (isCursor || isCurrentRow || isPlaybackRow)
         g.fillRect (x, y, width, kRowHeight);
+}
+
+TrackerGrid::InstrumentTrailMap TrackerGrid::buildInstrumentTrailMap (const Pattern& pat, int track, int noteLaneCount) const
+{
+    InstrumentTrailMap trail (static_cast<size_t> (juce::jmax (0, pat.numRows)),
+                              std::vector<int> (static_cast<size_t> (juce::jmax (0, noteLaneCount)), -1));
+    if (! instrumentColourTrailsEnabled || track < 0 || track >= kNumTracks || pat.numRows <= 0 || noteLaneCount <= 0)
+        return trail;
+
+    for (int lane = 0; lane < noteLaneCount; ++lane)
+    {
+        int activeInstrument = -1;
+
+        for (int row = pat.numRows - 1; row >= 0; --row)
+        {
+            const auto slot = pat.getCell (row, track).getNoteLane (lane);
+            if (isStopOrKillNote (slot.note))
+            {
+                activeInstrument = -1;
+                break;
+            }
+
+            if (isPlayableNote (slot.note))
+            {
+                activeInstrument = slot.instrument >= 0 ? juce::jlimit (0, 255, slot.instrument) : -1;
+                break;
+            }
+        }
+
+        for (int row = 0; row < pat.numRows; ++row)
+        {
+            const auto slot = pat.getCell (row, track).getNoteLane (lane);
+            if (isPlayableNote (slot.note))
+            {
+                if (slot.instrument >= 0)
+                    activeInstrument = juce::jlimit (0, 255, slot.instrument);
+
+                trail[static_cast<size_t> (row)][static_cast<size_t> (lane)] = activeInstrument;
+                continue;
+            }
+
+            if (isStopOrKillNote (slot.note))
+            {
+                const int stopInstrument = activeInstrument >= 0
+                                               ? activeInstrument
+                                               : (slot.instrument >= 0 ? juce::jlimit (0, 255, slot.instrument) : -1);
+                trail[static_cast<size_t> (row)][static_cast<size_t> (lane)] = stopInstrument;
+                activeInstrument = -1;
+                continue;
+            }
+
+            trail[static_cast<size_t> (row)][static_cast<size_t> (lane)] = activeInstrument;
+        }
+    }
+
+    return trail;
+}
+
+juce::Colour TrackerGrid::getInstrumentTrailColour (const std::vector<int>& laneInstruments) const
+{
+    std::array<bool, 256> seen {};
+    float red = 0.0f;
+    float green = 0.0f;
+    float blue = 0.0f;
+    int count = 0;
+
+    for (auto instrument : laneInstruments)
+    {
+        if (instrument < 0 || instrument > 255 || seen[static_cast<size_t> (instrument)])
+            continue;
+
+        seen[static_cast<size_t> (instrument)] = true;
+        auto colour = lookAndFeel.getInstrumentColour (instrument);
+        red += colour.getFloatRed();
+        green += colour.getFloatGreen();
+        blue += colour.getFloatBlue();
+        ++count;
+    }
+
+    if (count == 0)
+        return juce::Colours::transparentBlack;
+
+    return juce::Colour::fromFloatRGBA (red / static_cast<float> (count),
+                                        green / static_cast<float> (count),
+                                        blue / static_cast<float> (count),
+                                        1.0f);
+}
+
+juce::Colour TrackerGrid::getInstrumentTextColour (int instrument) const
+{
+    return lookAndFeel.getInstrumentColour (instrument).brighter (0.32f);
 }
 
 void TrackerGrid::drawCursorSubColumnHighlight (juce::Graphics& g, int x, int y, int width) const

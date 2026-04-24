@@ -163,6 +163,7 @@ constexpr int kMenuWiggleTrackVelocitiesMedium = 49;
 constexpr int kMenuWiggleTrackVelocitiesStrong = 50;
 constexpr int kMenuAutoNameTrack = 51;
 constexpr int kMenuAutoNameCurrentTracks = 52;
+constexpr int kMenuColourSchemeBase = 3000;
 
 std::array<int, 7> getScaleIntervals (int scale)
 {
@@ -814,6 +815,10 @@ private:
 
 MainComponent::MainComponent()
 {
+    colourSchemeIndex = ProjectSerializer::loadGlobalColourSchemeIndex();
+    trackerLookAndFeel.setColourScheme (colourSchemeIndex);
+    instrumentColourTrailsEnabled = ProjectSerializer::loadGlobalInstrumentColourTrailsEnabled();
+
     setLookAndFeel (&trackerLookAndFeel);
     showAudioUnitEquivalents = ProjectSerializer::loadGlobalPluginMenuAudioUnitsVisible();
 
@@ -1577,6 +1582,7 @@ MainComponent::MainComponent()
     // Create the grid
     trackerGrid = std::make_unique<TrackerGrid> (patternData, trackerLookAndFeel, trackLayout);
     trackerGrid->setVelocityLanesVisible (ProjectSerializer::loadGlobalVelocityLanesVisible());
+    trackerGrid->setInstrumentColourTrailsEnabled (instrumentColourTrailsEnabled);
     trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     trackerGrid->setUndoManager (&undoManager);
     addAndMakeVisible (*trackerGrid);
@@ -1742,7 +1748,8 @@ MainComponent::MainComponent()
 
     // Status bar
     addAndMakeVisible (statusLabel);
-    statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
+    statusLabel.setColour (juce::Label::textColourId,
+                           trackerLookAndFeel.findColour (TrackerLookAndFeel::textColourId));
     statusLabel.setFont (trackerLookAndFeel.getMonoFont (12.0f));
 
     addAndMakeVisible (automationPanelButton);
@@ -1753,11 +1760,13 @@ MainComponent::MainComponent()
     updateAutomationPanelButton();
 
     addAndMakeVisible (octaveLabel);
-    octaveLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
+    octaveLabel.setColour (juce::Label::textColourId,
+                           trackerLookAndFeel.findColour (TrackerLookAndFeel::textColourId));
     octaveLabel.setFont (trackerLookAndFeel.getMonoFont (12.0f));
 
     addAndMakeVisible (bpmLabel);
-    bpmLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
+    bpmLabel.setColour (juce::Label::textColourId,
+                        trackerLookAndFeel.findColour (TrackerLookAndFeel::textColourId));
     bpmLabel.setFont (trackerLookAndFeel.getMonoFont (12.0f));
 
     setUiScalePercent (ProjectSerializer::loadGlobalUiScalePercent(), false);
@@ -1996,6 +2005,56 @@ void MainComponent::setVelocityLanesVisible (bool visible, bool persist)
 void MainComponent::toggleVelocityLanes()
 {
     setVelocityLanesVisible (! trackerGrid->areVelocityLanesVisible(), true);
+}
+
+void MainComponent::setInstrumentColourTrailsEnabled (bool enabled, bool persist)
+{
+    instrumentColourTrailsEnabled = enabled;
+
+    if (trackerGrid != nullptr)
+        trackerGrid->setInstrumentColourTrailsEnabled (enabled);
+
+    if (persist)
+        ProjectSerializer::saveGlobalInstrumentColourTrailsEnabled (enabled);
+
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::toggleInstrumentColourTrails()
+{
+    setInstrumentColourTrailsEnabled (! instrumentColourTrailsEnabled, true);
+}
+
+void MainComponent::setColourSchemeIndex (int schemeIndex, bool persist)
+{
+    colourSchemeIndex = TrackerLookAndFeel::clampColourSchemeIndex (schemeIndex);
+    trackerLookAndFeel.setColourScheme (colourSchemeIndex);
+
+    if (persist)
+        ProjectSerializer::saveGlobalColourSchemeIndex (colourSchemeIndex);
+
+    applyLookAndFeelColours();
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::applyLookAndFeelColours()
+{
+    auto textColour = trackerLookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+    const bool temporaryStatusActive = temporaryStatusMessage.isNotEmpty()
+                                    && juce::Time::getMillisecondCounter() < temporaryStatusExpiry;
+
+    if (! temporaryStatusActive)
+        statusLabel.setColour (juce::Label::textColourId, textColour);
+
+    octaveLabel.setColour (juce::Label::textColourId, textColour);
+    bpmLabel.setColour (juce::Label::textColourId, textColour);
+    previewVolumeLabel.setColour (juce::Label::textColourId, textColour.withAlpha (0.7f));
+    uiScaleLabel.setColour (juce::Label::textColourId, textColour.withAlpha (0.7f));
+
+    repaint();
+    for (int i = 0; i < getNumChildComponents(); ++i)
+        if (auto* child = getChildComponent (i))
+            child->repaint();
 }
 
 void MainComponent::setAudioUnitEquivalentsVisible (bool visible, bool persist)
@@ -2318,6 +2377,7 @@ void MainComponent::getAllCommands (juce::Array<juce::CommandID>& commands)
     commands.add (cmdToggleInstrumentPanel);
     commands.add (cmdToggleMetronome);
     commands.add (cmdToggleVelocityLanes);
+    commands.add (cmdToggleInstrumentColourTrails);
     commands.add (cmdToggleAudioUnitEquivalents);
     commands.add (cmdAudioPluginSettings);
 }
@@ -2409,6 +2469,13 @@ void MainComponent::getCommandInfo (juce::CommandID commandID, juce::Application
         case cmdToggleVelocityLanes:
             result.setInfo ("Show Velocity Lanes", "Show/hide per-note velocity columns", "View", 0);
             result.setTicked (trackerGrid == nullptr || trackerGrid->areVelocityLanesVisible());
+            break;
+        case cmdToggleInstrumentColourTrails:
+            result.setInfo ("Instrument Trail Colors",
+                            "Color notes and active note regions by instrument",
+                            "View",
+                            0);
+            result.setTicked (instrumentColourTrailsEnabled);
             break;
         case cmdToggleAudioUnitEquivalents:
             result.setInfo ("Show AudioUnit Equivalents",
@@ -2524,6 +2591,9 @@ bool MainComponent::perform (const InvocationInfo& info)
         case cmdToggleVelocityLanes:
             toggleVelocityLanes();
             return true;
+        case cmdToggleInstrumentColourTrails:
+            toggleInstrumentColourTrails();
+            return true;
         case cmdToggleAudioUnitEquivalents:
             toggleAudioUnitEquivalents();
             return true;
@@ -2578,6 +2648,16 @@ juce::PopupMenu MainComponent::getMenuForIndex (int menuIndex, const juce::Strin
         menu.addCommandItem (&commandManager, cmdToggleSongMode);
         menu.addCommandItem (&commandManager, cmdToggleMetronome);
         menu.addCommandItem (&commandManager, cmdToggleVelocityLanes);
+        menu.addCommandItem (&commandManager, cmdToggleInstrumentColourTrails);
+        juce::PopupMenu colourSchemeMenu;
+        for (int i = 0; i < TrackerLookAndFeel::getColourSchemeCount(); ++i)
+        {
+            colourSchemeMenu.addItem (kMenuColourSchemeBase + i,
+                                      TrackerLookAndFeel::getColourSchemeName (i),
+                                      true,
+                                      i == colourSchemeIndex);
+        }
+        menu.addSubMenu ("Color Scheme", colourSchemeMenu);
         menu.addSeparator();
         menu.addCommandItem (&commandManager, cmdToggleAudioUnitEquivalents);
     }
@@ -2586,6 +2666,13 @@ juce::PopupMenu MainComponent::getMenuForIndex (int menuIndex, const juce::Strin
         menu.addCommandItem (&commandManager, cmdShowHelp);
     }
     return menu;
+}
+
+void MainComponent::menuItemSelected (int menuItemID, int)
+{
+    const int schemeCount = TrackerLookAndFeel::getColourSchemeCount();
+    if (menuItemID >= kMenuColourSchemeBase && menuItemID < kMenuColourSchemeBase + schemeCount)
+        setColourSchemeIndex (menuItemID - kMenuColourSchemeBase, true);
 }
 
 //==============================================================================
@@ -2752,7 +2839,8 @@ void MainComponent::updateStatusBar()
         }
         // Expired -- clear it
         temporaryStatusMessage.clear();
-        statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
+        statusLabel.setColour (juce::Label::textColourId,
+                               trackerLookAndFeel.findColour (TrackerLookAndFeel::textColourId));
     }
 
     auto playState = trackerEngine.isPlaying() ? "PLAYING" : "STOPPED";

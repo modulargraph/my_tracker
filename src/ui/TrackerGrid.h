@@ -147,6 +147,8 @@ public:
 
     void setVelocityLanesVisible (bool visible);
     bool areVelocityLanesVisible() const { return velocityLanesVisible; }
+    void setInstrumentColourTrailsEnabled (bool enabled);
+    bool areInstrumentColourTrailsEnabled() const { return instrumentColourTrailsEnabled; }
 
     // FX command dropdown
     void showFxCommandPopup();
@@ -173,6 +175,7 @@ private:
     int currentInstrument = 0;
     int rowsPerBeat = 4;
     bool velocityLanesVisible = true;
+    bool instrumentColourTrailsEnabled = true;
     bool chordEntryEnabled = false;
 
     // Hex entry state for multi-digit input
@@ -212,17 +215,25 @@ private:
     void ensureCursorVisible();
 
     // Rendering helpers
+    using InstrumentTrailMap = std::vector<std::vector<int>>;
+
     void drawHeaders (juce::Graphics& g);
     void drawRowNumbers (juce::Graphics& g);
     void drawCells (juce::Graphics& g);
     void drawCell (juce::Graphics& g, const Cell& cell, int x, int y, int width,
-                   bool isCursor, bool isCurrentRow, bool isPlaybackRow, int track, int fxLaneCount);
+                   bool isCursor, bool isCurrentRow, bool isPlaybackRow, int track, int fxLaneCount,
+                   const std::vector<int>& laneTrailInstruments);
     void drawMasterCell (juce::Graphics& g, const Pattern& pat, int row, int x, int y, int width,
                          bool isCursor, bool isCurrentRow, bool isPlaybackRow);
     void drawSelection (juce::Graphics& g);
     void drawGroupHeaders (juce::Graphics& g);
     void fillCellBackground (juce::Graphics& g, int x, int y, int width,
-                             bool isCursor, bool isCurrentRow, bool isPlaybackRow) const;
+                             bool isCursor, bool isCurrentRow, bool isPlaybackRow,
+                             juce::Colour instrumentTrailColour,
+                             bool hasInstrumentTrailColour) const;
+    InstrumentTrailMap buildInstrumentTrailMap (const Pattern& pat, int track, int noteLaneCount) const;
+    juce::Colour getInstrumentTrailColour (const std::vector<int>& laneInstruments) const;
+    juce::Colour getInstrumentTextColour (int instrument) const;
     void drawCursorSubColumnHighlight (juce::Graphics& g, int x, int y, int width) const;
     int getEffectiveHeaderHeight() const;
 
