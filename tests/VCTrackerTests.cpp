@@ -21,6 +21,7 @@
 #include "PatternEditUtils.h"
 #include "PluginAutomationData.h"
 #include "ProjectSerializer.h"
+#include "SamplePitchDetector.h"
 #include "SamplePlaybackLayout.h"
 #include "SendBuffers.h"
 #include "SendEffectsParams.h"
@@ -6537,6 +6538,64 @@ bool testTrackerGridCtrlArrowRequestsSelectionTranspose()
     return true;
 }
 
+juce::AudioBuffer<float> makeSineBuffer (double frequencyHz, double durationSeconds, double sampleRate)
+{
+    const int numSamples = static_cast<int> (std::round (durationSeconds * sampleRate));
+    juce::AudioBuffer<float> buffer (1, numSamples);
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const double phase = 2.0 * juce::MathConstants<double>::pi
+                           * frequencyHz * static_cast<double> (i) / sampleRate;
+        buffer.setSample (0, i, static_cast<float> (0.35 * std::sin (phase)));
+    }
+
+    return buffer;
+}
+
+bool testSamplePitchDetectorDetectsSustainedTone()
+{
+    constexpr double sampleRate = 44100.0;
+    auto buffer = makeSineBuffer (220.0, 2.0, sampleRate);
+
+    auto result = SamplePitchDetector::detectPitch (buffer, sampleRate);
+    if (! result.has_value())
+    {
+        std::cerr << "sustained A3 sine was not detected\n";
+        return false;
+    }
+
+    if (result->noteName != "A3" || result->midiNote != 57)
+    {
+        std::cerr << "expected A3/MIDI 57, got " << result->noteName << "/"
+                  << result->midiNote << "\n";
+        return false;
+    }
+
+    if (result->tuneSemitones != 3 || std::abs (result->finetuneCents) > 2)
+    {
+        std::cerr << "unexpected tuning correction for A3: tune "
+                  << result->tuneSemitones << " fine " << result->finetuneCents << "\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testSamplePitchDetectorRejectsShortTone()
+{
+    constexpr double sampleRate = 44100.0;
+    auto buffer = makeSineBuffer (220.0, 0.4, sampleRate);
+
+    if (SamplePitchDetector::detectPitch (buffer, sampleRate).has_value())
+    {
+        std::cerr << "short tone should not pass sustained pitch detection\n";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -6659,6 +6718,8 @@ int main()
         { "TrackerGridArrowKeysStepAcrossVisibleCells", &testTrackerGridArrowKeysStepAcrossVisibleCells },
         { "TrackerGridArrowKeysSkipHiddenVelocityCells", &testTrackerGridArrowKeysSkipHiddenVelocityCells },
         { "TrackerGridCtrlArrowRequestsSelectionTranspose", &testTrackerGridCtrlArrowRequestsSelectionTranspose },
+        { "SamplePitchDetectorDetectsSustainedTone", &testSamplePitchDetectorDetectsSustainedTone },
+        { "SamplePitchDetectorRejectsShortTone", &testSamplePitchDetectorRejectsShortTone },
     };
 
     int failures = 0;

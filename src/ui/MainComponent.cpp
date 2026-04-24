@@ -10,6 +10,7 @@
 #include "MixerComponent.h"
 #include "PatternEditUtils.h"
 #include "ProjectSerializer.h"
+#include "SamplePitchDetector.h"
 #include "SampleEditorComponent.h"
 #include "SendEffectsComponent.h"
 #include "TabBarComponent.h"
@@ -1189,30 +1190,14 @@ MainComponent::MainComponent()
 
     sampleEditor->onParamsChanged = [this] (int inst, const InstrumentParams& params)
     {
-        trackerEngine.getSampler().setParams (inst, params);
-
-        // Apply to all tracks that currently use this instrument
-        bool applied = false;
-        for (int t = 0; t < kNumTracks; ++t)
+        const auto previousParams = trackerEngine.getSampler().getParams (inst);
+        if ((previousParams.tune != params.tune || previousParams.finetune != params.finetune)
+            && detectedSamplePitchLabels.erase (inst) > 0)
         {
-            if (trackerEngine.getTrackInstrument (t) == inst)
-            {
-                auto* track = trackerEngine.getTrack (t);
-                if (track != nullptr)
-                {
-                    trackerEngine.getSampler().applyParams (*track, inst);
-                    applied = true;
-                }
-            }
+            syncDetectedPitchLabelsToBrowser();
         }
 
-        // Fallback: apply to the instrument's home track (before first playback sync)
-        if (! applied && inst >= 0 && inst < kNumTracks)
-        {
-            auto* track = trackerEngine.getTrack (inst);
-            if (track != nullptr)
-                trackerEngine.getSampler().applyParams (*track, inst);
-        }
+        applyInstrumentParamsToPlayback (inst, params);
         markDirty();
     };
     sampleEditor->onRealtimeParamsChanged = [this] (int inst, const InstrumentParams& params)
@@ -1441,7 +1426,7 @@ MainComponent::MainComponent()
     };
     fileBrowser->onLoadSample = [this] (int instrument, const juce::File& file)
     {
-        auto error = trackerEngine.loadSampleForInstrument (instrument, file);
+        auto error = loadSampleAndMaybeDetectPitch (instrument, file);
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Load Error", error);
         else
@@ -1657,7 +1642,7 @@ MainComponent::MainComponent()
         trackerGrid->setCurrentInstrument (inst);
         instrumentPanel->setSelectedInstrument (inst);
 
-        auto error = trackerEngine.loadSampleForInstrument (inst, file);
+        auto error = loadSampleAndMaybeDetectPitch (inst, file);
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Load Error", error);
         else
@@ -2769,7 +2754,7 @@ void MainComponent::loadSampleForCurrentTrack()
                               if (file.existsAsFile())
                               {
                                   int inst = trackerGrid->getCurrentInstrument();
-                                  auto error = trackerEngine.loadSampleForInstrument (inst, file);
+                                  auto error = loadSampleAndMaybeDetectPitch (inst, file);
                                   if (error.isNotEmpty())
                                       juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                                               "Load Error", error);
@@ -3775,6 +3760,7 @@ void MainComponent::newProject()
     arrangement.clear();
     trackLayout.resetToDefault();
     trackerEngine.getSampler().clearLoadedSamples();
+    detectedSamplePitchLabels.clear();
     arrangementComponent->setSelectedEntry (-1);
     trackerGrid->setCursorPosition (0, 0);
     trackerGrid->clearSelection();
@@ -3806,6 +3792,7 @@ void MainComponent::newProject()
         mixerComponent->repaint();
     }
     fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
+    syncDetectedPitchLabelsToBrowser();
     trackerGrid->repaint();
     if (automationPanelVisible)
         refreshAutomationPanel();
@@ -3855,6 +3842,7 @@ void MainComponent::openProject()
 
                               // Reload samples
                               trackerEngine.getSampler().clearLoadedSamples();
+                              detectedSamplePitchLabels.clear();
 
                               for (auto& [index, sampleFile] : samples)
                                   trackerEngine.loadSampleForInstrument (index, sampleFile);
@@ -3909,6 +3897,7 @@ void MainComponent::openProject()
                                   mixerComponent->repaint();
                               }
                               fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
+                              syncDetectedPitchLabelsToBrowser();
                               if (automationPanelVisible)
                                   refreshAutomationPanel();
 
@@ -4466,6 +4455,7 @@ void MainComponent::updateInstrumentPanel()
 
     fileBrowser->updatePluginSlots (pluginSlotInfos);
     fileBrowser->updateInstrumentSlots (loadedSamples);
+    syncDetectedPitchLabelsToBrowser();
 
     updateTrackSampleMarkers();
 }
@@ -4486,6 +4476,94 @@ void MainComponent::updateTrackSampleMarkers()
     trackerGrid->repaint();
 }
 
+void MainComponent::applyInstrumentParamsToPlayback (int instrument, const InstrumentParams& params)
+{
+    trackerEngine.getSampler().setParams (instrument, params);
+
+    bool applied = false;
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        if (trackerEngine.getTrackInstrument (t) == instrument)
+        {
+            auto* track = trackerEngine.getTrack (t);
+            if (track != nullptr)
+            {
+                trackerEngine.getSampler().applyParams (*track, instrument);
+                applied = true;
+            }
+        }
+    }
+
+    if (! applied && instrument >= 0 && instrument < kNumTracks)
+    {
+        auto* track = trackerEngine.getTrack (instrument);
+        if (track != nullptr)
+            trackerEngine.getSampler().applyParams (*track, instrument);
+    }
+}
+
+void MainComponent::syncDetectedPitchLabelsToBrowser()
+{
+    if (fileBrowser != nullptr)
+        fileBrowser->setDetectedPitchLabels (detectedSamplePitchLabels);
+}
+
+juce::String MainComponent::loadSampleAndMaybeDetectPitch (int instrument, const juce::File& file)
+{
+    auto error = trackerEngine.loadSampleForInstrument (instrument, file);
+    if (error.isNotEmpty())
+        return error;
+
+    detectedSamplePitchLabels.erase (instrument);
+    syncDetectedPitchLabelsToBrowser();
+    maybeAutoDetectSamplePitch (instrument);
+
+    return {};
+}
+
+void MainComponent::maybeAutoDetectSamplePitch (int instrument)
+{
+    if (fileBrowser == nullptr || ! fileBrowser->getAutoDetectPitch())
+        return;
+
+    auto bank = trackerEngine.getSampler().getSampleBank (instrument);
+    if (bank == nullptr)
+        return;
+
+    auto result = SamplePitchDetector::detectPitch (bank->buffer, bank->sampleRate);
+    if (! result.has_value())
+    {
+        setTemporaryStatus ("Pitch detect: no stable sustained note", false, 2500);
+        return;
+    }
+
+    auto params = trackerEngine.getSampler().getParams (instrument);
+    params.tune = result->tuneSemitones;
+    params.finetune = result->finetuneCents;
+    applyInstrumentParamsToPlayback (instrument, params);
+
+    detectedSamplePitchLabels[instrument] = result->noteName;
+    syncDetectedPitchLabelsToBrowser();
+
+    if (trackerGrid->getCurrentInstrument() == instrument
+        && (activeTab == Tab::InstrumentEdit || activeTab == Tab::InstrumentType))
+    {
+        updateSampleEditorForCurrentInstrument();
+    }
+
+    juce::String tuneText = (result->tuneSemitones >= 0 ? "+" : "")
+                          + juce::String (result->tuneSemitones);
+    if (result->finetuneCents != 0)
+    {
+        tuneText += " / ";
+        tuneText += (result->finetuneCents >= 0 ? "+" : "");
+        tuneText += juce::String (result->finetuneCents) + "c";
+    }
+
+    setTemporaryStatus ("Pitch detect: " + result->noteName + "  Tune " + tuneText,
+                        false, 3500);
+}
+
 void MainComponent::loadSampleForInstrument (int instrument)
 {
     auto chooser = std::make_shared<juce::FileChooser> (
@@ -4499,7 +4577,7 @@ void MainComponent::loadSampleForInstrument (int instrument)
                               auto file = fc.getResult();
                               if (file.existsAsFile())
                               {
-                                  auto error = trackerEngine.loadSampleForInstrument (instrument, file);
+                                  auto error = loadSampleAndMaybeDetectPitch (instrument, file);
                                   if (error.isNotEmpty())
                                       juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                                               "Load Error", error);
@@ -4526,6 +4604,8 @@ void MainComponent::loadSampleForInstrument (int instrument)
 void MainComponent::clearSampleForInstrument (int instrument)
 {
     trackerEngine.clearSampleForInstrument (instrument);
+    detectedSamplePitchLabels.erase (instrument);
+    syncDetectedPitchLabelsToBrowser();
     trackerEngine.invalidateTrackInstruments();
 
     if (trackerEngine.isPlaying())
