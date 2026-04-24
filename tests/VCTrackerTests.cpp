@@ -18,6 +18,7 @@
 #include "MixerNavigation.h"
 #include "PatternData.h"
 #include "Pattern.h"
+#include "PatternEditUtils.h"
 #include "PluginAutomationData.h"
 #include "ProjectSerializer.h"
 #include "SamplePlaybackLayout.h"
@@ -3520,6 +3521,99 @@ bool testMultiLaneNoteDataSanity()
     return true;
 }
 
+bool testVelocityWiggleTouchesAllNoteLanes()
+{
+    Pattern pat (4);
+
+    {
+        Cell cell;
+        cell.note = 60;
+        cell.instrument = 1;
+        cell.volume = -1;
+
+        NoteSlot lane1;
+        lane1.note = 64;
+        lane1.instrument = 1;
+        lane1.volume = 80;
+        cell.setNoteLane (1, lane1);
+
+        pat.setCell (0, 0, cell);
+    }
+
+    {
+        Cell cell;
+        cell.note = 255;
+        cell.volume = 100;
+        pat.setCell (1, 0, cell);
+    }
+
+    {
+        Cell cell;
+        cell.volume = 90;
+        pat.setCell (2, 0, cell);
+    }
+
+    {
+        Cell cell;
+        cell.note = 67;
+        cell.volume = 70;
+        pat.setCell (0, 1, cell);
+    }
+
+    juce::Random random (12345);
+    auto records = PatternEditUtils::createVelocityWiggleRecords (pat, 0, 2, 8, random);
+    if (records.size() != 1)
+    {
+        std::cerr << "velocity wiggle should produce one changed row for track 0\n";
+        return false;
+    }
+
+    PatternData patternData;
+    patternData.getPattern (0) = pat;
+    if (! PatternEditUtils::applyPatternEdit (patternData, nullptr, 0, std::move (records), {}))
+    {
+        std::cerr << "velocity wiggle records should apply\n";
+        return false;
+    }
+
+    const auto& changedCell = patternData.getPattern (0).getCell (0, 0);
+    const auto lane0 = changedCell.getNoteLane (0);
+    const auto lane1 = changedCell.getNoteLane (1);
+    if (lane0.volume < 119 || lane0.volume > 126)
+    {
+        std::cerr << "default velocity should wiggle downward from 127, got " << lane0.volume << "\n";
+        return false;
+    }
+    if (lane1.volume < 72 || lane1.volume > 88 || lane1.volume == 80)
+    {
+        std::cerr << "extra note lane velocity should wiggle within amount\n";
+        return false;
+    }
+
+    const auto offCell = patternData.getPattern (0).getCell (1, 0);
+    if (offCell.volume != 100)
+    {
+        std::cerr << "OFF/KILL rows should not receive velocity wiggle\n";
+        return false;
+    }
+
+    const auto volumeOnlyCell = patternData.getPattern (0).getCell (2, 0);
+    if (volumeOnlyCell.volume != 90)
+    {
+        std::cerr << "volume-only cells should not receive velocity wiggle\n";
+        return false;
+    }
+
+    const auto otherTrackCell = patternData.getPattern (0).getCell (0, 1);
+    if (otherTrackCell.volume != 70)
+    {
+        std::cerr << "velocity wiggle should not affect other tracks\n";
+        return false;
+    }
+
+    return true;
+}
+
 //==============================================================================
 // Plugin instrument ownership and slot info tests
 //==============================================================================
@@ -6525,6 +6619,7 @@ int main()
         { "SelectedSliceIndexClampsToSliceRegions", &testSelectedSliceIndexClampsToSliceRegions },
         { "NoteLaneSerializationRoundTrip", &testNoteLaneSerializationRoundTrip },
         { "MultiLaneNoteDataSanity", &testMultiLaneNoteDataSanity },
+        { "VelocityWiggleTouchesAllNoteLanes", &testVelocityWiggleTouchesAllNoteLanes },
         { "InstrumentSlotInfoSetAndClear", &testInstrumentSlotInfoSetAndClear },
         { "PluginInstrumentSlotSerializationRoundTrip", &testPluginInstrumentSlotSerializationRoundTrip },
         { "PluginInstrumentOwnershipValidation", &testPluginInstrumentOwnershipValidation },

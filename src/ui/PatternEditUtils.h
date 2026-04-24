@@ -85,6 +85,62 @@ inline int resolveCursorInstrument (const Pattern& pattern,
     return fallbackInstrument;
 }
 
+inline bool noteSlotCanReceiveVelocityWiggle (const NoteSlot& slot)
+{
+    return slot.note >= 0 && slot.note < 128;
+}
+
+inline int wiggleVelocityValue (juce::Random& random, int currentVelocity, int amount)
+{
+    amount = juce::jlimit (0, 127, amount);
+    const int baseVelocity = juce::jlimit (0, 127, currentVelocity);
+    if (amount <= 0)
+        return baseVelocity;
+
+    int delta = random.nextInt (amount * 2 + 1) - amount;
+    if (delta == 0)
+        delta = random.nextInt (2) == 0 ? -1 : 1;
+
+    int nextVelocity = juce::jlimit (0, 127, baseVelocity + delta);
+    if (nextVelocity == baseVelocity)
+        nextVelocity = juce::jlimit (0, 127, baseVelocity - delta);
+
+    return nextVelocity;
+}
+
+inline std::vector<MultiCellEditAction::CellRecord> createVelocityWiggleRecords (
+    const Pattern& pat, int track, int noteLaneCount, int amount, juce::Random& random)
+{
+    std::vector<MultiCellEditAction::CellRecord> records;
+    if (track < 0 || track >= kNumTracks || amount <= 0)
+        return records;
+
+    for (int row = 0; row < pat.numRows; ++row)
+    {
+        const auto oldCell = pat.getCell (row, track);
+        auto newCell = oldCell;
+        bool changed = false;
+
+        const int laneCount = juce::jmax (1, juce::jmax (noteLaneCount, newCell.getNumNoteLanes()));
+        for (int lane = 0; lane < laneCount; ++lane)
+        {
+            auto slot = newCell.getNoteLane (lane);
+            if (! noteSlotCanReceiveVelocityWiggle (slot))
+                continue;
+
+            const int baseVelocity = slot.volume >= 0 ? slot.volume : 127;
+            slot.volume = wiggleVelocityValue (random, baseVelocity, amount);
+            newCell.setNoteLane (lane, slot);
+            changed = true;
+        }
+
+        if (changed && ! sameCell (oldCell, newCell))
+            records.push_back ({ row, track, oldCell, newCell });
+    }
+
+    return records;
+}
+
 inline bool applyPatternEdit (PatternData& patternData,
                               juce::UndoManager* undoManager,
                               int patternIndex,
