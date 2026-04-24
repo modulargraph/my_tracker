@@ -165,6 +165,8 @@ constexpr int kMenuColourSchemeBase = 3000;
 constexpr int kMenuRecentProjectBase = 4000;
 constexpr int kMenuClearRecentProjects = 4099;
 constexpr int kMaxRecentProjects = 10;
+constexpr juce::uint32 kAutosaveQuietPeriodMs = 2000;
+constexpr juce::uint32 kAutosaveRetryPeriodMs = 30000;
 
 std::array<int, 7> getScaleIntervals (int scale)
 {
@@ -1469,6 +1471,13 @@ MainComponent::MainComponent()
     setSize (1280, 720);
     setWantsKeyboardFocus (true);
     trackerGrid->grabKeyboardFocus();
+
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+    juce::MessageManager::callAsync ([safeThis] () mutable
+    {
+        if (safeThis != nullptr)
+            safeThis->promptForAutosavedProject();
+    });
 }
 
 MainComponent::~MainComponent()
@@ -2472,6 +2481,8 @@ void MainComponent::timerCallback()
         lastPluginModTriggerRowSerial = -1;
         lastPluginModTriggerBeat = -1.0;
     }
+
+    maybeAutoSave();
 }
 
 MainComponent::ArrangementPlaybackInfo MainComponent::getArrangementPlaybackPosition (double beatPos) const
@@ -3468,6 +3479,9 @@ void MainComponent::performUndoableTrackLayoutChange (const std::function<void()
 
 void MainComponent::markDirty()
 {
+    autosavePending = true;
+    lastDirtyChangeTime = juce::Time::getMillisecondCounter();
+
     if (isDirty)
         return;
 
@@ -3486,10 +3500,19 @@ void MainComponent::updateWindowTitle()
 bool MainComponent::confirmDiscardChanges()
 {
     if (! isDirty) return true;
-    return juce::AlertWindow::showOkCancelBox (juce::AlertWindow::QuestionIcon,
-                                                "Unsaved Changes",
-                                                "You have unsaved changes. Discard them?",
-                                                "Discard", "Cancel");
+
+    const bool shouldDiscard = juce::AlertWindow::showOkCancelBox (juce::AlertWindow::QuestionIcon,
+                                                                    "Unsaved Changes",
+                                                                    "You have unsaved changes. Discard them?",
+                                                                    "Discard", "Cancel");
+    if (shouldDiscard)
+    {
+        ProjectSerializer::clearAutosavedProject();
+        autosavePending = false;
+        autosaveErrorShown = false;
+    }
+
+    return shouldDiscard;
 }
 
 void MainComponent::newProject()
@@ -3517,6 +3540,9 @@ void MainComponent::newProject()
         automationPanel->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     trackerEngine.invalidateTrackInstruments();
     trackerEngine.setInstrumentSlotInfos ({});
+    ProjectSerializer::clearAutosavedProject();
+    autosavePending = false;
+    autosaveErrorShown = false;
     mixerState.reset();
     trackerEngine.rebuildMixerPluginChains();
     invalidateAutomationPluginCache();
@@ -3558,7 +3584,7 @@ void MainComponent::openProject()
                           });
 }
 
-bool MainComponent::loadProjectFile (const juce::File& file)
+bool MainComponent::loadProjectFile (const juce::File& file, bool recoveringAutosave)
 {
     if (! file.existsAsFile())
     {
@@ -3634,8 +3660,21 @@ bool MainComponent::loadProjectFile (const juce::File& file)
     trackerGrid->setCursorPosition (0, 0);
     trackerGrid->clearSelection();
     undoManager.clearUndoHistory();
-    currentProjectFile = file;
-    isDirty = false;
+    if (recoveringAutosave)
+    {
+        auto sourcePath = ProjectSerializer::loadAutosaveSourceProjectPath();
+        auto sourceFile = juce::File (sourcePath);
+        currentProjectFile = sourceFile.existsAsFile() ? sourceFile : juce::File();
+        isDirty = true;
+    }
+    else
+    {
+        currentProjectFile = file;
+        isDirty = false;
+        ProjectSerializer::clearAutosavedProject();
+    }
+    autosavePending = false;
+    autosaveErrorShown = false;
     updateWindowTitle();
     updateStatusBar();
     updateToolbar();
@@ -3657,7 +3696,8 @@ bool MainComponent::loadProjectFile (const juce::File& file)
             fileBrowser->setCurrentDirectory (dir);
     }
 
-    addRecentProjectFile (file);
+    if (! recoveringAutosave)
+        addRecentProjectFile (file);
     trackerGrid->repaint();
     return true;
 }
@@ -3705,27 +3745,16 @@ void MainComponent::saveProject()
 {
     if (currentProjectFile.existsAsFile())
     {
-        trackerEngine.snapshotInsertPluginStates();
-        trackerEngine.snapshotPluginInstrumentStates();
-        auto& slotInfos = trackerEngine.getAllInstrumentSlotInfos();
-        auto error = ProjectSerializer::saveToFile (currentProjectFile, patternData,
-                                                     trackerEngine.getBpm(),
-                                                     trackerEngine.getRowsPerBeat(),
-                                                     trackerEngine.getSampler().getLoadedSamples(),
-                                                     trackerEngine.getSampler().getAllParams(),
-                                                     arrangement,
-                                                     trackLayout,
-                                                     mixerState,
-                                                     trackerEngine.getDelayParams(),
-                                                     trackerEngine.getReverbParams(),
-                                                     static_cast<int> (followMode),
-                                                     fileBrowser->getCurrentDirectory().getFullPathName(),
-                                                     &slotInfos);
+        juce::String error;
+        saveProjectToFile (currentProjectFile, error);
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, "Save Error", error);
         else
         {
             isDirty = false;
+            autosavePending = false;
+            autosaveErrorShown = false;
+            ProjectSerializer::clearAutosavedProject();
             updateWindowTitle();
             addRecentProjectFile (currentProjectFile);
         }
@@ -3751,22 +3780,8 @@ void MainComponent::saveProjectAs()
                               if (file == juce::File()) return;
 
                               auto f = file.withFileExtension ("tkadj");
-                              trackerEngine.snapshotInsertPluginStates();
-                              trackerEngine.snapshotPluginInstrumentStates();
-                              auto& slotInfos = trackerEngine.getAllInstrumentSlotInfos();
-                              auto error = ProjectSerializer::saveToFile (f, patternData,
-                                                                          trackerEngine.getBpm(),
-                                                                          trackerEngine.getRowsPerBeat(),
-                                                                          trackerEngine.getSampler().getLoadedSamples(),
-                                                                          trackerEngine.getSampler().getAllParams(),
-                                                                          arrangement,
-                                                                          trackLayout,
-                                                                          mixerState,
-                                                                          trackerEngine.getDelayParams(),
-                                                                          trackerEngine.getReverbParams(),
-                                                                          static_cast<int> (followMode),
-                                                                          fileBrowser->getCurrentDirectory().getFullPathName(),
-                                                                          &slotInfos);
+                              juce::String error;
+                              saveProjectToFile (f, error);
                               if (error.isNotEmpty())
                                   juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                                           "Save Error", error);
@@ -3774,10 +3789,109 @@ void MainComponent::saveProjectAs()
                               {
                                   currentProjectFile = f;
                                   isDirty = false;
+                                  autosavePending = false;
+                                  autosaveErrorShown = false;
+                                  ProjectSerializer::clearAutosavedProject();
                                   updateWindowTitle();
                                   addRecentProjectFile (currentProjectFile);
                               }
                           });
+}
+
+bool MainComponent::saveProjectToFile (const juce::File& file, juce::String& error)
+{
+    trackerEngine.snapshotInsertPluginStates();
+    trackerEngine.snapshotPluginInstrumentStates();
+
+    auto& slotInfos = trackerEngine.getAllInstrumentSlotInfos();
+    error = ProjectSerializer::saveToFile (file,
+                                           patternData,
+                                           trackerEngine.getBpm(),
+                                           trackerEngine.getRowsPerBeat(),
+                                           trackerEngine.getSampler().getLoadedSamples(),
+                                           trackerEngine.getSampler().getAllParams(),
+                                           arrangement,
+                                           trackLayout,
+                                           mixerState,
+                                           trackerEngine.getDelayParams(),
+                                           trackerEngine.getReverbParams(),
+                                           static_cast<int> (followMode),
+                                           fileBrowser->getCurrentDirectory().getFullPathName(),
+                                           &slotInfos);
+    return error.isEmpty();
+}
+
+void MainComponent::maybeAutoSave()
+{
+    if (! isDirty || ! autosavePending)
+        return;
+
+    auto now = juce::Time::getMillisecondCounter();
+    if (now - lastDirtyChangeTime < kAutosaveQuietPeriodMs)
+        return;
+
+    if (lastAutosaveAttemptTime != 0 && now - lastAutosaveAttemptTime < kAutosaveRetryPeriodMs)
+        return;
+
+    lastAutosaveAttemptTime = now;
+
+    auto autosaveFile = ProjectSerializer::getAutosaveFile();
+    if (! autosaveFile.getParentDirectory().createDirectory())
+    {
+        if (! autosaveErrorShown)
+        {
+            setTemporaryStatus ("Autosave failed: could not create autosave directory", true, 5000);
+            autosaveErrorShown = true;
+        }
+        return;
+    }
+
+    juce::String error;
+    if (saveProjectToFile (autosaveFile, error))
+    {
+        ProjectSerializer::saveAutosaveSourceProjectPath (
+            currentProjectFile.existsAsFile() ? currentProjectFile.getFullPathName() : juce::String());
+        autosavePending = false;
+        autosaveErrorShown = false;
+    }
+    else if (! autosaveErrorShown)
+    {
+        setTemporaryStatus ("Autosave failed: " + error, true, 5000);
+        autosaveErrorShown = true;
+    }
+}
+
+void MainComponent::promptForAutosavedProject()
+{
+    if (! ProjectSerializer::hasAutosavedProject())
+        return;
+
+    const bool shouldLoad = juce::AlertWindow::showOkCancelBox (
+        juce::AlertWindow::QuestionIcon,
+        "Recover Autosaved Project",
+        "An autosaved project was found. Load it?",
+        "Load Autosave",
+        "Discard");
+
+    if (shouldLoad)
+    {
+        recoverAutosavedProject();
+    }
+    else
+    {
+        ProjectSerializer::clearAutosavedProject();
+        autosavePending = false;
+        autosaveErrorShown = false;
+    }
+}
+
+bool MainComponent::recoverAutosavedProject()
+{
+    if (! loadProjectFile (ProjectSerializer::getAutosaveFile(), true))
+        return false;
+
+    setTemporaryStatus ("Loaded autosaved project. Save to keep recovered changes.", false, 5000);
+    return true;
 }
 
 void MainComponent::showHelpOverlay()

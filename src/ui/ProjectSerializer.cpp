@@ -24,6 +24,12 @@ juce::File getCurrentGlobalPrefsFile()
                .getChildFile ("prefs.xml");
 }
 
+juce::File getCurrentAppDataDir()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+               .getChildFile (kPrefsDirName);
+}
+
 juce::File getLegacyGlobalPrefsFile()
 {
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
@@ -1643,6 +1649,57 @@ juce::StringArray ProjectSerializer::loadGlobalRecentProjectFiles()
     }
 
     return paths;
+}
+
+//==============================================================================
+// Autosave recovery state
+//==============================================================================
+
+juce::File ProjectSerializer::getAutosaveFile()
+{
+    return getCurrentAppDataDir().getChildFile ("autosave.tkadj");
+}
+
+bool ProjectSerializer::hasAutosavedProject()
+{
+    return getAutosaveFile().existsAsFile();
+}
+
+void ProjectSerializer::saveAutosaveSourceProjectPath (const juce::String& path)
+{
+    auto prefsFile = getCurrentGlobalPrefsFile();
+    if (! prefsFile.getParentDirectory().createDirectory())
+        return;
+
+    auto root = loadGlobalPrefsTree();
+    root.setProperty ("autosaveSourceProjectPath", path, nullptr);
+
+    if (auto xml = root.createXml())
+        xml->writeTo (prefsFile);
+}
+
+juce::String ProjectSerializer::loadAutosaveSourceProjectPath()
+{
+    auto root = loadGlobalPrefsTree();
+    return root.getProperty ("autosaveSourceProjectPath", "").toString();
+}
+
+void ProjectSerializer::clearAutosavedProject()
+{
+    auto autosaveFile = getAutosaveFile();
+    getEmbeddedSamplesDir (autosaveFile).deleteRecursively();
+    autosaveFile.deleteFile();
+
+    auto prefsFile = getCurrentGlobalPrefsFile();
+    if (! prefsFile.getParentDirectory().createDirectory())
+        return;
+
+    auto root = loadGlobalPrefsTree();
+    if (root.hasProperty ("autosaveSourceProjectPath"))
+        root.removeProperty ("autosaveSourceProjectPath", nullptr);
+
+    if (auto xml = root.createXml())
+        xml->writeTo (prefsFile);
 }
 
 //==============================================================================

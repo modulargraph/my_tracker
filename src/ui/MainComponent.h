@@ -198,12 +198,20 @@ private:
     // Save/Load
     juce::File currentProjectFile;
     bool isDirty = false;
+    bool autosavePending = false;
+    bool autosaveErrorShown = false;
+    juce::uint32 lastDirtyChangeTime = 0;
+    juce::uint32 lastAutosaveAttemptTime = 0;
     void markDirty();
     void updateWindowTitle();
     void newProject();
     void openProject();
     void saveProject();
     void saveProjectAs();
+    bool saveProjectToFile (const juce::File& file, juce::String& error);
+    void maybeAutoSave();
+    void promptForAutosavedProject();
+    bool recoverAutosavedProject();
     void toggleArrangementPanel();
     void toggleSongMode();
     void toggleVelocityLanes();
@@ -222,7 +230,7 @@ private:
     juce::String loadSampleAndMaybeDetectPitch (int instrument, const juce::File& file);
     void maybeAutoDetectSamplePitch (int instrument);
     void syncDetectedPitchLabelsToBrowser();
-    bool loadProjectFile (const juce::File& file);
+    bool loadProjectFile (const juce::File& file, bool recoveringAutosave = false);
     void addRecentProjectFile (const juce::File& file);
     void removeRecentProjectFile (const juce::File& file);
     void clearRecentProjectFiles();
