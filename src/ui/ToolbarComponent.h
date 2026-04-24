@@ -92,7 +92,7 @@ private:
     juce::Rectangle<int> addPatBounds, duplicatePatBounds, removePatBounds;
     juce::Rectangle<int> lengthBounds, bpmBounds, stepBounds, octaveBounds, modeBounds, patNameBounds;
     juce::Rectangle<int> arrangementToggleBounds, instrumentToggleBounds, patSelectorBounds;
-    juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, fxRefBounds, midiGeneratorBounds, chordEntryBounds, rpbBounds, automationToggleBounds;
+    juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, fxRefBounds, midiGeneratorBounds, chordEntryBounds, chordSetBounds, rpbBounds, automationToggleBounds;
 
     // Drag state
     enum class DragTarget { None, Length, Bpm, Step, Octave, Instrument, Rpb };

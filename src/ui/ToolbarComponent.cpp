@@ -198,16 +198,27 @@ void ToolbarComponent::paint (juce::Graphics& g)
     x += 46;
 
     // Chord entry toggle
-    chordEntryBounds = { x, 6, 42, 24 };
+    chordEntryBounds = { x, 6, 34, 24 };
     g.setColour (chordEntryOn ? lookAndFeel.findColour (TrackerLookAndFeel::noteColourId).withAlpha (0.42f)
                               : juce::Colour (0xff3a3a3a));
     g.fillRoundedRectangle (chordEntryBounds.toFloat(), 3.0f);
     g.setColour (chordEntryOn ? juce::Colours::white
                               : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
     g.setFont (lookAndFeel.getMonoFont (9.0f));
-    g.drawText (chordEntryLabel, chordEntryBounds, juce::Justification::centred);
+    g.drawText ("CHD", chordEntryBounds, juce::Justification::centred);
     g.setFont (lookAndFeel.getMonoFont (13.0f));
-    x += 46;
+    x += 38;
+
+    // Chord set selector
+    chordSetBounds = { x, 6, 38, 24 };
+    g.setColour (chordEntryOn ? lookAndFeel.findColour (TrackerLookAndFeel::noteColourId).withAlpha (0.28f)
+                              : juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (chordSetBounds.toFloat(), 3.0f);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.drawText (chordEntryLabel, chordSetBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
+    x += 42;
 
     // Automation panel toggle
     automationToggleBounds = { x, 6, 32, 24 };
@@ -288,6 +299,12 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
     if (midiGeneratorBounds.contains (pos) && onShowMidiGenerator)
     {
         onShowMidiGenerator();
+        return;
+    }
+    if (chordSetBounds.contains (pos))
+    {
+        if (onCycleChordSet)
+            onCycleChordSet();
         return;
     }
     if (chordEntryBounds.contains (pos))
