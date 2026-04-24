@@ -1388,6 +1388,11 @@ void TrackerEngine::previewInstrument (int instrumentIndex)
     if (edit == nullptr)
         return;
 
+    stopPreview();
+
+    if (isPluginInstrument (instrumentIndex))
+        return;
+
     auto bank = sampler.getSampleBank (instrumentIndex);
     if (bank == nullptr)
         return;
@@ -1734,6 +1739,8 @@ bool TrackerEngine::addInsertPlugin (int trackIndex, const juce::PluginDescripti
     if (track == nullptr)
         return false;
 
+    stopPreview();
+
     // Create the plugin instance via Tracktion's plugin cache
     auto& formatManager = engine->getPluginManager().pluginFormatManager;
     juce::String errorMessage;
@@ -1947,6 +1954,8 @@ bool TrackerEngine::addMasterInsertPlugin (const juce::PluginDescription& desc)
     auto& slots = mixerStatePtr->masterInsertSlots;
     if (static_cast<int> (slots.size()) >= kMaxInsertSlots)
         return false;
+
+    stopPreview();
 
     setupSendEffectsTrack();
 
@@ -2286,6 +2295,8 @@ bool TrackerEngine::setPluginInstrument (int instrumentIndex, const juce::Plugin
 
     if (ownerTrack < 0 || ownerTrack >= kNumTracks)
         return false;
+
+    stopPreview();
 
     clearPluginInstrumentInternal (instrumentIndex, false);
 

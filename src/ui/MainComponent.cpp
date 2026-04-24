@@ -963,6 +963,8 @@ MainComponent::MainComponent()
     };
     instrumentPanel->onSetPluginInstrumentRequested = [this] (int inst)
     {
+        trackerEngine.stopPreview();
+
         // Show plugin picker from scanned instruments list
         auto instruments = filterAudioUnitEquivalents (trackerEngine.getPluginCatalog().getInstruments(),
                                                        showAudioUnitEquivalents);
@@ -1114,6 +1116,8 @@ MainComponent::MainComponent()
     // Insert plugin callbacks
     mixerComponent->onAddInsertClicked = [this] (int track)
     {
+        trackerEngine.stopPreview();
+
         auto effects = filterAudioUnitEquivalents (trackerEngine.getPluginCatalog().getEffects(),
                                                   showAudioUnitEquivalents);
         if (effects.isEmpty())
@@ -1196,6 +1200,8 @@ MainComponent::MainComponent()
 
     mixerComponent->onAddMasterInsertClicked = [this]
     {
+        trackerEngine.stopPreview();
+
         auto effects = filterAudioUnitEquivalents (trackerEngine.getPluginCatalog().getEffects(),
                                                   showAudioUnitEquivalents);
         if (effects.isEmpty())
@@ -4182,12 +4188,12 @@ void MainComponent::updateInstrumentPanel()
     auto loadedSamples = trackerEngine.getSampler().getLoadedSamples();
     auto& pluginSlotInfos = trackerEngine.getAllInstrumentSlotInfos();
 
-    instrumentPanel->updateSampleInfo (loadedSamples);
     instrumentPanel->updatePluginInfo (pluginSlotInfos);
+    instrumentPanel->updateSampleInfo (loadedSamples);
     instrumentPanel->setSelectedInstrument (trackerGrid->getCurrentInstrument());
 
-    // Keep file browser in sync with plugin instrument state
     fileBrowser->updatePluginSlots (pluginSlotInfos);
+    fileBrowser->updateInstrumentSlots (loadedSamples);
 
     updateTrackSampleMarkers();
 }

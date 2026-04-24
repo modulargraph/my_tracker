@@ -783,12 +783,22 @@ void SampleBrowserComponent::triggerInstrumentPreview()
     if (activePane != Pane::Instruments)
         return;
 
-    if (instrumentSelection >= 0 && instrumentSelection < 256
-        && instrumentSlots[static_cast<size_t> (instrumentSelection)].hasData
-        && onPreviewInstrument)
+    if (instrumentSelection < 0 || instrumentSelection >= 256)
+    {
+        if (onStopPreview)
+            onStopPreview();
+        return;
+    }
+
+    auto& slot = instrumentSlots[static_cast<size_t> (instrumentSelection)];
+    if (slot.hasData && ! slot.isPlugin && onPreviewInstrument)
     {
         onPreviewInstrument (instrumentSelection);
+        return;
     }
+
+    if (onStopPreview)
+        onStopPreview();
 }
 
 void SampleBrowserComponent::advanceToNextEmptySlot()
