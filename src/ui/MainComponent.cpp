@@ -1,3 +1,4 @@
+#include <cmath>
 #include <regex>
 #include "MainComponent.h"
 #include "Pattern.h"
@@ -1704,6 +1705,11 @@ MainComponent::MainComponent()
             refreshAutomationPanel();
     };
 
+    trackerEngine.onPluginInstrumentModulationChanged = [this] (int)
+    {
+        markDirty();
+    };
+
     // Status bar
     addAndMakeVisible (statusLabel);
     statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
@@ -1764,6 +1770,7 @@ MainComponent::~MainComponent()
     trackerEngine.onStatusMessage = nullptr;
     trackerEngine.onNavigateToAutomation = nullptr;
     trackerEngine.onPluginInstrumentCleared = nullptr;
+    trackerEngine.onPluginInstrumentModulationChanged = nullptr;
     trackerEngine.onInsertStateChanged = nullptr;
 
    #if JUCE_MAC
@@ -2580,7 +2587,18 @@ void MainComponent::timerCallback()
             playPatternIndex = patternData.getCurrentPatternIndex();
         }
 
+        juce::String recordingPluginId;
+        int recordingParamIdx = -1;
+        if (automationPanelVisible && automationPanel != nullptr && automationPanel->isRecording())
+        {
+            recordingPluginId = automationPanel->getSelectedPluginId();
+            recordingParamIdx = automationPanel->getSelectedParameterIndex();
+        }
+
+        const double beatPosition = trackerEngine.getPlaybackBeatPosition();
         applyAutomationAtPlaybackPosition (playPatternIndex, playRow);
+        applyPluginModulationAtPlaybackPosition (playPatternIndex, playRow, beatPosition,
+                                                 recordingPluginId, recordingParamIdx);
 
         trackerGrid->setPlaybackRow (playRow);
         trackerGrid->setPlaying (true);
@@ -2630,6 +2648,8 @@ void MainComponent::timerCallback()
             arrangementComponent->setPlayingEntry (-1);
         if (automationPanelVisible && automationPanel != nullptr)
             automationPanel->setPlaybackRow (-1);
+        lastPluginModTriggerRowSerial = -1;
+        lastPluginModTriggerBeat = -1.0;
     }
 }
 
@@ -4322,6 +4342,97 @@ void MainComponent::applyAutomationAtPlaybackPosition (int playPatternIndex, int
     }
 
     trackerEngine.applyAutomationForPlaybackRow (automationData, playRow, recordingPluginId, recordingParamIdx);
+}
+
+int MainComponent::resolvePluginInstrumentForTrackRow (int trackIndex, const NoteSlot& noteSlot) const
+{
+    if (noteSlot.instrument >= 0
+        && trackerEngine.isPluginInstrument (noteSlot.instrument)
+        && trackerEngine.getPluginInstrumentOwnerTrack (noteSlot.instrument) == trackIndex)
+    {
+        return noteSlot.instrument;
+    }
+
+    for (const auto& [instrumentIndex, info] : trackerEngine.getAllInstrumentSlotInfos())
+        if (info.isPlugin() && info.ownerTrack == trackIndex)
+            return instrumentIndex;
+
+    return -1;
+}
+
+void MainComponent::applyPluginModulationAtPlaybackPosition (int playPatternIndex,
+                                                            int playRow,
+                                                            double beatPosition,
+                                                            const juce::String& excludedPluginId,
+                                                            int excludedParamIndex)
+{
+    if (beatPosition < 0.0)
+        return;
+
+    const int rowSerial = static_cast<int> (std::floor (beatPosition * static_cast<double> (trackerEngine.getRowsPerBeat()) + 0.0001));
+    if (lastPluginModTriggerBeat >= 0.0 && beatPosition < lastPluginModTriggerBeat - 0.125)
+        lastPluginModTriggerRowSerial = -1;
+
+    if (playPatternIndex >= 0
+        && playPatternIndex < patternData.getNumPatterns()
+        && playRow >= 0
+        && rowSerial != lastPluginModTriggerRowSerial)
+    {
+        const auto& pattern = patternData.getPattern (playPatternIndex);
+        if (playRow < pattern.numRows)
+        {
+            for (int track = 0; track < kNumTracks; ++track)
+            {
+                const auto& cell = pattern.getCell (playRow, track);
+
+                for (int lane = 0; lane < cell.getNumNoteLanes(); ++lane)
+                {
+                    const auto noteSlot = cell.getNoteLane (lane);
+                    if (noteSlot.note >= 0 && noteSlot.note < 128)
+                    {
+                        const int instrumentIndex = resolvePluginInstrumentForTrackRow (track, noteSlot);
+                        if (instrumentIndex >= 0)
+                            trackerEngine.triggerPluginInstrumentNoteModulators (instrumentIndex);
+                    }
+                    else if (noteSlot.note == 254 || noteSlot.note == 255)
+                    {
+                        const int instrumentIndex = resolvePluginInstrumentForTrackRow (track, noteSlot);
+                        if (instrumentIndex >= 0)
+                        {
+                            trackerEngine.releasePluginInstrumentNoteModulators (instrumentIndex);
+                        }
+                        else
+                        {
+                            for (const auto& [instIdx, info] : trackerEngine.getAllInstrumentSlotInfos())
+                                if (info.isPlugin() && info.ownerTrack == track)
+                                    trackerEngine.releasePluginInstrumentNoteModulators (instIdx);
+                        }
+                    }
+                }
+
+                for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
+                {
+                    const auto& fxSlot = cell.getFxSlot (fxSlotIdx);
+                    if (fxSlot.getCommandLetter() != 'M')
+                        continue;
+
+                    const int action = (fxSlot.fxParam >> 4) & 0xF;
+                    const int sourceNibble = fxSlot.fxParam & 0xF;
+                    const int sourceIndex = sourceNibble == 0 ? -1 : sourceNibble - 1;
+
+                    if (action == 8)
+                        trackerEngine.releasePluginInstrumentStepModulatorsForTrack (track, sourceIndex);
+                    else
+                        trackerEngine.triggerPluginInstrumentStepModulatorsForTrack (track, sourceIndex);
+                }
+            }
+        }
+
+        lastPluginModTriggerRowSerial = rowSerial;
+    }
+
+    lastPluginModTriggerBeat = beatPosition;
+    trackerEngine.applyPluginInstrumentModulations (beatPosition, excludedPluginId, excludedParamIndex);
 }
 
 void MainComponent::doCopy()

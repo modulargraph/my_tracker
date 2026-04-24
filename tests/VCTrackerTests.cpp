@@ -2216,7 +2216,7 @@ bool testSampleFxCommandsEnterAndRoundTrip()
         bool masterLane;
     };
 
-    const std::array<FxExample, 12> examples = {{
+    const std::array<FxExample, 13> examples = {{
         { 'B', 0x01, false },
         { 'P', 0x80, false },
         { 'T', 0x0C, false },
@@ -2229,6 +2229,7 @@ bool testSampleFxCommandsEnterAndRoundTrip()
         { 'V', 0x7F, false },
         { 'L', 0x03, false },
         { 'N', 0xFB, false },
+        { 'M', 0x01, false },
     }};
 
     const auto& commandList = getFxCommandList();
@@ -3921,6 +3922,17 @@ bool testPluginInstrumentSlotSerializationRoundTrip()
         child.setProperty ("bytes", "abc123", nullptr);
         state.addChild (child, -1, nullptr);
         info.pluginState = state;
+        auto lfoIndex = info.pluginModulation.addLfo();
+        auto envIndex = info.pluginModulation.addEnvelope();
+        info.pluginModulation.sources[static_cast<size_t> (lfoIndex)].lfoRateSteps = 8.0;
+        info.pluginModulation.sources[static_cast<size_t> (envIndex)].envelopeTriggerMode =
+            PluginModulatorSource::EnvelopeTriggerMode::StepFxOnly;
+        PluginModulationRoute route;
+        route.sourceIndex = envIndex;
+        route.parameterIndex = 12;
+        route.parameterName = "Cutoff";
+        route.amount = -0.35f;
+        info.pluginModulation.routes.push_back (route);
         pluginSlots[5] = info;
     }
     {
@@ -4025,6 +4037,23 @@ bool testPluginInstrumentSlotSerializationRoundTrip()
     if (! stateChild.isValid() || stateChild.getProperty ("bytes", "").toString() != "abc123")
     {
         std::cerr << "Slot 5 plugin state child did not round-trip\n";
+        return false;
+    }
+    if (it5->second.pluginModulation.sources.size() != 2
+        || it5->second.pluginModulation.routes.size() != 1)
+    {
+        std::cerr << "Slot 5 plugin modulation did not round-trip\n";
+        return false;
+    }
+    const auto& loadedEnv = it5->second.pluginModulation.sources[1];
+    const auto& loadedRoute = it5->second.pluginModulation.routes[0];
+    if (loadedEnv.envelopeTriggerMode != PluginModulatorSource::EnvelopeTriggerMode::StepFxOnly
+        || loadedRoute.sourceIndex != 1
+        || loadedRoute.parameterIndex != 12
+        || loadedRoute.parameterName != "Cutoff"
+        || std::abs (loadedRoute.amount + 0.35f) > 1.0e-6f)
+    {
+        std::cerr << "Slot 5 plugin modulation values mismatch\n";
         return false;
     }
 

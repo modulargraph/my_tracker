@@ -182,6 +182,11 @@ public:
     /** Get all instrument slot infos (for serialization). */
     const std::map<int, InstrumentSlotInfo>& getAllInstrumentSlotInfos() const { return instrumentSlotInfos; }
 
+    /** Mutable modulation matrix for a hosted plugin instrument. */
+    PluginInstrumentModulation& getPluginInstrumentModulation (int instrumentIndex);
+    const PluginInstrumentModulation& getPluginInstrumentModulation (int instrumentIndex) const;
+    void notifyPluginInstrumentModulationChanged (int instrumentIndex);
+
     /** Set instrument slot infos (for deserialization). */
     void setInstrumentSlotInfos (const std::map<int, InstrumentSlotInfo>& infos);
 
@@ -211,6 +216,20 @@ public:
 
     /** Callback when a plugin instrument is cleared (for automation cleanup). */
     std::function<void (const juce::String& pluginId)> onPluginInstrumentCleared;
+
+    /** Callback when a plugin instrument modulation matrix changes. */
+    std::function<void (int instrumentIndex)> onPluginInstrumentModulationChanged;
+
+    /** Pattern-row modulation triggers for plugin instruments. */
+    void triggerPluginInstrumentNoteModulators (int instrumentIndex);
+    void releasePluginInstrumentNoteModulators (int instrumentIndex);
+    void triggerPluginInstrumentStepModulatorsForTrack (int trackIndex, int sourceIndex);
+    void releasePluginInstrumentStepModulatorsForTrack (int trackIndex, int sourceIndex);
+    void releaseAllPluginInstrumentNoteModulators();
+    void resetPluginInstrumentModulations();
+    void applyPluginInstrumentModulations (double transportBeat,
+                                           const juce::String& excludedPluginId = {},
+                                           int excludedParamIndex = -1);
 
     //==============================================================================
     // Plugin automation (Phase 5)
@@ -317,6 +336,47 @@ private:
     void forgetAutomatedParamsForInsertTrack (int trackIndex);
     const AutomatedParamWrite* findRecentAutomatedParamWrite (const juce::String& pluginId, int paramIndex) const;
     void rememberAutomatedParamWrite (const juce::String& pluginId, int paramIndex, float value);
+
+    struct PluginModulatorRuntime
+    {
+        enum class EnvStage { Idle, Attack, Decay, Sustain, Release };
+        double lfoPhase = 0.0;
+        float randomHoldValue = 0.0f;
+        bool randomNeedsNew = true;
+        EnvStage envStage = EnvStage::Idle;
+        float envLevel = 0.0f;
+    };
+
+    struct PluginModulatedParamRuntime
+    {
+        bool valid = false;
+        float baseValue = 0.0f;
+        float lastModulation = 0.0f;
+        float lastWrittenValue = 0.0f;
+    };
+
+    struct PluginInstrumentModulationRuntime
+    {
+        std::vector<PluginModulatorRuntime> sources;
+        std::map<int, PluginModulatedParamRuntime> params;
+        double lastTransportBeat = -1.0;
+        juce::uint32 lastUpdateMs = 0;
+    };
+
+    std::map<int, PluginInstrumentModulationRuntime> pluginModulationRuntime;
+    void ensurePluginModulationRuntimeSize (int instrumentIndex);
+    void triggerPluginEnvelope (int instrumentIndex,
+                                int sourceIndex,
+                                PluginModulatorSource::EnvelopeTriggerMode triggerMode);
+    void releasePluginEnvelope (int instrumentIndex,
+                                int sourceIndex,
+                                PluginModulatorSource::EnvelopeTriggerMode triggerMode);
+    static float evaluatePluginLfo (double phase,
+                                    PluginModulatorSource::LfoShape shape,
+                                    PluginModulatorRuntime& state);
+    static float advancePluginEnvelope (PluginModulatorRuntime& state,
+                                        const PluginModulatorSource& source,
+                                        double deltaSeconds);
 
     // Ensure the plugin instrument is loaded on its owner track
     void ensurePluginInstrumentLoaded (int instrumentIndex);
