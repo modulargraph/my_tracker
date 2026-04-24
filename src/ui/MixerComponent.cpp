@@ -404,9 +404,7 @@ void MixerComponent::paintHeader (juce::Graphics& g, int physTrack, int /*visual
     g.fillRect (bounds);
 
     // Track name or number
-    auto name = trackLayout.getTrackName (physTrack);
-    if (name.isEmpty())
-        name = juce::String::formatted ("T%02d", physTrack + 1);
+    auto name = trackLayout.getTrackDisplayName (physTrack);
 
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
     g.setFont (lookAndFeel.getUIFont (15.0f, juce::Font::bold));

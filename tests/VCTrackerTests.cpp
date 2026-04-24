@@ -28,6 +28,7 @@
 #include "PatternEditUtils.h"
 #include "PluginAutomationComponent.h"
 #include "PanMapping.h"
+#include "TrackAutoName.h"
 #include "TrackLayout.h"
 #include "TrackerGrid.h"
 #include "TrackerLookAndFeel.h"
@@ -2517,6 +2518,134 @@ bool testTrackLayoutTrackLaneCountDefaultsAndRoundTrip()
     if (trackLayoutOut.getTrackLaneCount() != 7)
     {
         std::cerr << "track lane count mismatch after round-trip\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testTrackAutoNameUsesMostCommonSampleOrPlugin()
+{
+    Pattern pattern (8);
+
+    Cell kick;
+    kick.note = 60;
+    kick.instrument = 2;
+    pattern.setCell (0, 0, kick);
+    pattern.setCell (4, 0, kick);
+
+    Cell snare;
+    snare.note = 62;
+    snare.instrument = 3;
+    pattern.setCell (2, 0, snare);
+
+    Cell synthChord;
+    synthChord.note = 64;
+    synthChord.instrument = 7;
+    synthChord.setNoteLane (1, { 67, 7, 100 });
+    pattern.setCell (1, 1, synthChord);
+
+    std::map<int, juce::File> loadedSamples;
+    loadedSamples[2] = juce::File ("/tmp/Kick Drum.wav");
+    loadedSamples[3] = juce::File ("/tmp/Snare.wav");
+    loadedSamples[5] = juce::File ("/tmp/Closed Hat.aiff");
+
+    std::map<int, InstrumentSlotInfo> pluginSlots;
+    {
+        InstrumentSlotInfo info;
+        juce::PluginDescription desc;
+        desc.name = "PolySynth";
+        info.setPlugin (desc, 1);
+        pluginSlots[7] = info;
+    }
+    {
+        InstrumentSlotInfo info;
+        juce::PluginDescription desc;
+        desc.name = "PadMachine";
+        info.setPlugin (desc, 4);
+        pluginSlots[12] = info;
+    }
+
+    auto names = TrackAutoName::buildForPattern (pattern, loadedSamples, pluginSlots);
+    if (names[0] != "Kick Drum")
+    {
+        std::cerr << "track 0 should use most common sample name, got " << names[0] << "\n";
+        return false;
+    }
+
+    if (names[1] != "PolySynth")
+    {
+        std::cerr << "track 1 should use plugin instrument name, got " << names[1] << "\n";
+        return false;
+    }
+
+    if (names[4] != "PadMachine")
+    {
+        std::cerr << "track 4 should fall back to owned plugin instrument, got " << names[4] << "\n";
+        return false;
+    }
+
+    if (names[5] != "Closed Hat")
+    {
+        std::cerr << "track 5 should fall back to same-slot sample name, got " << names[5] << "\n";
+        return false;
+    }
+
+    TrackLayout layout;
+    layout.setTrackAutoNames (names);
+    if (layout.getTrackDisplayName (0) != "Kick Drum")
+    {
+        std::cerr << "auto track name should be used as display name\n";
+        return false;
+    }
+
+    if (! TrackAutoName::applyToTrack (layout, 0, names)
+        || layout.getTrackName (0) != "Kick Drum")
+    {
+        std::cerr << "single-track auto name should be committed to track name\n";
+        return false;
+    }
+
+    layout.setTrackName (0, "Manual");
+    if (layout.getTrackDisplayName (0) != "Manual")
+    {
+        std::cerr << "manual track name should override auto name\n";
+        return false;
+    }
+
+    layout.resetToDefault();
+    layout.setTrackLaneCount (7);
+    layout.setTrackName (0, "Manual");
+    layout.setTrackName (6, "Lead");
+
+    const int changed = TrackAutoName::applyToCurrentTrackLanes (layout, names);
+    if (changed != 6)
+    {
+        std::cerr << "bulk auto-name should update six current tracks, got " << changed << "\n";
+        return false;
+    }
+
+    if (layout.getTrackName (0) != "Kick Drum"
+        || layout.getTrackName (1) != "PolySynth"
+        || layout.getTrackName (2) != "Kick Drum"
+        || layout.getTrackName (3) != "Snare"
+        || layout.getTrackName (4) != "PadMachine"
+        || layout.getTrackName (5) != "Closed Hat")
+    {
+        std::cerr << "bulk auto-name did not commit expected names\n";
+        return false;
+    }
+
+    if (layout.getTrackName (6) != "Lead")
+    {
+        std::cerr << "bulk auto-name should leave tracks without candidates unchanged\n";
+        return false;
+    }
+
+    layout.resetToDefault();
+    if (layout.getTrackDisplayName (0) != "T01")
+    {
+        std::cerr << "reset should clear auto track names\n";
         return false;
     }
 
@@ -6650,6 +6779,7 @@ int main()
         { "PatternMultiFxSlotRoundTrip", &testPatternMultiFxSlotRoundTrip },
         { "TrackLayoutFxLaneCountRoundTrip", &testTrackLayoutFxLaneCountRoundTrip },
         { "TrackLayoutTrackLaneCountDefaultsAndRoundTrip", &testTrackLayoutTrackLaneCountDefaultsAndRoundTrip },
+        { "TrackAutoNameUsesMostCommonSampleOrPlugin", &testTrackAutoNameUsesMostCommonSampleOrPlugin },
         { "SymbolicFxTokenRoundTrip", &testSymbolicFxTokenRoundTrip },
         { "MasterLaneRoundTrip", &testMasterLaneRoundTrip },
         { "MixerMuteSoloRoundTrip", &testMixerMuteSoloRoundTrip },

@@ -151,6 +151,33 @@ public:
 
     const std::array<juce::String, kNumTracks>& getTrackNames() const { return trackNames; }
 
+    // Derived display names are transient UI hints. They are not serialized and
+    // do not participate in undoable layout snapshots.
+    const juce::String& getTrackAutoName (int physicalTrack) const
+    {
+        return trackAutoNames[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))];
+    }
+
+    void setTrackAutoName (int physicalTrack, const juce::String& name)
+    {
+        trackAutoNames[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))] = name;
+    }
+
+    void setTrackAutoNames (const std::array<juce::String, kNumTracks>& names)
+    {
+        trackAutoNames = names;
+    }
+
+    juce::String getTrackDisplayName (int physicalTrack) const
+    {
+        const auto idx = static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack));
+        if (trackNames[idx].isNotEmpty())
+            return trackNames[idx];
+        if (trackAutoNames[idx].isNotEmpty())
+            return trackAutoNames[idx];
+        return juce::String::formatted ("T%02d", static_cast<int> (idx) + 1);
+    }
+
     // Per-track note mode (Kill = note-off at end of row, Release = note-off at next note)
     NoteMode getTrackNoteMode (int physicalTrack) const
     {
@@ -387,6 +414,7 @@ public:
         std::iota (visualOrder.begin(), visualOrder.end(), 0);
         groups.clear();
         for (auto& n : trackNames) n.clear();
+        for (auto& n : trackAutoNames) n.clear();
         for (auto& m : trackNoteModes) m = NoteMode::Kill;
         trackFxLaneCounts.fill (1);
         trackNoteLaneCounts.fill (1);
@@ -522,6 +550,7 @@ private:
     std::array<int, kNumTracks> visualOrder {};
     std::vector<TrackGroup> groups;
     std::array<juce::String, kNumTracks> trackNames;
+    std::array<juce::String, kNumTracks> trackAutoNames;
     std::array<NoteMode, kNumTracks> trackNoteModes {};
     std::array<int, kNumTracks> trackFxLaneCounts {};
     std::array<int, kNumTracks> trackNoteLaneCounts {};
