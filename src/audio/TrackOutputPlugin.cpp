@@ -110,6 +110,19 @@ void TrackOutputPlugin::processSends (const juce::AudioBuffer<float>& buffer, in
     }
 }
 
+void TrackOutputPlugin::routeToGroupIfNeeded (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
+{
+    auto* routingBuffers = groupRoutingBuffers.load (std::memory_order_acquire);
+    const int routeIndex = groupRouteIndex.load (std::memory_order_acquire);
+    if (routingBuffers != nullptr && routeIndex >= 0 && routeIndex < kMaxGroupBuses)
+        routingBuffers->addToGroup (routeIndex, buffer, startSample, numSamples);
+    else if (! suppressForGroupSolo.load (std::memory_order_acquire))
+        return;
+
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        buffer.clear (ch, startSample, numSamples);
+}
+
 //==============================================================================
 // Main processing
 //==============================================================================
@@ -139,4 +152,6 @@ void TrackOutputPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     float prev = peakLevel.load (std::memory_order_relaxed);
     if (peak > prev)
         peakLevel.store (peak, std::memory_order_relaxed);
+
+    routeToGroupIfNeeded (buffer, startSample, numSamples);
 }

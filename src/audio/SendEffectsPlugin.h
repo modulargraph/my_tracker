@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include "SendBuffers.h"
+#include "GroupRoutingBuffers.h"
 #include "SendEffectsParams.h"
 #include "MixerState.h"
 
@@ -36,6 +37,7 @@ public:
 
     // Shared send buffers (owned by SimpleSampler, set during setup)
     void setSendBuffers (SendBuffers* buffers);
+    void setGroupRoutingBuffers (GroupRoutingBuffers* buffers) { groupRoutingBuffers = buffers; }
 
     // Mixer state pointer for send return and master processing
     void setMixerState (MixerState* mixState);
@@ -54,6 +56,7 @@ public:
 
 private:
     SendBuffers* sendBuffers = nullptr;
+    GroupRoutingBuffers* groupRoutingBuffers = nullptr;
     MixerState* mixerStatePtr = nullptr;
     std::atomic<bool> hasMixerState { false };
 
@@ -157,6 +160,7 @@ private:
     juce::AudioBuffer<float> reverbReturnScratch;
     int maxScratchSamples = 0;
     int sendBufferCapacitySamples = 0;
+    std::array<juce::AudioBuffer<float>, kMaxGroupBuses> groupScratch;
 
     // Send return EQ filters
     juce::dsp::IIR::Filter<float> delayReturnEqLowL, delayReturnEqLowR;
@@ -165,6 +169,12 @@ private:
     juce::dsp::IIR::Filter<float> reverbReturnEqLowL, reverbReturnEqLowR;
     juce::dsp::IIR::Filter<float> reverbReturnEqMidL, reverbReturnEqMidR;
     juce::dsp::IIR::Filter<float> reverbReturnEqHighL, reverbReturnEqHighR;
+
+    // Group bus EQ filters and compressor state
+    std::array<juce::dsp::IIR::Filter<float>, kMaxGroupBuses> groupEqLowL, groupEqLowR;
+    std::array<juce::dsp::IIR::Filter<float>, kMaxGroupBuses> groupEqMidL, groupEqMidR;
+    std::array<juce::dsp::IIR::Filter<float>, kMaxGroupBuses> groupEqHighL, groupEqHighR;
+    std::array<float, kMaxGroupBuses> groupCompEnvelopes {};
 
     // Master EQ filters
     juce::dsp::IIR::Filter<float> masterEqLowL, masterEqLowR;
@@ -198,6 +208,9 @@ private:
     int getDelayLineSize() const noexcept { return delayLine.getNumSamples(); }
 
     // Send return processing
+    void processGroupBuses (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
+    void applyGroupBusVolumePan (juce::AudioBuffer<float>& buffer, int numSamples,
+                                 const GroupBusState& groupState);
     void processSendReturnEQ (juce::AudioBuffer<float>& buffer, int numSamples,
                               const SendReturnState& sendState,
                               juce::dsp::IIR::Filter<float>& eqLowL, juce::dsp::IIR::Filter<float>& eqLowR,

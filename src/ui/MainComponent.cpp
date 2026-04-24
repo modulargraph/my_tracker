@@ -792,6 +792,7 @@ MainComponent::MainComponent()
 
     // Initialise the engine
     trackerEngine.initialise();
+    trackerEngine.setTrackLayout (&trackLayout);
     trackerEngine.setMixerState (&mixerState);
 
     // Create tab bar
@@ -1611,6 +1612,7 @@ MainComponent::MainComponent()
         if (trackerEngine.isPlaying())
             resyncPlaybackForCurrentMode();
         updateTrackSampleMarkers();
+        trackerEngine.refreshMixerRouting();
         markDirty();
         commandManager.commandStatusChanged();
     };

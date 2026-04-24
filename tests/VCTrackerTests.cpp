@@ -13,6 +13,7 @@
 #include "InstrumentRouting.h"
 #include "InstrumentPlaybackTiming.h"
 #include "FxParamTransport.h"
+#include "GroupRoutingBuffers.h"
 #include "LoopRegion.h"
 #include "MixerState.h"
 #include "MixerNavigation.h"
@@ -478,6 +479,65 @@ bool testSendBuffersClipToPreparedCapacity()
         {
             std::cerr << "fixed-capacity send buffer mismatch at sample " << i << "\n";
             return false;
+        }
+    }
+
+    return true;
+}
+
+bool testGroupRoutingBuffersAccumulateAndConsume()
+{
+    GroupRoutingBuffers buffers;
+    buffers.prepare (8, 2);
+
+    juce::AudioBuffer<float> sourceA (2, 16);
+    juce::AudioBuffer<float> sourceB (2, 16);
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        for (int i = 0; i < 16; ++i)
+        {
+            sourceA.setSample (ch, i, static_cast<float> ((ch + 1) * 10 + i));
+            sourceB.setSample (ch, i, static_cast<float> ((ch + 1) * 100 + i));
+        }
+    }
+
+    buffers.addToGroup (1, sourceA, 4, 8);
+    buffers.addToGroup (1, sourceB, 4, 8);
+
+    juce::AudioBuffer<float> groupOut;
+    buffers.consumeGroupSlice (1, groupOut, 4, 8, 2);
+
+    if (groupOut.getNumSamples() != 8 || groupOut.getNumChannels() != 2)
+    {
+        std::cerr << "group routing consume returned wrong buffer shape\n";
+        return false;
+    }
+
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        for (int i = 0; i < 8; ++i)
+        {
+            const float expected = sourceA.getSample (ch, 4 + i) + sourceB.getSample (ch, 4 + i);
+            if (! floatsClose (groupOut.getSample (ch, i), expected))
+            {
+                std::cerr << "group routing accumulation mismatch at channel "
+                          << ch << " sample " << i << "\n";
+                return false;
+            }
+        }
+    }
+
+    juce::AudioBuffer<float> groupOut2;
+    buffers.consumeGroupSlice (1, groupOut2, 4, 8, 2);
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        for (int i = 0; i < 8; ++i)
+        {
+            if (! floatsClose (groupOut2.getSample (ch, i), 0.0f))
+            {
+                std::cerr << "group routing consume did not clear consumed data\n";
+                return false;
+            }
         }
     }
 
@@ -6742,6 +6802,8 @@ int main()
         { "SinglePatternRoundTripStaysSingle", &testSinglePatternRoundTripStaysSingle },
         { "SendBuffersStartSampleAlignmentAndConsume", &testSendBuffersStartSampleAlignmentAndConsume },
         { "SendBuffersClipToPreparedCapacity", &testSendBuffersClipToPreparedCapacity },
+        { "SendBuffersAutoResizeForLargeWrites", &testSendBuffersAutoResizeForLargeWrites },
+        { "GroupRoutingBuffersAccumulateAndConsume", &testGroupRoutingBuffersAccumulateAndConsume },
         { "PanMappingCenterAndExtremes", &testPanMappingCenterAndExtremes },
         { "MixerDspPanLawAndVolume", &testMixerDspPanLawAndVolume },
         { "MixerDspFlatEqPassesThrough", &testMixerDspFlatEqPassesThrough },

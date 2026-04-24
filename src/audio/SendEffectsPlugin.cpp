@@ -353,6 +353,18 @@ void SendEffectsPlugin::initialise (const te::PluginInitialisationInfo& info)
     assignStereoBiquadCoefficients (masterEqMidL, masterEqMidR, flatCoeffs);
     assignStereoBiquadCoefficients (masterEqHighL, masterEqHighR, flatCoeffs);
 
+    for (int i = 0; i < kMaxGroupBuses; ++i)
+    {
+        DspUtils::initFlatEQ (sampleRate,
+                              groupEqLowL[static_cast<size_t> (i)],
+                              groupEqLowR[static_cast<size_t> (i)],
+                              groupEqMidL[static_cast<size_t> (i)],
+                              groupEqMidR[static_cast<size_t> (i)],
+                              groupEqHighL[static_cast<size_t> (i)],
+                              groupEqHighR[static_cast<size_t> (i)]);
+        groupCompEnvelopes[static_cast<size_t> (i)] = 0.0f;
+    }
+
     masterCompEnvelope = 0.0f;
     masterLimiterEnvelope = 1.0f;
 }
@@ -368,6 +380,8 @@ void SendEffectsPlugin::deinitialise()
     delayScratch.clear();
     reverbInputScratch.clear();
     reverbScratch.clear();
+    for (auto& buffer : groupScratch)
+        buffer.clear();
 }
 
 //==============================================================================
@@ -614,6 +628,8 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
     if (useMixerState)
     {
+        processGroupBuses (buffer, startSample, numSamples);
+
         // Master processing: EQ -> Compressor -> Limiter -> Volume/Pan
         processMasterEQ (buffer, startSample, numSamples);
         processMasterCompressor (buffer, startSample, numSamples);
@@ -724,6 +740,95 @@ void SendEffectsPlugin::processSendEffectsChunk (juce::AudioBuffer<float>& buffe
             buffer.addFrom (ch, startSample, delayReturnScratch, ch, 0, numSamples);
             buffer.addFrom (ch, startSample, reverbReturnScratch, ch, 0, numSamples);
         }
+    }
+}
+
+//==============================================================================
+// Group bus processing
+//==============================================================================
+
+void SendEffectsPlugin::processGroupBuses (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
+{
+    if (mixerStatePtr == nullptr || groupRoutingBuffers == nullptr)
+        return;
+
+    const int numChannels = juce::jmin (2, buffer.getNumChannels());
+    if (numChannels <= 0)
+        return;
+
+    bool anyGroupSoloed = false;
+    for (const auto& groupState : mixerStatePtr->groupBuses)
+    {
+        if (groupState.soloed)
+        {
+            anyGroupSoloed = true;
+            break;
+        }
+    }
+
+    for (int groupIndex = 0; groupIndex < kMaxGroupBuses; ++groupIndex)
+    {
+        auto& scratch = groupScratch[static_cast<size_t> (groupIndex)];
+        groupRoutingBuffers->consumeGroupSlice (groupIndex, scratch, startSample, numSamples, numChannels);
+
+        const auto& groupState = mixerStatePtr->groupBuses[static_cast<size_t> (groupIndex)];
+        if (groupState.muted || (anyGroupSoloed && ! groupState.soloed))
+            continue;
+
+        DspUtils::process3BandEQ (scratch, 0, numSamples, sampleRate,
+                                  groupState.eqLowGain,
+                                  groupState.eqMidGain,
+                                  groupState.eqHighGain,
+                                  groupState.eqMidFreq,
+                                  groupEqLowL[static_cast<size_t> (groupIndex)],
+                                  groupEqLowR[static_cast<size_t> (groupIndex)],
+                                  groupEqMidL[static_cast<size_t> (groupIndex)],
+                                  groupEqMidR[static_cast<size_t> (groupIndex)],
+                                  groupEqHighL[static_cast<size_t> (groupIndex)],
+                                  groupEqHighR[static_cast<size_t> (groupIndex)]);
+
+        DspUtils::processCompressor (scratch, 0, numSamples, sampleRate,
+                                     groupCompEnvelopes[static_cast<size_t> (groupIndex)],
+                                     groupState.compThreshold,
+                                     groupState.compRatio,
+                                     groupState.compAttack,
+                                     groupState.compRelease);
+
+        applyGroupBusVolumePan (scratch, numSamples, groupState);
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            buffer.addFrom (ch, startSample, scratch, ch, 0, numSamples);
+    }
+}
+
+void SendEffectsPlugin::applyGroupBusVolumePan (juce::AudioBuffer<float>& buffer, int numSamples,
+                                                const GroupBusState& groupState)
+{
+    float gain;
+    if (groupState.volume <= -99.0)
+        gain = 0.0f;
+    else
+        gain = juce::Decibels::decibelsToGain (static_cast<float> (groupState.volume));
+
+    float panNorm = (static_cast<float> (groupState.pan) + 50.0f) / 100.0f;
+    float gainL = gain * std::cos (panNorm * juce::MathConstants<float>::halfPi);
+    float gainR = gain * std::sin (panNorm * juce::MathConstants<float>::halfPi);
+
+    if (buffer.getNumChannels() >= 2)
+    {
+        auto* left  = buffer.getWritePointer (0);
+        auto* right = buffer.getWritePointer (1);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            left[i]  *= gainL;
+            right[i] *= gainR;
+        }
+    }
+    else if (buffer.getNumChannels() >= 1)
+    {
+        auto* data = buffer.getWritePointer (0);
+        for (int i = 0; i < numSamples; ++i)
+            data[i] *= gainL;
     }
 }
 

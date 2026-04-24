@@ -9,6 +9,8 @@
 #include "SimpleSampler.h"
 #include "MixerState.h"
 #include "InstrumentSlotInfo.h"
+#include "TrackLayout.h"
+#include "GroupRoutingBuffers.h"
 
 namespace te = tracktion;
 
@@ -125,8 +127,10 @@ public:
 
     // Mixer DSP: set a pointer to the MixerState for per-track processing
     void setMixerState (MixerState* state);
+    void setTrackLayout (TrackLayout* layout);
     // Push mixer values into existing DSP plugins without rebuilding insert chains.
     void refreshMixerPlugins();
+    void refreshMixerRouting();
     void rebuildMixerPluginChains();
 
     // Insert plugin management
@@ -252,6 +256,8 @@ private:
     static constexpr int kSendEffectsTrack = kNumTracks + 2;
     SendEffectsPlugin* sendEffectsPlugin = nullptr;
     MixerState* mixerStatePtr = nullptr;
+    TrackLayout* trackLayoutPtr = nullptr;
+    GroupRoutingBuffers groupRoutingBuffers;
     void setupSendEffectsTrack();
     void setupMixerPlugins();
     void setupChannelStripAndOutput (int trackIndex);
