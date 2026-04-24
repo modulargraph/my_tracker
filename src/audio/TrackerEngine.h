@@ -273,6 +273,11 @@ private:
     int previewPluginTrack = -1;
     bool stopPluginPreview();
 
+    // Sample instrument preview state (live MIDI on the preview track).
+    std::vector<int> previewSampleNotes;
+    int previewSampleTrack = -1;
+    bool stopSamplePreview();
+
     void prepareTracksForInstrumentUsage (const std::array<std::vector<int>, kNumTracks>& instrumentsByTrack);
     void rebuildTempoSequenceFromPatternMasterLane (const Pattern& pattern);
 

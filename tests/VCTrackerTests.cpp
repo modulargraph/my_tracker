@@ -10,6 +10,7 @@
 #include "Arrangement.h"
 #include "ArrangementComponent.h"
 #include "InstrumentRouting.h"
+#include "InstrumentPlaybackTiming.h"
 #include "FxParamTransport.h"
 #include "LoopRegion.h"
 #include "MixerState.h"
@@ -2617,6 +2618,20 @@ bool testGranularStepLengthUsesHalfStepMultiples()
     return true;
 }
 
+bool testKillModeEndsAtCurrentRowEnd()
+{
+    const double endBeat = InstrumentPlaybackTiming::chooseNoteEndBeat (
+        true, 2.0, 0.25, 8.0, 16.0);
+
+    if (! doublesClose (endBeat, 2.25))
+    {
+        std::cerr << "Kill mode should end at current row end; got " << endBeat << "\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testGranularStepLengthTracksPitch()
 {
     InstrumentParams params;
@@ -2637,6 +2652,20 @@ bool testGranularStepLengthTracksPitch()
     return true;
 }
 
+bool testReleaseModeEndsAtNextNote()
+{
+    const double endBeat = InstrumentPlaybackTiming::chooseNoteEndBeat (
+        false, 2.0, 0.25, 8.0, 16.0);
+
+    if (! doublesClose (endBeat, 8.0))
+    {
+        std::cerr << "Release mode should sustain until next note; got " << endBeat << "\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testGranularMsLengthIgnoresPitch()
 {
     InstrumentParams params;
@@ -2651,6 +2680,43 @@ bool testGranularMsLengthIgnoresPitch()
     if (! doublesClose (baseLength, 12000.0) || ! doublesClose (octaveLength, 12000.0))
     {
         std::cerr << "granular ms length should remain a fixed time length\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testKillModeClampsAtSegmentEnd()
+{
+    const double endBeat = InstrumentPlaybackTiming::chooseNoteEndBeat (
+        true, 3.75, 0.5, 8.0, 4.0);
+
+    if (! doublesClose (endBeat, 4.0))
+    {
+        std::cerr << "Kill mode should clamp at pattern/repeat end; got " << endBeat << "\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testHardCutIsSampleOnly()
+{
+    if (! InstrumentPlaybackTiming::shouldSendHardCutAtEnd (true, false))
+    {
+        std::cerr << "Sample kill mode should send hard cut\n";
+        return false;
+    }
+
+    if (InstrumentPlaybackTiming::shouldSendHardCutAtEnd (true, true))
+    {
+        std::cerr << "Plugin kill mode should use note-off timing without allSoundOff\n";
+        return false;
+    }
+
+    if (InstrumentPlaybackTiming::shouldSendHardCutAtEnd (false, false))
+    {
+        std::cerr << "Release mode should not send hard cut\n";
         return false;
     }
 
@@ -5931,6 +5997,10 @@ int main()
         { "GranularStepLengthUsesHalfStepMultiples", &testGranularStepLengthUsesHalfStepMultiples },
         { "GranularStepLengthTracksPitch", &testGranularStepLengthTracksPitch },
         { "GranularMsLengthIgnoresPitch", &testGranularMsLengthIgnoresPitch },
+        { "KillModeEndsAtCurrentRowEnd", &testKillModeEndsAtCurrentRowEnd },
+        { "ReleaseModeEndsAtNextNote", &testReleaseModeEndsAtNextNote },
+        { "KillModeClampsAtSegmentEnd", &testKillModeClampsAtSegmentEnd },
+        { "HardCutIsSampleOnly", &testHardCutIsSampleOnly },
         { "LoopRegionUsesAbsolutePositions", &testLoopRegionUsesAbsolutePositions },
         { "LoopRegionDefaultsClampToPlaybackRegion", &testLoopRegionDefaultsClampToPlaybackRegion },
         { "SliceBoundariesUseAbsolutePositions", &testSliceBoundariesUseAbsolutePositions },

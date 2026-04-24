@@ -13,6 +13,7 @@
 #include "TrackOutputPlugin.h"
 #include "InstrumentRouting.h"
 #include "FxParamTransport.h"
+#include "InstrumentPlaybackTiming.h"
 
 namespace
 {
@@ -398,12 +399,10 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
         // Build MIDI sequence from pattern data (all note lanes)
         juce::MidiMessageSequence midiSeq;
 
-        // For plugin instrument tracks, always use release mode (no allSoundOff).
-        // allSoundOff kills ALL voices on the channel, preventing subsequent notes
-        // from sounding.  Kill/release mode only applies to sample instruments.
-        bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
-        if (getTrackContentMode (trackIdx) == TrackContentMode::PluginInstrument)
-            isKill = false;
+        const bool isPluginInstrumentTrack = getTrackContentMode (trackIdx) == TrackContentMode::PluginInstrument;
+        const bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
+        const bool sendHardCutAtEnd =
+            InstrumentPlaybackTiming::shouldSendHardCutAtEnd (isKill, isPluginInstrumentTrack);
 
         // Determine how many note lanes this track has
         int numNoteLanes = 1;
@@ -539,7 +538,8 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                                       InstrumentRouting::getProgramForInstrument (currentInst)), progTime);
                 }
 
-                // Calculate note end: sustain until next note in this lane
+                // Calculate note end: Kill ends at the next row; Release sustains
+                // until the next note in this lane or the pattern end.
                 int endRow = pattern.numRows;
                 for (int nextRow = row + 1; nextRow < pattern.numRows; ++nextRow)
                 {
@@ -562,7 +562,14 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                         break;
                     }
                 }
-                double endBeat = static_cast<double> (endRow) / static_cast<double> (rowsPerBeat);
+                const double releaseEndBeat = static_cast<double> (endRow) / static_cast<double> (rowsPerBeat);
+                const double patternEndBeat = static_cast<double> (pattern.numRows) / static_cast<double> (rowsPerBeat);
+                const double endBeat = InstrumentPlaybackTiming::chooseNoteEndBeat (
+                    isKill,
+                    startBeat,
+                    1.0 / static_cast<double> (rowsPerBeat),
+                    releaseEndBeat,
+                    patternEndBeat);
                 auto noteEnd = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (endBeat));
 
                 int velocity = noteSlot.volume >= 0 ? noteSlot.volume : 127;
@@ -570,8 +577,9 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 midiSeq.addEvent (juce::MidiMessage::noteOn (1, noteSlot.note, static_cast<juce::uint8> (velocity)),
                                   rowTime.inSeconds());
 
-                if (isKill)
-                    midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), noteEnd.inSeconds());
+                if (sendHardCutAtEnd)
+                    midiSeq.addEvent (juce::MidiMessage::allSoundOff (1),
+                                      InstrumentPlaybackTiming::getHardCutEventTime (noteEnd.inSeconds()));
 
                 midiSeq.addEvent (juce::MidiMessage::noteOff (1, noteSlot.note),
                                   noteEnd.inSeconds());
@@ -652,9 +660,10 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
             continue;
 
         juce::MidiMessageSequence midiSeq;
-        bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
-        if (getTrackContentMode (trackIdx) == TrackContentMode::PluginInstrument)
-            isKill = false;
+        const bool isPluginInstrumentTrack = getTrackContentMode (trackIdx) == TrackContentMode::PluginInstrument;
+        const bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
+        const bool sendHardCutAtEnd =
+            InstrumentPlaybackTiming::shouldSendHardCutAtEnd (isKill, isPluginInstrumentTrack);
 
         // Determine how many note lanes this track has across all patterns
         int numNoteLanes = 1;
@@ -803,7 +812,8 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                                               InstrumentRouting::getProgramForInstrument (currentInst)), progTime);
                         }
 
-                        // Calculate note end: sustain until next note in this lane or end of repeat
+                        // Calculate note end: Kill ends at the next row; Release
+                        // sustains until the next note in this lane or end of repeat.
                         double repeatEndBeat = beatOffset + patternLengthBeats;
                         double endBeat = repeatEndBeat;
                         for (int nextRow = row + 1; nextRow < pattern->numRows; ++nextRow)
@@ -828,6 +838,12 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                             }
                         }
 
+                        endBeat = InstrumentPlaybackTiming::chooseNoteEndBeat (
+                            isKill,
+                            startBeat,
+                            1.0 / static_cast<double> (rpb),
+                            endBeat,
+                            repeatEndBeat);
                         auto noteEnd = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (endBeat));
 
                         int velocity = noteSlot.volume >= 0 ? noteSlot.volume : 127;
@@ -835,8 +851,9 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         midiSeq.addEvent (juce::MidiMessage::noteOn (1, noteSlot.note, static_cast<juce::uint8> (velocity)),
                                           rowTime.inSeconds());
 
-                        if (isKill)
-                            midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), noteEnd.inSeconds());
+                        if (sendHardCutAtEnd)
+                            midiSeq.addEvent (juce::MidiMessage::allSoundOff (1),
+                                              InstrumentPlaybackTiming::getHardCutEventTime (noteEnd.inSeconds()));
 
                         midiSeq.addEvent (juce::MidiMessage::noteOff (1, noteSlot.note),
                                           noteEnd.inSeconds());
@@ -878,8 +895,9 @@ void TrackerEngine::stop()
     if (edit == nullptr)
         return;
 
-    // Stop any active plugin instrument preview (sends explicit note-off).
-    stopPluginPreview();
+    // Stop any active preview before transport shutdown so live preview MIDI
+    // gets a matching note-off while the tracks can still process it.
+    stopPreview();
 
     // Send all-notes-off to every plugin instrument track BEFORE stopping
     // transport.  This prevents stuck notes from in-progress MIDI clips and
@@ -1299,8 +1317,14 @@ void TrackerEngine::previewNotes (int trackIndex, int instrumentIndex, const std
         fxPlugin->setOutputGainLinear (previewVolume);
     }
 
-    sampler.playNotes (*track, notes, 1.0f);
+    if (track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>() == nullptr)
+        return;
 
+    for (int note : notes)
+        track->injectLiveMidiMessage (juce::MidiMessage::noteOn (1, note, static_cast<juce::uint8> (127)), 0);
+
+    previewSampleNotes = notes;
+    previewSampleTrack = kPreviewTrack;
     activePreviewTrack = kPreviewTrack;
 
     // Auto-stop: safety timeout; hold-to-preview relies on stopPreview() from key release
@@ -1421,15 +1445,35 @@ bool TrackerEngine::stopPluginPreview()
     return true;
 }
 
+bool TrackerEngine::stopSamplePreview()
+{
+    if (! previewSampleNotes.empty() && previewSampleTrack >= 0)
+    {
+        auto* track = getTrack (previewSampleTrack);
+        if (track != nullptr)
+        {
+            for (int note : previewSampleNotes)
+                track->injectLiveMidiMessage (
+                    juce::MidiMessage::noteOff (1, note), 0);
+        }
+    }
+
+    const bool hadSamplePreview = ! previewSampleNotes.empty();
+    previewSampleNotes.clear();
+    previewSampleTrack = -1;
+    return hadSamplePreview;
+}
+
 void TrackerEngine::stopPreview()
 {
     stopTimer();
     stopPluginPreview();
+    const bool sentSampleNoteOff = stopSamplePreview();
 
     if (activePreviewTrack >= 0)
     {
         auto* track = getTrack (activePreviewTrack);
-        if (track != nullptr)
+        if (track != nullptr && ! sentSampleNoteOff)
             sampler.stopNote (*track);
 
         activePreviewTrack = -1;
@@ -1451,11 +1495,12 @@ void TrackerEngine::timerCallback()
 {
     stopTimer();
     stopPluginPreview();
+    const bool sentSampleNoteOff = stopSamplePreview();
 
     if (activePreviewTrack >= 0)
     {
         auto* track = getTrack (activePreviewTrack);
-        if (track != nullptr)
+        if (track != nullptr && ! sentSampleNoteOff)
             sampler.stopNote (*track);
 
         activePreviewTrack = -1;
