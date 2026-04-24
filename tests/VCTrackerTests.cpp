@@ -2152,7 +2152,7 @@ bool testSampleFxCommandsEnterAndRoundTrip()
         bool masterLane;
     };
 
-    const std::array<FxExample, 11> examples = {{
+    const std::array<FxExample, 12> examples = {{
         { 'B', 0x01, false },
         { 'P', 0x80, false },
         { 'T', 0x0C, false },
@@ -2164,6 +2164,7 @@ bool testSampleFxCommandsEnterAndRoundTrip()
         { 'F', 0x82, true  },
         { 'V', 0x7F, false },
         { 'L', 0x03, false },
+        { 'N', 0xFB, false },
     }};
 
     const auto& commandList = getFxCommandList();
@@ -2890,6 +2891,60 @@ bool testKillModeClampsAtSegmentEnd()
     if (! doublesClose (endBeat, 4.0))
     {
         std::cerr << "Kill mode should clamp at pattern/repeat end; got " << endBeat << "\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testTimingOffsetUsesSignedMilliseconds()
+{
+    if (InstrumentPlaybackTiming::decodeSignedTimingOffsetMs (0x05) != 5
+        || InstrumentPlaybackTiming::decodeSignedTimingOffsetMs (0x7F) != 127
+        || InstrumentPlaybackTiming::decodeSignedTimingOffsetMs (0x80) != -128
+        || InstrumentPlaybackTiming::decodeSignedTimingOffsetMs (0xFB) != -5)
+    {
+        std::cerr << "note timing offset should decode as signed milliseconds\n";
+        return false;
+    }
+
+    if (! doublesClose (InstrumentPlaybackTiming::applyTimingOffsetSeconds (1.0, -5), 0.995)
+        || ! doublesClose (InstrumentPlaybackTiming::applyTimingOffsetSeconds (1.0, 12), 1.012)
+        || ! doublesClose (InstrumentPlaybackTiming::applyTimingOffsetSeconds (0.001, -5), 0.0))
+    {
+        std::cerr << "note timing offset should shift seconds and clamp at zero\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testNegativeTimingOffsetCutsPreviousNoteEarly()
+{
+    const double killEnd = InstrumentPlaybackTiming::chooseNoteEndSeconds (
+        true, 1.0, 0.992, 4.0);
+    const double releaseEnd = InstrumentPlaybackTiming::chooseNoteEndSeconds (
+        false, 4.0, 0.992, 4.0);
+
+    if (! doublesClose (killEnd, 0.992) || ! doublesClose (releaseEnd, 0.992))
+    {
+        std::cerr << "negative note timing offset should end the previous note at the early trigger\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testPositiveTimingOffsetKeepsKillGapAndReleaseSustain()
+{
+    const double killEnd = InstrumentPlaybackTiming::chooseNoteEndSeconds (
+        true, 1.0, 1.012, 4.0);
+    const double releaseEnd = InstrumentPlaybackTiming::chooseNoteEndSeconds (
+        false, 4.0, 1.012, 4.0);
+
+    if (! doublesClose (killEnd, 1.0) || ! doublesClose (releaseEnd, 1.012))
+    {
+        std::cerr << "positive note timing offset should preserve kill gaps and release sustain\n";
         return false;
     }
 
@@ -6388,6 +6443,9 @@ int main()
         { "KillModeEndsAtCurrentRowEnd", &testKillModeEndsAtCurrentRowEnd },
         { "ReleaseModeEndsAtNextNote", &testReleaseModeEndsAtNextNote },
         { "KillModeClampsAtSegmentEnd", &testKillModeClampsAtSegmentEnd },
+        { "TimingOffsetUsesSignedMilliseconds", &testTimingOffsetUsesSignedMilliseconds },
+        { "NegativeTimingOffsetCutsPreviousNoteEarly", &testNegativeTimingOffsetCutsPreviousNoteEarly },
+        { "PositiveTimingOffsetKeepsKillGapAndReleaseSustain", &testPositiveTimingOffsetKeepsKillGapAndReleaseSustain },
         { "HardCutIsSampleOnly", &testHardCutIsSampleOnly },
         { "LoopRegionUsesAbsolutePositions", &testLoopRegionUsesAbsolutePositions },
         { "LoopRegionDefaultsClampToPlaybackRegion", &testLoopRegionDefaultsClampToPlaybackRegion },
