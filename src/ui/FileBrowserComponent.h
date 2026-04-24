@@ -19,6 +19,7 @@ public:
     void setCurrentDirectory (const juce::File& dir);
     void updateInstrumentSlots (const std::map<int, juce::File>& loadedSamples);
     void updatePluginSlots (const std::map<int, InstrumentSlotInfo>& slotInfos);
+    void setDetectedPitchLabels (const std::map<int, juce::String>& labels);
     void setSelectedInstrument (int inst);
 
     // Callback: instrument index + file to load
@@ -37,6 +38,7 @@ public:
 
     // Auto-advance to next empty instrument slot after loading
     bool autoAdvance = true;
+    bool getAutoDetectPitch() const { return autoDetectPitch; }
     void advanceToNextEmptySlot();
 
 private:
@@ -70,6 +72,7 @@ private:
     struct InstrumentSlot
     {
         juce::String sampleName;
+        juce::String detectedPitchLabel;
         bool hasData = false;
         bool isPlugin = false;
         juce::String pluginName;
@@ -83,6 +86,7 @@ private:
     static constexpr int kRowHeight = 20;
     static constexpr int kInfoBarHeight = 24;
     static constexpr float kFilePaneRatio = 0.6f;
+    bool autoDetectPitch = false;
 
     int getFileVisibleRows() const;
     int getInstrumentVisibleRows() const;

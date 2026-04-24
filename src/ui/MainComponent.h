@@ -124,6 +124,7 @@ private:
     int lastAutomationPopulateTrack = -1;
     std::map<int, std::vector<AutomatablePluginInfo>> automationPluginCache;
     std::map<int, std::pair<juce::String, int>> automationSelectionPerTrack;
+    std::map<int, juce::String> detectedSamplePitchLabels;
     void invalidateAutomationPluginCache (int trackIndex = -1);
     void saveAutomationSelection();
     void restoreAutomationSelection (int trackIndex);
@@ -208,6 +209,10 @@ private:
     void showHelpOverlay();
     void updateInstrumentPanel();
     std::array<bool, kNumTracks> getReleaseModes() const;
+    void applyInstrumentParamsToPlayback (int instrument, const InstrumentParams& params);
+    juce::String loadSampleAndMaybeDetectPitch (int instrument, const juce::File& file);
+    void maybeAutoDetectSamplePitch (int instrument);
+    void syncDetectedPitchLabelsToBrowser();
     void loadSampleForInstrument (int instrument);
     void clearSampleForInstrument (int instrument);
     void updateSampleEditorForCurrentInstrument();

@@ -198,6 +198,24 @@ void SampleBrowserComponent::updateInstrumentSlots (const std::map<int, juce::Fi
     repaint();
 }
 
+void SampleBrowserComponent::setDetectedPitchLabels (const std::map<int, juce::String>& labels)
+{
+    for (auto& slot : instrumentSlots)
+        slot.detectedPitchLabel.clear();
+
+    for (const auto& [index, label] : labels)
+    {
+        if (index >= 0 && index < 256 && label.isNotEmpty())
+        {
+            auto& slot = instrumentSlots[static_cast<size_t> (index)];
+            if (! slot.isPlugin)
+                slot.detectedPitchLabel = label;
+        }
+    }
+
+    repaint();
+}
+
 void SampleBrowserComponent::updatePluginSlots (const std::map<int, InstrumentSlotInfo>& slotInfos)
 {
     // Clear all plugin flags first
@@ -417,8 +435,22 @@ void SampleBrowserComponent::paintInstrumentPane (juce::Graphics& g, juce::Recta
         else if (slot.hasData)
         {
             g.setColour (textCol);
-            auto truncName = slot.sampleName.substring (0, 20);
-            g.drawText (truncName, bounds.getX() + 32, y, bounds.getWidth() - 38, kRowHeight,
+            auto displayName = slot.sampleName;
+            if (slot.detectedPitchLabel.isNotEmpty())
+            {
+                const auto suffix = " [Detect: " + slot.detectedPitchLabel + "]";
+                const int maxChars = juce::jmax (12, (bounds.getWidth() - 38) / 7);
+                const int maxBaseChars = juce::jmax (3, maxChars - suffix.length());
+                if (displayName.length() > maxBaseChars)
+                    displayName = displayName.substring (0, juce::jmax (0, maxBaseChars - 3)) + "...";
+                displayName += suffix;
+            }
+            else
+            {
+                displayName = displayName.substring (0, 20);
+            }
+
+            g.drawText (displayName, bounds.getX() + 32, y, bounds.getWidth() - 38, kRowHeight,
                         juce::Justification::centredLeft);
         }
         else
@@ -480,28 +512,36 @@ void SampleBrowserComponent::paintInfoBar (juce::Graphics& g, juce::Rectangle<in
         hint = juce::String::formatted ("Slot %02X selected", instrumentSelection);
     }
 
-    int checkboxWidth = 120;
+    int autoAdvanceWidth = 120;
+    int detectPitchWidth = 130;
+    int checkboxAreaWidth = autoAdvanceWidth + detectPitchWidth + 8;
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId).withAlpha (0.6f));
     g.drawText (hint, bounds.getX(), bounds.getY(),
-                bounds.getWidth() - checkboxWidth - 12, bounds.getHeight(),
+                bounds.getWidth() - checkboxAreaWidth - 12, bounds.getHeight(),
                 juce::Justification::centredRight);
 
-    // Right: auto-advance checkbox
-    int cbX = bounds.getRight() - checkboxWidth - 4;
-    int cbY = bounds.getY() + (bounds.getHeight() - 12) / 2;
-
-    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
-    g.drawRect (cbX, cbY, 12, 12, 1);
-
-    if (autoAdvance)
+    auto drawCheckbox = [&] (int x, int width, bool checked, const juce::String& label)
     {
-        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId));
-        g.fillRect (cbX + 2, cbY + 2, 8, 8);
-    }
+        int cbY = bounds.getY() + (bounds.getHeight() - 12) / 2;
 
-    g.setColour (textCol.withAlpha (0.6f));
-    g.drawText ("Auto-advance", cbX + 16, bounds.getY(), checkboxWidth - 16, bounds.getHeight(),
-                juce::Justification::centredLeft);
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+        g.drawRect (x, cbY, 12, 12, 1);
+
+        if (checked)
+        {
+            g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId));
+            g.fillRect (x + 2, cbY + 2, 8, 8);
+        }
+
+        g.setColour (textCol.withAlpha (0.6f));
+        g.drawText (label, x + 16, bounds.getY(), width - 16, bounds.getHeight(),
+                    juce::Justification::centredLeft);
+    };
+
+    const int detectX = bounds.getRight() - checkboxAreaWidth - 4;
+    const int autoX = detectX + detectPitchWidth + 8;
+    drawCheckbox (detectX, detectPitchWidth, autoDetectPitch, "Detect pitch");
+    drawCheckbox (autoX, autoAdvanceWidth, autoAdvance, "Auto-advance");
 }
 
 //==============================================================================
@@ -654,14 +694,24 @@ bool SampleBrowserComponent::keyPressed (const juce::KeyPress& key)
 
 void SampleBrowserComponent::mouseDown (const juce::MouseEvent& event)
 {
-    // Check auto-advance checkbox hit
+    // Check info-bar checkbox hits
     auto infoBounds = getInfoBarBounds();
     if (infoBounds.contains (event.getPosition()))
     {
-        int checkboxWidth = 120;
-        int cbX = infoBounds.getRight() - checkboxWidth - 4;
-        int cbRight = infoBounds.getRight();
-        if (event.x >= cbX && event.x <= cbRight)
+        int autoAdvanceWidth = 120;
+        int detectPitchWidth = 130;
+        int checkboxAreaWidth = autoAdvanceWidth + detectPitchWidth + 8;
+        int detectX = infoBounds.getRight() - checkboxAreaWidth - 4;
+        int autoX = detectX + detectPitchWidth + 8;
+
+        if (event.x >= detectX && event.x < detectX + detectPitchWidth)
+        {
+            autoDetectPitch = ! autoDetectPitch;
+            repaint();
+            return;
+        }
+
+        if (event.x >= autoX && event.x <= infoBounds.getRight())
         {
             autoAdvance = ! autoAdvance;
             repaint();
