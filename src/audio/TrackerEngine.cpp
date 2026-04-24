@@ -1653,7 +1653,11 @@ void TrackerEngine::setupMixerPlugins()
 
 void TrackerEngine::refreshMixerPlugins()
 {
-    rebuildMixerPluginChains();
+    if (edit == nullptr || mixerStatePtr == nullptr)
+        return;
+
+    setupSendEffectsTrack();
+    setupMixerPlugins();
 }
 
 void TrackerEngine::rebuildMixerPluginChains()

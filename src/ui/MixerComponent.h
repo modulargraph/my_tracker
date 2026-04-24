@@ -148,6 +148,7 @@ private:
     // Interaction
     void adjustCurrentParam (double delta);
     int getParamCountForSection (Section section) const;
+    void coerceCurrentSectionForSelectedTrack();
     void nextSection();
     void prevSection();
     void ensureTrackVisible();
