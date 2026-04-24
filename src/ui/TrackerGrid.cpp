@@ -228,9 +228,12 @@ void TrackerGrid::drawHeaders (juce::Graphics& g)
         else
             text = "";
 
-        auto& customName = trackLayout.getTrackName (physTrack);
-        if (customName.isNotEmpty())
-            text += customName;
+        auto displayName = trackLayout.getTrackName (physTrack);
+        if (displayName.isEmpty())
+            displayName = trackLayout.getTrackAutoName (physTrack);
+
+        if (displayName.isNotEmpty())
+            text += displayName;
         else if (trackHasSample[static_cast<size_t> (physTrack)])
             text += juce::String::formatted ("T%02d*", physTrack + 1);
         else

@@ -15,6 +15,7 @@
 #include "SendEffectsComponent.h"
 #include "TabBarComponent.h"
 #include "ToolbarComponent.h"
+#include "TrackAutoName.h"
 #include "TrackerGrid.h"
 
 namespace
@@ -133,6 +134,8 @@ constexpr int kMenuTransposeTrackDownOctave = 47;
 constexpr int kMenuWiggleTrackVelocitiesLight = 48;
 constexpr int kMenuWiggleTrackVelocitiesMedium = 49;
 constexpr int kMenuWiggleTrackVelocitiesStrong = 50;
+constexpr int kMenuAutoNameTrack = 51;
+constexpr int kMenuAutoNameCurrentTracks = 52;
 
 std::array<int, 7> getScaleIntervals (int scale)
 {
@@ -1607,6 +1610,7 @@ MainComponent::MainComponent()
     {
         if (trackerEngine.isPlaying())
             resyncPlaybackForCurrentMode();
+        updateTrackSampleMarkers();
         markDirty();
         commandManager.commandStatusChanged();
     };
@@ -3402,6 +3406,25 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
     }
     menu.addItem (3, "Load Sample...");
     menu.addItem (4, "Rename Track...");
+    auto autoNames = TrackAutoName::buildForPattern (patternData.getCurrentPattern(),
+                                                     trackerEngine.getSampler().getLoadedSamples(),
+                                                     trackerEngine.getAllInstrumentSlotInfos());
+    trackLayout.setTrackAutoNames (autoNames);
+    bool canAutoNameCurrentTracks = false;
+    for (int visual = 0; visual < trackLayout.getTrackLaneCount(); ++visual)
+    {
+        const int physicalTrack = trackLayout.visualToPhysical (visual);
+        if (autoNames[static_cast<size_t> (physicalTrack)].isNotEmpty())
+        {
+            canAutoNameCurrentTracks = true;
+            break;
+        }
+    }
+
+    menu.addItem (kMenuAutoNameTrack, "Auto Name Track",
+                  autoNames[static_cast<size_t> (track)].isNotEmpty());
+    menu.addItem (kMenuAutoNameCurrentTracks, "Auto Name All Current Tracks...",
+                  canAutoNameCurrentTracks);
     menu.addItem (kMenuGenerateMidi, "Generate MIDI...");
     menu.addSeparator();
 
@@ -3487,7 +3510,7 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
     }
 
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }),
-                        [this, track, t, rangeStart, rangeEnd, groupIdx,
+                        [this, track, t, autoNames, rangeStart, rangeEnd, groupIdx,
                          transposeStartRow, transposeEndRow, transposeStartVisual, transposeEndVisual] (int result)
                         {
                             if (result == 1 && t)
@@ -3510,6 +3533,47 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                             else if (result == 4)
                             {
                                 showRenameTrackDialog (track);
+                            }
+                            else if (result == kMenuAutoNameTrack)
+                            {
+                                const auto name = autoNames[static_cast<size_t> (track)];
+                                if (name.isEmpty())
+                                {
+                                    setTemporaryStatus ("No sample or plugin name found for Track "
+                                                        + juce::String (track + 1),
+                                                        true, 2500);
+                                    return;
+                                }
+
+                                performUndoableTrackLayoutChange ([this, track, autoNames]
+                                {
+                                    TrackAutoName::applyToTrack (trackLayout, track, autoNames);
+                                });
+                                setTemporaryStatus ("Track " + juce::String (track + 1)
+                                                    + " named " + name,
+                                                    false, 2500);
+                            }
+                            else if (result == kMenuAutoNameCurrentTracks)
+                            {
+                                if (! juce::AlertWindow::showOkCancelBox (
+                                        juce::AlertWindow::WarningIcon,
+                                        "Auto Name All Current Tracks",
+                                        "This will override track names for all current tracks that have a sample or plugin name.",
+                                        "Auto Name", "Cancel"))
+                                    return;
+
+                                int changed = 0;
+                                performUndoableTrackLayoutChange ([this, autoNames, &changed]
+                                {
+                                    changed = TrackAutoName::applyToCurrentTrackLanes (trackLayout, autoNames);
+                                });
+
+                                if (changed > 0)
+                                    setTemporaryStatus ("Auto named " + juce::String (changed)
+                                                        + " current track" + juce::String (changed == 1 ? "" : "s"),
+                                                        false, 2500);
+                                else
+                                    setTemporaryStatus ("No current track names changed", false, 2500);
                             }
                             else if (result == kMenuGenerateMidi)
                             {
@@ -3674,8 +3738,11 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
 void MainComponent::showRenameTrackDialog (int track)
 {
     auto currentName = trackLayout.getTrackName (track);
+    auto currentAutoName = trackLayout.getTrackAutoName (track);
     auto defaultText = currentName.isNotEmpty() ? currentName
-                                                 : juce::String::formatted ("T%02d", track + 1);
+                                                 : (currentAutoName.isNotEmpty()
+                                                        ? currentAutoName
+                                                        : juce::String::formatted ("T%02d", track + 1));
 
     auto* aw = new juce::AlertWindow ("Rename Track",
         "Enter a name for Track " + juce::String (track + 1) + ":",
@@ -3695,6 +3762,8 @@ void MainComponent::showRenameTrackDialog (int track)
             trackLayout.setTrackName (track, name);
             markDirty();
             trackerGrid->repaint();
+            if (mixerComponent != nullptr)
+                mixerComponent->repaint();
         }
         delete aw;
     }), true);
@@ -4463,6 +4532,10 @@ void MainComponent::updateInstrumentPanel()
 void MainComponent::updateTrackSampleMarkers()
 {
     auto loadedSamples = trackerEngine.getSampler().getLoadedSamples();
+    auto& pluginSlots = trackerEngine.getAllInstrumentSlotInfos();
+    trackLayout.setTrackAutoNames (
+        TrackAutoName::buildForPattern (patternData.getCurrentPattern(), loadedSamples, pluginSlots));
+
     for (int i = 0; i < kNumTracks; ++i)
     {
         bool hasSample = false;
@@ -4474,6 +4547,8 @@ void MainComponent::updateTrackSampleMarkers()
         trackerGrid->trackHasSample[static_cast<size_t> (i)] = hasSample;
     }
     trackerGrid->repaint();
+    if (mixerComponent != nullptr)
+        mixerComponent->repaint();
 }
 
 void MainComponent::applyInstrumentParamsToPlayback (int instrument, const InstrumentParams& params)
