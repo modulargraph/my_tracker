@@ -27,6 +27,7 @@ inline const std::vector<FxCommandInfo>& getFxCommandList()
         { 10, 'V', "Vxx", "Volume",         "00=silence, 7F=unity, FF=+10dB" },
         { 11, 'L', "Lxx", "Slice",           "00-based slice index for Slice mode" },
         { 12, 'N', "Nxx", "Note Nudge",      "signed milliseconds (two's complement)" },
+        { 13, 'M', "Mxy", "Plugin Mod",      "0n trigger step envelope n, 8n release; n=0 all" },
     };
     return commands;
 }
@@ -47,6 +48,7 @@ inline int fxLetterToCommand (char letter)
         case 'V': case 'v': return 10;
         case 'L': case 'l': return 11;
         case 'N': case 'n': return 12;
+        case 'M': case 'm': return 13;
         default: return 0;
     }
 }

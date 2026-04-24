@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include "TrackerEngine.h"
 #include "Pattern.h"
 #include "PluginAutomationData.h"
@@ -112,6 +113,9 @@ void appendSymbolicTrackFx (juce::MidiMessageSequence& midiSeq, const FxSlot& sl
             break;
         case 'N':
             // Note timing is handled by the pattern scheduler, not by MIDI CC state.
+            break;
+        case 'M':
+            // Plugin-instrument modulation triggers are handled from the UI row clock.
             break;
         case 'F':
             // Tempo is handled via master lane tempo points.
@@ -994,6 +998,9 @@ void TrackerEngine::stop()
         }
     }
 
+    releaseAllPluginInstrumentNoteModulators();
+    resetPluginInstrumentModulations();
+
     edit->getTransport().stop (false, false);
     // Avoid synchronous parameter writes during transport stop (can block with
     // some plugin combinations). New play/sync re-establishes automation state.
@@ -1367,6 +1374,7 @@ void TrackerEngine::previewNotes (int trackIndex, int instrumentIndex, const std
             previewPluginNotes = notes;
             previewPluginInstrument = instrumentIndex;
             previewPluginTrack = slotInfo.ownerTrack;
+            triggerPluginInstrumentNoteModulators (instrumentIndex);
         }
 
         if (autoStop)
@@ -1517,6 +1525,8 @@ bool TrackerEngine::stopPluginPreview()
     }
 
     previewPluginNotes.clear();
+    if (previewPluginInstrument >= 0)
+        releasePluginInstrumentNoteModulators (previewPluginInstrument);
     previewPluginInstrument = -1;
     previewPluginTrack = -1;
     return true;
@@ -2472,6 +2482,29 @@ const InstrumentSlotInfo& TrackerEngine::getInstrumentSlotInfo (int instrumentIn
     return kDefaultSlotInfo;
 }
 
+PluginInstrumentModulation& TrackerEngine::getPluginInstrumentModulation (int instrumentIndex)
+{
+    return instrumentSlotInfos[instrumentIndex].pluginModulation;
+}
+
+const PluginInstrumentModulation& TrackerEngine::getPluginInstrumentModulation (int instrumentIndex) const
+{
+    static const PluginInstrumentModulation kEmptyModulation {};
+    auto it = instrumentSlotInfos.find (instrumentIndex);
+    if (it != instrumentSlotInfos.end())
+        return it->second.pluginModulation;
+    return kEmptyModulation;
+}
+
+void TrackerEngine::notifyPluginInstrumentModulationChanged (int instrumentIndex)
+{
+    pluginModulationRuntime[instrumentIndex].params.clear();
+    ensurePluginModulationRuntimeSize (instrumentIndex);
+
+    if (onPluginInstrumentModulationChanged)
+        onPluginInstrumentModulationChanged (instrumentIndex);
+}
+
 bool TrackerEngine::setPluginInstrument (int instrumentIndex, const juce::PluginDescription& desc, int ownerTrack)
 {
     if (instrumentIndex < 0 || instrumentIndex >= 256)
@@ -2514,6 +2547,7 @@ void TrackerEngine::clearPluginInstrumentInternal (int instrumentIndex, bool not
 
     instrumentSlotInfos.erase (instrumentIndex);
     pluginInstrumentInstances.erase (instrumentIndex);
+    pluginModulationRuntime.erase (instrumentIndex);
 }
 
 void TrackerEngine::unloadAllPluginInstruments (bool notifyAutomation)
@@ -2568,6 +2602,7 @@ void TrackerEngine::setInstrumentSlotInfos (const std::map<int, InstrumentSlotIn
     unloadAllPluginInstruments (false);
 
     instrumentSlotInfos = infos;
+    pluginModulationRuntime.clear();
     invalidateTrackInstruments();
 }
 
@@ -2709,6 +2744,539 @@ void TrackerEngine::removePluginInstrumentFromTrack (int instrumentIndex)
     pluginInstrumentInstances.erase (instanceIt);
 }
 
+namespace
+{
+class PluginModulationComponent : public juce::Component
+{
+public:
+    PluginModulationComponent (juce::AudioPluginInstance* api, TrackerEngine& eng, int instIdx)
+        : pluginInstance (api), engine (eng), instrumentIndex (instIdx)
+    {
+        titleLabel.setText ("Plugin modulation", juce::dontSendNotification);
+        titleLabel.setJustificationType (juce::Justification::centredLeft);
+        titleLabel.setFont (juce::Font (juce::FontOptions (15.0f, juce::Font::bold)));
+        addAndMakeVisible (titleLabel);
+
+        setupButton (addLfoButton, "Add LFO");
+        addLfoButton.onClick = [this]
+        {
+            auto& modulation = engine.getPluginInstrumentModulation (instrumentIndex);
+            currentSourceIndex = modulation.addLfo();
+            engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            refreshAll();
+        };
+
+        setupButton (addEnvelopeButton, "Add Env");
+        addEnvelopeButton.onClick = [this]
+        {
+            auto& modulation = engine.getPluginInstrumentModulation (instrumentIndex);
+            currentSourceIndex = modulation.addEnvelope();
+            engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            refreshAll();
+        };
+
+        setupButton (removeSourceButton, "Remove Source");
+        removeSourceButton.onClick = [this]
+        {
+            auto& modulation = engine.getPluginInstrumentModulation (instrumentIndex);
+            modulation.removeSource (currentSourceIndex);
+            currentSourceIndex = juce::jlimit (0, juce::jmax (0, static_cast<int> (modulation.sources.size()) - 1), currentSourceIndex);
+            currentRouteIndex = juce::jlimit (0, juce::jmax (0, static_cast<int> (modulation.routes.size()) - 1), currentRouteIndex);
+            engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            refreshAll();
+        };
+
+        setupButton (addRouteButton, "Add Route");
+        addRouteButton.onClick = [this]
+        {
+            auto& modulation = engine.getPluginInstrumentModulation (instrumentIndex);
+            if (modulation.sources.empty())
+                currentSourceIndex = modulation.addLfo();
+
+            if (parameterIndices.empty())
+                return;
+
+            PluginModulationRoute route;
+            route.sourceIndex = juce::jlimit (0, static_cast<int> (modulation.sources.size()) - 1, currentSourceIndex);
+            route.parameterIndex = parameterIndices.front();
+            route.parameterName = parameterNames.front();
+            route.amount = 0.25f;
+            modulation.routes.push_back (route);
+            currentRouteIndex = static_cast<int> (modulation.routes.size()) - 1;
+            engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            refreshAll();
+        };
+
+        setupButton (removeRouteButton, "Remove Route");
+        removeRouteButton.onClick = [this]
+        {
+            auto& modulation = engine.getPluginInstrumentModulation (instrumentIndex);
+            modulation.removeRoute (currentRouteIndex);
+            currentRouteIndex = juce::jlimit (0, juce::jmax (0, static_cast<int> (modulation.routes.size()) - 1), currentRouteIndex);
+            engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            refreshAll();
+        };
+
+        setupCombo (sourceCombo);
+        sourceCombo.onChange = [this]
+        {
+            if (refreshing) return;
+            currentSourceIndex = sourceCombo.getSelectedId() - 1;
+            refreshAll();
+        };
+
+        sourceTypeLabel.setJustificationType (juce::Justification::centredLeft);
+        addAndMakeVisible (sourceTypeLabel);
+
+        setupCombo (lfoShapeCombo);
+        lfoShapeCombo.addItem ("Sine", 1);
+        lfoShapeCombo.addItem ("Triangle", 2);
+        lfoShapeCombo.addItem ("Saw", 3);
+        lfoShapeCombo.addItem ("Square", 4);
+        lfoShapeCombo.addItem ("Random", 5);
+        lfoShapeCombo.onChange = [this]
+        {
+            if (refreshing) return;
+            if (auto* source = getCurrentSource())
+            {
+                source->lfoShape = static_cast<PluginModulatorSource::LfoShape> (lfoShapeCombo.getSelectedId() - 1);
+                engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            }
+        };
+
+        setupCombo (lfoRateModeCombo);
+        lfoRateModeCombo.addItem ("Steps", 1);
+        lfoRateModeCombo.addItem ("Hz", 2);
+        lfoRateModeCombo.onChange = [this]
+        {
+            if (refreshing) return;
+            if (auto* source = getCurrentSource())
+            {
+                source->lfoRateMode = lfoRateModeCombo.getSelectedId() == 2
+                                          ? PluginModulatorSource::LfoRateMode::Hz
+                                          : PluginModulatorSource::LfoRateMode::Steps;
+                engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+                refreshEnablement();
+            }
+        };
+
+        setupSlider (lfoStepsSlider, 1.0, 256.0, 1.0, " steps");
+        lfoStepsSlider.onValueChange = [this]
+        {
+            if (refreshing) return;
+            if (auto* source = getCurrentSource())
+            {
+                source->lfoRateSteps = lfoStepsSlider.getValue();
+                engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            }
+        };
+
+        setupSlider (lfoHzSlider, 0.01, 40.0, 0.01, " Hz");
+        lfoHzSlider.onValueChange = [this]
+        {
+            if (refreshing) return;
+            if (auto* source = getCurrentSource())
+            {
+                source->lfoRateHz = lfoHzSlider.getValue();
+                engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            }
+        };
+
+        setupCombo (envTriggerCombo);
+        envTriggerCombo.addItem ("Note Gate", 1);
+        envTriggerCombo.addItem ("Step FX", 2);
+        envTriggerCombo.onChange = [this]
+        {
+            if (refreshing) return;
+            if (auto* source = getCurrentSource())
+            {
+                source->envelopeTriggerMode = envTriggerCombo.getSelectedId() == 2
+                                                  ? PluginModulatorSource::EnvelopeTriggerMode::StepFxOnly
+                                                  : PluginModulatorSource::EnvelopeTriggerMode::NoteGate;
+                engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            }
+        };
+
+        setupSlider (attackSlider, 0.0, 30.0, 0.001, " s");
+        setupSlider (decaySlider, 0.0, 30.0, 0.001, " s");
+        setupSlider (sustainSlider, 0.0, 100.0, 1.0, "%");
+        setupSlider (releaseSlider, 0.0, 30.0, 0.001, " s");
+
+        attackSlider.onValueChange = [this] { updateEnvelopeValue(); };
+        decaySlider.onValueChange = [this] { updateEnvelopeValue(); };
+        sustainSlider.onValueChange = [this] { updateEnvelopeValue(); };
+        releaseSlider.onValueChange = [this] { updateEnvelopeValue(); };
+
+        setupCombo (routeCombo);
+        routeCombo.onChange = [this]
+        {
+            if (refreshing) return;
+            currentRouteIndex = routeCombo.getSelectedId() - 1;
+            refreshAll();
+        };
+
+        setupCombo (routeSourceCombo);
+        routeSourceCombo.onChange = [this]
+        {
+            if (refreshing) return;
+            if (auto* route = getCurrentRoute())
+            {
+                route->sourceIndex = routeSourceCombo.getSelectedId() - 1;
+                engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            }
+        };
+
+        setupCombo (routeParamCombo);
+        routeParamCombo.onChange = [this]
+        {
+            if (refreshing) return;
+            if (auto* route = getCurrentRoute())
+            {
+                route->parameterIndex = routeParamCombo.getSelectedId() - 1;
+                route->parameterName = routeParamCombo.getText();
+                engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            }
+        };
+
+        setupSlider (routeAmountSlider, -100.0, 100.0, 1.0, "%");
+        routeAmountSlider.onValueChange = [this]
+        {
+            if (refreshing) return;
+            if (auto* route = getCurrentRoute())
+            {
+                route->amount = static_cast<float> (routeAmountSlider.getValue() / 100.0);
+                engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            }
+        };
+
+        routeEnabledButton.setButtonText ("Enabled");
+        routeEnabledButton.onClick = [this]
+        {
+            if (refreshing) return;
+            if (auto* route = getCurrentRoute())
+            {
+                route->enabled = routeEnabledButton.getToggleState();
+                engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+            }
+        };
+        addAndMakeVisible (routeEnabledButton);
+
+        collectParameters();
+        refreshAll();
+        setSize (620, 360);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (juce::Colour (0xff202020));
+        g.setColour (juce::Colour (0xffd6d6d6));
+        g.setFont (juce::Font (juce::FontOptions (12.0f)));
+
+        auto area = getLocalBounds().reduced (12);
+        area.removeFromTop (24);
+        area.removeFromTop (6);
+        area.removeFromTop (30);
+        area.removeFromTop (10);
+
+        auto sourceArea = area.removeFromTop (130);
+        auto left = sourceArea.removeFromLeft (292);
+        auto right = sourceArea.removeFromLeft (292);
+        paintLabelColumn (g, left, { "Type", "Shape", "Rate", "Steps", "Hz" });
+        paintLabelColumn (g, right, { "Trigger", "Attack", "Decay", "Sustain", "Release" });
+
+        area.removeFromTop (12);
+        area.removeFromTop (30);
+        area.removeFromTop (10);
+        auto routeArea = area.removeFromTop (120);
+        paintLabelColumn (g, routeArea, { "Source", "Param", "Amount" });
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (12);
+        titleLabel.setBounds (area.removeFromTop (24));
+        area.removeFromTop (6);
+
+        auto top = area.removeFromTop (30);
+        sourceCombo.setBounds (top.removeFromLeft (170));
+        top.removeFromLeft (8);
+        addLfoButton.setBounds (top.removeFromLeft (78));
+        top.removeFromLeft (6);
+        addEnvelopeButton.setBounds (top.removeFromLeft (78));
+        top.removeFromLeft (6);
+        removeSourceButton.setBounds (top.removeFromLeft (124));
+
+        area.removeFromTop (10);
+        auto sourceArea = area.removeFromTop (130);
+        auto left = sourceArea.removeFromLeft (292);
+        auto right = sourceArea.removeFromLeft (292);
+
+        layoutLabelled (left, "Type", sourceTypeLabel);
+        layoutLabelled (left, "Shape", lfoShapeCombo);
+        layoutLabelled (left, "Rate", lfoRateModeCombo);
+        layoutLabelled (left, "Steps", lfoStepsSlider);
+        layoutLabelled (left, "Hz", lfoHzSlider);
+
+        layoutLabelled (right, "Trigger", envTriggerCombo);
+        layoutLabelled (right, "Attack", attackSlider);
+        layoutLabelled (right, "Decay", decaySlider);
+        layoutLabelled (right, "Sustain", sustainSlider);
+        layoutLabelled (right, "Release", releaseSlider);
+
+        area.removeFromTop (12);
+        auto routeTop = area.removeFromTop (30);
+        routeCombo.setBounds (routeTop.removeFromLeft (170));
+        routeTop.removeFromLeft (8);
+        addRouteButton.setBounds (routeTop.removeFromLeft (92));
+        routeTop.removeFromLeft (6);
+        removeRouteButton.setBounds (routeTop.removeFromLeft (104));
+
+        area.removeFromTop (10);
+        auto routeArea = area.removeFromTop (120);
+        layoutLabelled (routeArea, "Source", routeSourceCombo);
+        layoutLabelled (routeArea, "Param", routeParamCombo);
+        layoutLabelled (routeArea, "Amount", routeAmountSlider);
+        routeEnabledButton.setBounds (routeArea.removeFromTop (26).removeFromLeft (120));
+    }
+
+private:
+    juce::AudioPluginInstance* pluginInstance = nullptr;
+    TrackerEngine& engine;
+    int instrumentIndex = -1;
+    int currentSourceIndex = 0;
+    int currentRouteIndex = 0;
+    bool refreshing = false;
+    std::vector<int> parameterIndices;
+    std::vector<juce::String> parameterNames;
+
+    juce::Label titleLabel;
+    juce::ComboBox sourceCombo;
+    juce::TextButton addLfoButton;
+    juce::TextButton addEnvelopeButton;
+    juce::TextButton removeSourceButton;
+    juce::Label sourceTypeLabel;
+    juce::ComboBox lfoShapeCombo;
+    juce::ComboBox lfoRateModeCombo;
+    juce::Slider lfoStepsSlider;
+    juce::Slider lfoHzSlider;
+    juce::ComboBox envTriggerCombo;
+    juce::Slider attackSlider;
+    juce::Slider decaySlider;
+    juce::Slider sustainSlider;
+    juce::Slider releaseSlider;
+    juce::ComboBox routeCombo;
+    juce::TextButton addRouteButton;
+    juce::TextButton removeRouteButton;
+    juce::ComboBox routeSourceCombo;
+    juce::ComboBox routeParamCombo;
+    juce::Slider routeAmountSlider;
+    juce::ToggleButton routeEnabledButton;
+
+    void setupButton (juce::TextButton& button, const juce::String& text)
+    {
+        button.setButtonText (text);
+        button.setWantsKeyboardFocus (false);
+        addAndMakeVisible (button);
+    }
+
+    void setupCombo (juce::ComboBox& combo)
+    {
+        combo.setWantsKeyboardFocus (false);
+        addAndMakeVisible (combo);
+    }
+
+    void setupSlider (juce::Slider& slider, double min, double max, double interval, const juce::String& suffix)
+    {
+        slider.setRange (min, max, interval);
+        slider.setSliderStyle (juce::Slider::LinearHorizontal);
+        slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 76, 20);
+        slider.setTextValueSuffix (suffix);
+        slider.setWantsKeyboardFocus (false);
+        addAndMakeVisible (slider);
+    }
+
+    void layoutLabelled (juce::Rectangle<int>& area, const juce::String& text, juce::Component& component)
+    {
+        auto row = area.removeFromTop (26);
+        row.removeFromLeft (58);
+        juce::ignoreUnused (text);
+        component.setBounds (row);
+        area.removeFromTop (4);
+    }
+
+    static void paintLabelColumn (juce::Graphics& g,
+                                  juce::Rectangle<int> area,
+                                  std::initializer_list<const char*> labels)
+    {
+        for (auto* label : labels)
+        {
+            auto row = area.removeFromTop (26);
+            g.drawFittedText (label, row.removeFromLeft (54), juce::Justification::centredLeft, 1);
+            area.removeFromTop (4);
+        }
+    }
+
+    PluginModulatorSource* getCurrentSource()
+    {
+        auto& modulation = engine.getPluginInstrumentModulation (instrumentIndex);
+        if (currentSourceIndex < 0 || currentSourceIndex >= static_cast<int> (modulation.sources.size()))
+            return nullptr;
+        return &modulation.sources[static_cast<size_t> (currentSourceIndex)];
+    }
+
+    PluginModulationRoute* getCurrentRoute()
+    {
+        auto& modulation = engine.getPluginInstrumentModulation (instrumentIndex);
+        if (currentRouteIndex < 0 || currentRouteIndex >= static_cast<int> (modulation.routes.size()))
+            return nullptr;
+        return &modulation.routes[static_cast<size_t> (currentRouteIndex)];
+    }
+
+    void collectParameters()
+    {
+        parameterIndices.clear();
+        parameterNames.clear();
+
+        if (pluginInstance == nullptr)
+            return;
+
+        auto& params = pluginInstance->getParameters();
+        for (int i = 0; i < params.size(); ++i)
+        {
+            auto* param = params[i];
+            if (param == nullptr)
+                continue;
+
+            parameterIndices.push_back (i);
+            parameterNames.push_back (param->getName (48));
+        }
+    }
+
+    void refreshAll()
+    {
+        const juce::ScopedValueSetter<bool> setter (refreshing, true);
+        auto& modulation = engine.getPluginInstrumentModulation (instrumentIndex);
+
+        currentSourceIndex = juce::jlimit (0, juce::jmax (0, static_cast<int> (modulation.sources.size()) - 1), currentSourceIndex);
+        currentRouteIndex = juce::jlimit (0, juce::jmax (0, static_cast<int> (modulation.routes.size()) - 1), currentRouteIndex);
+
+        sourceCombo.clear (juce::dontSendNotification);
+        for (int i = 0; i < static_cast<int> (modulation.sources.size()); ++i)
+        {
+            const auto& source = modulation.sources[static_cast<size_t> (i)];
+            const auto fallback = source.type == PluginModulatorSource::Type::LFO ? "LFO " : "Env ";
+            sourceCombo.addItem (source.name.isNotEmpty() ? source.name : fallback + juce::String (i + 1), i + 1);
+        }
+        sourceCombo.setSelectedId (modulation.sources.empty() ? 0 : currentSourceIndex + 1, juce::dontSendNotification);
+
+        routeCombo.clear (juce::dontSendNotification);
+        for (int i = 0; i < static_cast<int> (modulation.routes.size()); ++i)
+        {
+            const auto& route = modulation.routes[static_cast<size_t> (i)];
+            const auto target = route.parameterName.isNotEmpty() ? route.parameterName
+                                                                 : "Param " + juce::String (route.parameterIndex);
+            routeCombo.addItem ("Route " + juce::String (i + 1) + " -> " + target, i + 1);
+        }
+        routeCombo.setSelectedId (modulation.routes.empty() ? 0 : currentRouteIndex + 1, juce::dontSendNotification);
+
+        routeSourceCombo.clear (juce::dontSendNotification);
+        for (int i = 0; i < static_cast<int> (modulation.sources.size()); ++i)
+        {
+            const auto& source = modulation.sources[static_cast<size_t> (i)];
+            const auto fallback = source.type == PluginModulatorSource::Type::LFO ? "LFO " : "Env ";
+            routeSourceCombo.addItem (source.name.isNotEmpty() ? source.name : fallback + juce::String (i + 1), i + 1);
+        }
+
+        routeParamCombo.clear (juce::dontSendNotification);
+        for (int i = 0; i < static_cast<int> (parameterIndices.size()); ++i)
+            routeParamCombo.addItem (parameterNames[static_cast<size_t> (i)], parameterIndices[static_cast<size_t> (i)] + 1);
+
+        if (auto* source = getCurrentSource())
+        {
+            sourceTypeLabel.setText (source->type == PluginModulatorSource::Type::LFO ? "LFO" : "Envelope",
+                                     juce::dontSendNotification);
+            lfoShapeCombo.setSelectedId (static_cast<int> (source->lfoShape) + 1, juce::dontSendNotification);
+            lfoRateModeCombo.setSelectedId (source->lfoRateMode == PluginModulatorSource::LfoRateMode::Hz ? 2 : 1,
+                                            juce::dontSendNotification);
+            lfoStepsSlider.setValue (source->lfoRateSteps, juce::dontSendNotification);
+            lfoHzSlider.setValue (source->lfoRateHz, juce::dontSendNotification);
+            envTriggerCombo.setSelectedId (source->envelopeTriggerMode == PluginModulatorSource::EnvelopeTriggerMode::StepFxOnly ? 2 : 1,
+                                           juce::dontSendNotification);
+            attackSlider.setValue (source->attackS, juce::dontSendNotification);
+            decaySlider.setValue (source->decayS, juce::dontSendNotification);
+            sustainSlider.setValue (source->sustain * 100.0, juce::dontSendNotification);
+            releaseSlider.setValue (source->releaseS, juce::dontSendNotification);
+        }
+        else
+        {
+            sourceTypeLabel.setText ("None", juce::dontSendNotification);
+        }
+
+        if (auto* route = getCurrentRoute())
+        {
+            routeSourceCombo.setSelectedId (route->sourceIndex + 1, juce::dontSendNotification);
+            routeParamCombo.setSelectedId (route->parameterIndex + 1, juce::dontSendNotification);
+            routeAmountSlider.setValue (static_cast<double> (route->amount) * 100.0, juce::dontSendNotification);
+            routeEnabledButton.setToggleState (route->enabled, juce::dontSendNotification);
+        }
+        else
+        {
+            routeSourceCombo.setSelectedId (0, juce::dontSendNotification);
+            routeParamCombo.setSelectedId (0, juce::dontSendNotification);
+            routeAmountSlider.setValue (0.0, juce::dontSendNotification);
+            routeEnabledButton.setToggleState (false, juce::dontSendNotification);
+        }
+
+        refreshEnablement();
+    }
+
+    void refreshEnablement()
+    {
+        auto* source = getCurrentSource();
+        auto* route = getCurrentRoute();
+        const bool hasSource = source != nullptr;
+        const bool sourceIsLfo = hasSource && source->type == PluginModulatorSource::Type::LFO;
+        const bool sourceIsEnvelope = hasSource && source->type == PluginModulatorSource::Type::Envelope;
+
+        removeSourceButton.setEnabled (hasSource);
+        lfoShapeCombo.setEnabled (sourceIsLfo);
+        lfoRateModeCombo.setEnabled (sourceIsLfo);
+        lfoStepsSlider.setEnabled (sourceIsLfo && source->lfoRateMode == PluginModulatorSource::LfoRateMode::Steps);
+        lfoHzSlider.setEnabled (sourceIsLfo && source->lfoRateMode == PluginModulatorSource::LfoRateMode::Hz);
+        envTriggerCombo.setEnabled (sourceIsEnvelope);
+        attackSlider.setEnabled (sourceIsEnvelope);
+        decaySlider.setEnabled (sourceIsEnvelope);
+        sustainSlider.setEnabled (sourceIsEnvelope);
+        releaseSlider.setEnabled (sourceIsEnvelope);
+
+        addRouteButton.setEnabled (! parameterIndices.empty());
+        removeRouteButton.setEnabled (route != nullptr);
+        routeSourceCombo.setEnabled (route != nullptr);
+        routeParamCombo.setEnabled (route != nullptr);
+        routeAmountSlider.setEnabled (route != nullptr);
+        routeEnabledButton.setEnabled (route != nullptr);
+    }
+
+    void updateEnvelopeValue()
+    {
+        if (refreshing)
+            return;
+
+        if (auto* source = getCurrentSource())
+        {
+            if (source->type != PluginModulatorSource::Type::Envelope)
+                return;
+
+            source->attackS = attackSlider.getValue();
+            source->decayS = decaySlider.getValue();
+            source->sustain = sustainSlider.getValue() / 100.0;
+            source->releaseS = releaseSlider.getValue();
+            engine.notifyPluginInstrumentModulationChanged (instrumentIndex);
+        }
+    }
+};
+}
+
 void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 {
     auto* plugin = getPluginInstrumentInstance (instrumentIndex);
@@ -2804,6 +3372,26 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             };
             addAndMakeVisible (autoLearnButton);
 
+            modulationButton.setButtonText ("Mod Matrix");
+            modulationButton.setWantsKeyboardFocus (false);
+            modulationButton.onClick = [this]
+            {
+                auto options = juce::DialogWindow::LaunchOptions {};
+                auto* panel = new PluginModulationComponent (pluginInstance, engine, instrumentIndex);
+                options.content.setOwned (panel);
+                options.dialogTitle = "Inst " + juce::String::formatted ("%02X", instrumentIndex) + " Mod Matrix";
+                options.dialogBackgroundColour = juce::Colour (0xff202020);
+                options.escapeKeyTriggersCloseButton = true;
+                options.useNativeTitleBar = true;
+                options.resizable = true;
+                if (auto* window = options.launchAsync())
+                {
+                    window->centreWithSize (panel->getWidth(), panel->getHeight());
+                    window->toFront (true);
+                }
+            };
+            addAndMakeVisible (modulationButton);
+
             octaveLabel.setText ("Oct: " + juce::String (currentOctave), juce::dontSendNotification);
             octaveLabel.setWantsKeyboardFocus (false);
             octaveLabel.setJustificationType (juce::Justification::centred);
@@ -2815,7 +3403,7 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 
             auto edW = vstEditor->getWidth();
             auto edH = vstEditor->getHeight();
-            setSize (juce::jmax (edW, 300), edH + kToolbarHeight);
+            setSize (juce::jmax (edW, 430), edH + kToolbarHeight);
         }
 
         ~PluginEditorContent() override
@@ -2837,6 +3425,7 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             previewKbButton.setBounds (toolbar.removeFromLeft (100).reduced (4));
             octaveLabel.setBounds (toolbar.removeFromLeft (60).reduced (4));
             autoLearnButton.setBounds (toolbar.removeFromLeft (100).reduced (4));
+            modulationButton.setBounds (toolbar.removeFromLeft (110).reduced (4));
         }
 
         bool keyPressed (const juce::KeyPress& key, juce::Component*) override
@@ -2928,6 +3517,7 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 
         juce::TextButton previewKbButton;
         juce::TextButton autoLearnButton;
+        juce::TextButton modulationButton;
         juce::Label octaveLabel;
 
         bool autoLearnEnabled = false;
@@ -3228,6 +3818,387 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 void TrackerEngine::closePluginInstrumentEditor (int instrumentIndex)
 {
     pluginInstrumentEditorWindows.erase (instrumentIndex);
+}
+
+//==============================================================================
+// Plugin instrument modulation
+//==============================================================================
+
+namespace
+{
+    constexpr float kPluginModulationEpsilon = 1.0e-5f;
+}
+
+float TrackerEngine::evaluatePluginLfo (double phase,
+                                        PluginModulatorSource::LfoShape shape,
+                                        PluginModulatorRuntime& state)
+{
+    const auto p = static_cast<float> (phase - std::floor (phase));
+
+    switch (shape)
+    {
+        case PluginModulatorSource::LfoShape::Sine:
+            return std::sin (juce::MathConstants<float>::twoPi * p);
+        case PluginModulatorSource::LfoShape::Triangle:
+            return p < 0.5f ? -1.0f + 4.0f * p : 3.0f - 4.0f * p;
+        case PluginModulatorSource::LfoShape::Saw:
+            return -1.0f + 2.0f * p;
+        case PluginModulatorSource::LfoShape::Square:
+            return p < 0.5f ? 1.0f : -1.0f;
+        case PluginModulatorSource::LfoShape::Random:
+            if (state.randomNeedsNew)
+            {
+                state.randomHoldValue = juce::Random::getSystemRandom().nextFloat() * 2.0f - 1.0f;
+                state.randomNeedsNew = false;
+            }
+            return state.randomHoldValue;
+    }
+
+    return 0.0f;
+}
+
+float TrackerEngine::advancePluginEnvelope (PluginModulatorRuntime& state,
+                                            const PluginModulatorSource& source,
+                                            double deltaSeconds)
+{
+    using EnvStage = PluginModulatorRuntime::EnvStage;
+
+    switch (state.envStage)
+    {
+        case EnvStage::Idle:
+            state.envLevel = 0.0f;
+            break;
+        case EnvStage::Attack:
+        {
+            const double attack = juce::jmax (0.001, source.attackS);
+            state.envLevel += static_cast<float> (deltaSeconds / attack);
+            if (state.envLevel >= 1.0f)
+            {
+                state.envLevel = 1.0f;
+                state.envStage = EnvStage::Decay;
+            }
+            break;
+        }
+        case EnvStage::Decay:
+        {
+            const double decay = juce::jmax (0.001, source.decayS);
+            const float sustain = static_cast<float> (juce::jlimit (0.0, 1.0, source.sustain));
+            state.envLevel -= static_cast<float> (deltaSeconds / decay) * (1.0f - sustain);
+            if (state.envLevel <= sustain)
+            {
+                state.envLevel = sustain;
+                state.envStage = EnvStage::Sustain;
+            }
+            break;
+        }
+        case EnvStage::Sustain:
+            state.envLevel = static_cast<float> (juce::jlimit (0.0, 1.0, source.sustain));
+            break;
+        case EnvStage::Release:
+        {
+            const double release = juce::jmax (0.001, source.releaseS);
+            state.envLevel -= static_cast<float> (deltaSeconds / release) * state.envLevel;
+            if (state.envLevel < 0.001f)
+            {
+                state.envLevel = 0.0f;
+                state.envStage = EnvStage::Idle;
+            }
+            break;
+        }
+    }
+
+    return juce::jlimit (0.0f, 1.0f, state.envLevel);
+}
+
+void TrackerEngine::ensurePluginModulationRuntimeSize (int instrumentIndex)
+{
+    auto it = instrumentSlotInfos.find (instrumentIndex);
+    if (it == instrumentSlotInfos.end())
+        return;
+
+    auto& runtime = pluginModulationRuntime[instrumentIndex];
+    const auto sourceCount = it->second.pluginModulation.sources.size();
+    if (runtime.sources.size() != sourceCount)
+        runtime.sources.resize (sourceCount);
+}
+
+void TrackerEngine::triggerPluginEnvelope (int instrumentIndex,
+                                           int sourceIndex,
+                                           PluginModulatorSource::EnvelopeTriggerMode triggerMode)
+{
+    auto it = instrumentSlotInfos.find (instrumentIndex);
+    if (it == instrumentSlotInfos.end() || ! it->second.isPlugin())
+        return;
+
+    ensurePluginModulationRuntimeSize (instrumentIndex);
+    auto& runtime = pluginModulationRuntime[instrumentIndex];
+    const auto& sources = it->second.pluginModulation.sources;
+
+    for (int i = 0; i < static_cast<int> (sources.size()); ++i)
+    {
+        if (sourceIndex >= 0 && sourceIndex != i)
+            continue;
+
+        const auto& source = sources[static_cast<size_t> (i)];
+        if (! source.enabled
+            || source.type != PluginModulatorSource::Type::Envelope
+            || source.envelopeTriggerMode != triggerMode)
+            continue;
+
+        auto& state = runtime.sources[static_cast<size_t> (i)];
+        state.envStage = PluginModulatorRuntime::EnvStage::Attack;
+        state.envLevel = 0.0f;
+    }
+}
+
+void TrackerEngine::releasePluginEnvelope (int instrumentIndex,
+                                           int sourceIndex,
+                                           PluginModulatorSource::EnvelopeTriggerMode triggerMode)
+{
+    auto it = instrumentSlotInfos.find (instrumentIndex);
+    if (it == instrumentSlotInfos.end() || ! it->second.isPlugin())
+        return;
+
+    ensurePluginModulationRuntimeSize (instrumentIndex);
+    auto& runtime = pluginModulationRuntime[instrumentIndex];
+    const auto& sources = it->second.pluginModulation.sources;
+
+    for (int i = 0; i < static_cast<int> (sources.size()); ++i)
+    {
+        if (sourceIndex >= 0 && sourceIndex != i)
+            continue;
+
+        const auto& source = sources[static_cast<size_t> (i)];
+        if (! source.enabled
+            || source.type != PluginModulatorSource::Type::Envelope
+            || source.envelopeTriggerMode != triggerMode)
+            continue;
+
+        auto& state = runtime.sources[static_cast<size_t> (i)];
+        if (state.envStage != PluginModulatorRuntime::EnvStage::Idle)
+            state.envStage = PluginModulatorRuntime::EnvStage::Release;
+    }
+}
+
+void TrackerEngine::triggerPluginInstrumentNoteModulators (int instrumentIndex)
+{
+    triggerPluginEnvelope (instrumentIndex, -1, PluginModulatorSource::EnvelopeTriggerMode::NoteGate);
+}
+
+void TrackerEngine::releasePluginInstrumentNoteModulators (int instrumentIndex)
+{
+    releasePluginEnvelope (instrumentIndex, -1, PluginModulatorSource::EnvelopeTriggerMode::NoteGate);
+}
+
+void TrackerEngine::triggerPluginInstrumentStepModulatorsForTrack (int trackIndex, int sourceIndex)
+{
+    for (const auto& [instrumentIndex, info] : instrumentSlotInfos)
+        if (info.isPlugin() && info.ownerTrack == trackIndex)
+            triggerPluginEnvelope (instrumentIndex, sourceIndex, PluginModulatorSource::EnvelopeTriggerMode::StepFxOnly);
+}
+
+void TrackerEngine::releasePluginInstrumentStepModulatorsForTrack (int trackIndex, int sourceIndex)
+{
+    for (const auto& [instrumentIndex, info] : instrumentSlotInfos)
+        if (info.isPlugin() && info.ownerTrack == trackIndex)
+            releasePluginEnvelope (instrumentIndex, sourceIndex, PluginModulatorSource::EnvelopeTriggerMode::StepFxOnly);
+}
+
+void TrackerEngine::releaseAllPluginInstrumentNoteModulators()
+{
+    for (const auto& [instrumentIndex, info] : instrumentSlotInfos)
+        if (info.isPlugin())
+            releasePluginInstrumentNoteModulators (instrumentIndex);
+}
+
+void TrackerEngine::resetPluginInstrumentModulations()
+{
+    for (auto& [instrumentIndex, runtime] : pluginModulationRuntime)
+    {
+        auto* audioPlugin = resolvePluginInstance ("inst:" + juce::String (instrumentIndex));
+        if (audioPlugin == nullptr)
+            continue;
+
+        auto& params = audioPlugin->getParameters();
+        auto& lock = audioPlugin->getCallbackLock();
+        if (! lock.tryEnter())
+            continue;
+
+        for (auto& [paramIndex, paramState] : runtime.params)
+        {
+            if (! paramState.valid || paramIndex < 0 || paramIndex >= params.size())
+                continue;
+
+            auto* param = params[paramIndex];
+            if (param == nullptr)
+                continue;
+
+            const float base = juce::jlimit (0.0f, 1.0f, paramState.baseValue);
+            if (std::abs (param->getValue() - base) > kPluginModulationEpsilon)
+            {
+                param->setValue (base);
+                rememberAutomatedParamWrite ("inst:" + juce::String (instrumentIndex), paramIndex, param->getValue());
+            }
+        }
+
+        lock.exit();
+    }
+
+    pluginModulationRuntime.clear();
+}
+
+void TrackerEngine::applyPluginInstrumentModulations (double transportBeat,
+                                                      const juce::String& excludedPluginId,
+                                                      int excludedParamIndex)
+{
+    const auto nowMs = juce::Time::getMillisecondCounter();
+    const double bpm = getBpm();
+    const double rowsPerSecond = static_cast<double> (juce::jmax (1, rowsPerBeat)) * bpm / 60.0;
+
+    for (const auto& [instrumentIndex, info] : instrumentSlotInfos)
+    {
+        if (! info.isPlugin() || info.pluginModulation.isDefault())
+            continue;
+
+        const auto pluginId = "inst:" + juce::String (instrumentIndex);
+        auto* audioPlugin = resolvePluginInstance (pluginId);
+        if (audioPlugin == nullptr)
+            continue;
+
+        ensurePluginModulationRuntimeSize (instrumentIndex);
+        auto& runtime = pluginModulationRuntime[instrumentIndex];
+
+        double deltaSeconds = 1.0 / 30.0;
+        if (runtime.lastUpdateMs != 0)
+        {
+            const auto elapsedMs = nowMs - runtime.lastUpdateMs;
+            deltaSeconds = juce::jlimit (1.0 / 240.0, 0.25, static_cast<double> (elapsedMs) / 1000.0);
+        }
+
+        if (runtime.lastTransportBeat >= 0.0 && transportBeat < runtime.lastTransportBeat - 0.125)
+        {
+            for (auto& sourceState : runtime.sources)
+                sourceState.randomNeedsNew = true;
+        }
+
+        runtime.lastUpdateMs = nowMs;
+        runtime.lastTransportBeat = transportBeat;
+
+        std::vector<float> sourceValues (info.pluginModulation.sources.size(), 0.0f);
+        for (int i = 0; i < static_cast<int> (info.pluginModulation.sources.size()); ++i)
+        {
+            const auto& source = info.pluginModulation.sources[static_cast<size_t> (i)];
+            auto& state = runtime.sources[static_cast<size_t> (i)];
+
+            if (! source.enabled)
+                continue;
+
+            if (source.type == PluginModulatorSource::Type::LFO)
+            {
+                double lfoHz = source.lfoRateHz;
+                if (source.lfoRateMode == PluginModulatorSource::LfoRateMode::Steps)
+                    lfoHz = rowsPerSecond / juce::jmax (1.0, source.lfoRateSteps);
+
+                const double previousPhase = state.lfoPhase;
+                state.lfoPhase += juce::jmax (0.0, lfoHz) * deltaSeconds;
+                if (std::floor (state.lfoPhase) > std::floor (previousPhase))
+                    state.randomNeedsNew = true;
+                state.lfoPhase -= std::floor (state.lfoPhase);
+
+                sourceValues[static_cast<size_t> (i)] = evaluatePluginLfo (state.lfoPhase, source.lfoShape, state);
+            }
+            else
+            {
+                sourceValues[static_cast<size_t> (i)] = advancePluginEnvelope (state, source, deltaSeconds);
+            }
+        }
+
+        std::map<int, float> modulationByParam;
+        for (const auto& route : info.pluginModulation.routes)
+        {
+            if (! route.enabled
+                || route.parameterIndex < 0
+                || route.sourceIndex < 0
+                || route.sourceIndex >= static_cast<int> (sourceValues.size())
+                || std::abs (route.amount) <= kPluginModulationEpsilon)
+            {
+                continue;
+            }
+
+            if (excludedParamIndex >= 0
+                && route.parameterIndex == excludedParamIndex
+                && pluginId == excludedPluginId)
+            {
+                continue;
+            }
+
+            modulationByParam[route.parameterIndex] += sourceValues[static_cast<size_t> (route.sourceIndex)] * route.amount;
+        }
+
+        auto& params = audioPlugin->getParameters();
+        auto& lock = audioPlugin->getCallbackLock();
+        if (! lock.tryEnter())
+            continue;
+
+        for (auto it = runtime.params.begin(); it != runtime.params.end();)
+        {
+            if (modulationByParam.find (it->first) != modulationByParam.end() || ! it->second.valid)
+            {
+                ++it;
+                continue;
+            }
+
+            const int paramIndex = it->first;
+            if (paramIndex >= 0 && paramIndex < params.size())
+            {
+                if (auto* param = params[paramIndex])
+                {
+                    const float base = juce::jlimit (0.0f, 1.0f, it->second.baseValue);
+                    if (std::abs (param->getValue() - base) > kPluginModulationEpsilon)
+                    {
+                        param->setValue (base);
+                        rememberAutomatedParamWrite (pluginId, paramIndex, param->getValue());
+                    }
+                }
+            }
+
+            it = runtime.params.erase (it);
+        }
+
+        for (const auto& [paramIndex, modulationValue] : modulationByParam)
+        {
+            if (paramIndex < 0 || paramIndex >= params.size())
+                continue;
+
+            auto* param = params[paramIndex];
+            if (param == nullptr)
+                continue;
+
+            auto& paramState = runtime.params[paramIndex];
+            const float current = param->getValue();
+            float base = current;
+
+            if (paramState.valid
+                && std::abs (current - paramState.lastWrittenValue) <= 0.002f)
+            {
+                base = paramState.baseValue;
+            }
+
+            const float clampedBase = juce::jlimit (0.0f, 1.0f, base);
+            const float nextValue = juce::jlimit (0.0f, 1.0f, clampedBase + modulationValue);
+
+            if (! paramState.valid || std::abs (current - nextValue) > kPluginModulationEpsilon)
+                param->setValue (nextValue);
+
+            paramState.valid = true;
+            paramState.baseValue = clampedBase;
+            paramState.lastModulation = modulationValue;
+            paramState.lastWrittenValue = param->getValue();
+            rememberAutomatedParamWrite (pluginId, paramIndex, paramState.lastWrittenValue);
+        }
+
+        lock.exit();
+    }
 }
 
 //==============================================================================

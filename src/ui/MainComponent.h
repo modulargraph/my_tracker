@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "PatternData.h"
+#include "PatternTypes.h"
 #include "TrackerEngine.h"
 #include "TrackerLookAndFeel.h"
 #include "Arrangement.h"
@@ -122,6 +123,8 @@ private:
     MidiGeneratorSettings lastMidiGeneratorSettings;
     bool chordEntryEnabled = false;
     int lastAutomationPopulateTrack = -1;
+    int lastPluginModTriggerRowSerial = -1;
+    double lastPluginModTriggerBeat = -1.0;
     std::map<int, std::vector<AutomatablePluginInfo>> automationPluginCache;
     std::map<int, std::pair<juce::String, int>> automationSelectionPerTrack;
     std::map<int, juce::String> detectedSamplePitchLabels;
@@ -225,6 +228,12 @@ private:
     void populateAutomationPlugins();
     void navigateToAutomationParam (const juce::String& pluginId, int paramIndex);
     void applyAutomationAtPlaybackPosition (int playPatternIndex, int playRow);
+    void applyPluginModulationAtPlaybackPosition (int playPatternIndex,
+                                                  int playRow,
+                                                  double beatPosition,
+                                                  const juce::String& excludedPluginId = {},
+                                                  int excludedParamIndex = -1);
+    int resolvePluginInstrumentForTrackRow (int trackIndex, const NoteSlot& noteSlot) const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

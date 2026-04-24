@@ -162,7 +162,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
                                             const std::map<int, InstrumentSlotInfo>* pluginSlots)
 {
     juce::ValueTree root (kProjectRootName);
-    root.setProperty ("version", 9, nullptr);
+    root.setProperty ("version", 10, nullptr);
 
     // Settings
     juce::ValueTree settings ("Settings");
@@ -623,6 +623,8 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
             slotTree.setProperty ("isInstrument", info.pluginDescription.isInstrument, nullptr);
             if (info.pluginState.isValid())
                 slotTree.addChild (info.pluginState.createCopy(), -1, nullptr);
+            if (! info.pluginModulation.isDefault())
+                slotTree.addChild (PluginInstrumentModulationSerializer::toValueTree (info.pluginModulation), -1, nullptr);
             pluginSlotsTree.addChild (slotTree, -1, nullptr);
         }
         root.addChild (pluginSlotsTree, -1, nullptr);
@@ -1232,9 +1234,15 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                 info.pluginDescription.category = slotTree.getProperty ("pluginCategory", "").toString();
                 info.pluginDescription.isInstrument = slotTree.getProperty ("isInstrument", true);
 
-                // Restore plugin state (first child ValueTree if present)
-                if (slotTree.getNumChildren() > 0)
-                    info.pluginState = slotTree.getChild (0).createCopy();
+                // Restore plugin state and optional modulation matrix children.
+                for (int childIdx = 0; childIdx < slotTree.getNumChildren(); ++childIdx)
+                {
+                    auto child = slotTree.getChild (childIdx);
+                    if (child.hasType ("PluginModulation"))
+                        info.pluginModulation = PluginInstrumentModulationSerializer::fromValueTree (child);
+                    else if (! info.pluginState.isValid())
+                        info.pluginState = child.createCopy();
+                }
 
                 (*pluginSlots)[index] = info;
             }

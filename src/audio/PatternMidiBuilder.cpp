@@ -64,6 +64,9 @@ void appendSymbolicTrackFx (juce::MidiMessageSequence& midiSeq, const FxSlot& sl
         case 'N':
             // Note timing is handled by the pattern scheduler, not by MIDI CC state.
             break;
+        case 'M':
+            // Plugin-instrument modulation triggers are handled from the UI row clock.
+            break;
         case 'F':
             // Tempo is handled via master lane tempo points.
             break;

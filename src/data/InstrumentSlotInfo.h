@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "PluginInstrumentModulation.h"
 
 //==============================================================================
 // Instrument source type: whether a slot uses a sample or a hosted plugin
@@ -24,6 +25,7 @@ struct InstrumentSlotInfo
     juce::PluginDescription pluginDescription;  // Identifies which plugin
     int ownerTrack = -1;                         // Which track owns this plugin instrument (-1 = unassigned)
     juce::ValueTree pluginState;                 // Saved plugin state (preset data)
+    PluginInstrumentModulation pluginModulation;  // VST parameter modulation matrix
 
     bool isPlugin() const { return sourceType == InstrumentSourceType::PluginInstrument; }
     bool isSample() const { return sourceType == InstrumentSourceType::Sample; }
@@ -35,6 +37,7 @@ struct InstrumentSlotInfo
         pluginDescription = {};
         ownerTrack = -1;
         pluginState = {};
+        pluginModulation = {};
     }
 
     void setPlugin (const juce::PluginDescription& desc, int track)
@@ -42,6 +45,7 @@ struct InstrumentSlotInfo
         sourceType = InstrumentSourceType::PluginInstrument;
         pluginDescription = desc;
         ownerTrack = track;
+        pluginModulation = {};
     }
 };
 
