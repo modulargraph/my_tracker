@@ -880,6 +880,16 @@ bool testEmbeddedSampleDataPreferredOverExternalPath()
         return false;
     }
 
+    if (sampleIt->second.getFileNameWithoutExtension() != sampleFile.getFileNameWithoutExtension()
+        || sampleIt->second.getFileName().startsWith ("instrument_3_"))
+    {
+        std::cerr << "embedded sample display name gained an instrument prefix\n";
+        sampleFile.deleteFile();
+        projectFile.deleteFile();
+        extractedSamplesDir.deleteRecursively();
+        return false;
+    }
+
     juce::MemoryBlock loadedData;
     if (! sampleIt->second.loadFileAsData (loadedData))
     {

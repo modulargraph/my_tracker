@@ -64,19 +64,82 @@ juce::ValueTree loadGlobalPrefsTree()
     return loaded;
 }
 
-juce::String getEmbeddedSampleFileName (int instrumentIndex, const juce::String& originalFileName)
+juce::String getEmbeddedSampleDirName (int instrumentIndex)
+{
+    return "instrument_" + juce::String (instrumentIndex);
+}
+
+juce::String getLegacyEmbeddedSamplePrefix (int instrumentIndex)
+{
+    return getEmbeddedSampleDirName (instrumentIndex) + "_";
+}
+
+juce::String getSafeSampleFileName (const juce::String& originalFileName)
 {
     auto safeName = juce::File::createLegalFileName (originalFileName);
     if (safeName.isEmpty())
         safeName = "sample";
 
-    return "instrument_" + juce::String (instrumentIndex) + "_" + safeName;
+    return safeName;
 }
 
 juce::File getEmbeddedSamplesDir (const juce::File& projectFile)
 {
     return projectFile.getParentDirectory().getChildFile (
         projectFile.getFileNameWithoutExtension() + "_samples");
+}
+
+juce::File getEmbeddedSampleInstrumentDir (const juce::File& projectFile, int instrumentIndex)
+{
+    return getEmbeddedSamplesDir (projectFile).getChildFile (getEmbeddedSampleDirName (instrumentIndex));
+}
+
+juce::String stripLegacyEmbeddedSamplePrefix (int instrumentIndex, const juce::String& fileName)
+{
+    auto prefix = getLegacyEmbeddedSamplePrefix (instrumentIndex);
+    return fileName.startsWith (prefix) ? fileName.substring (prefix.length()) : fileName;
+}
+
+bool isLikelyProjectEmbeddedSamplesDir (const juce::File& dir)
+{
+    auto dirName = dir.getFileName();
+    if (! dirName.endsWith ("_samples"))
+        return false;
+
+    auto projectStem = dirName.dropLastCharacters (8);
+    return dir.getParentDirectory().getChildFile (projectStem).withFileExtension ("tkadj").existsAsFile();
+}
+
+bool isLegacyEmbeddedSampleExtractionFile (int instrumentIndex, const juce::File& sampleFile)
+{
+    return sampleFile.getFileName().startsWith (getLegacyEmbeddedSamplePrefix (instrumentIndex))
+        && isLikelyProjectEmbeddedSamplesDir (sampleFile.getParentDirectory());
+}
+
+juce::String getOriginalSampleFileNameForSave (const juce::File& sampleFile, int instrumentIndex)
+{
+    auto fileName = sampleFile.getFileName();
+    if (isLegacyEmbeddedSampleExtractionFile (instrumentIndex, sampleFile))
+        fileName = stripLegacyEmbeddedSamplePrefix (instrumentIndex, fileName);
+
+    return fileName;
+}
+
+bool isLegacyEmbeddedSamplePath (const juce::File& projectFile,
+                                 int instrumentIndex,
+                                 const juce::String& fileName,
+                                 const juce::String& absPath,
+                                 const juce::String& relPath)
+{
+    if (! fileName.startsWith (getLegacyEmbeddedSamplePrefix (instrumentIndex)))
+        return false;
+
+    auto samplesDirName = getEmbeddedSamplesDir (projectFile).getFileName();
+    auto normalisedRelPath = relPath.replaceCharacter ('\\', '/');
+    if (normalisedRelPath.startsWith (samplesDirName + "/"))
+        return true;
+
+    return juce::File (absPath).getParentDirectory().getFileName() == samplesDirName;
 }
 
 int clampUiScalePercent (int scalePercent)
@@ -120,7 +183,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         sample.setProperty ("index", index, nullptr);
         sample.setProperty ("path", sampleFile.getRelativePathFrom (file.getParentDirectory()), nullptr);
         sample.setProperty ("absPath", sampleFile.getFullPathName(), nullptr);
-        sample.setProperty ("filename", sampleFile.getFileName(), nullptr);
+        sample.setProperty ("filename", getOriginalSampleFileNameForSave (sampleFile, index), nullptr);
 
         if (! sampleFile.existsAsFile())
             return "Sample file not found for instrument "
@@ -675,13 +738,15 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                     juce::String filename = sample.getProperty ("filename", "").toString();
                     if (filename.isEmpty())
                         filename = "sample.wav";
+                    else if (isLegacyEmbeddedSamplePath (file, index, filename, absPath, relPath))
+                        filename = stripLegacyEmbeddedSamplePrefix (index, filename);
 
-                    auto samplesDir = getEmbeddedSamplesDir (file);
-                    if (! samplesDir.createDirectory())
+                    auto sampleDir = getEmbeddedSampleInstrumentDir (file, index);
+                    if (! sampleDir.createDirectory())
                         return "Failed to create embedded samples directory: "
-                               + samplesDir.getFullPathName();
+                               + sampleDir.getFullPathName();
 
-                    sampleFile = samplesDir.getChildFile (getEmbeddedSampleFileName (index, filename));
+                    sampleFile = sampleDir.getChildFile (getSafeSampleFileName (filename));
                     if (! sampleFile.replaceWithData (fileData.getData(), fileData.getSize()))
                         return "Failed to extract embedded sample: " + sampleFile.getFullPathName();
                 }
