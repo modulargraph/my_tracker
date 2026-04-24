@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "Clipboard.h"
 
 namespace PatternEditUtils
@@ -37,6 +39,50 @@ inline bool sameCell (const Cell& a, const Cell& b)
     }
 
     return true;
+}
+
+inline std::optional<int> findInstrumentForLastNoteAbove (const Pattern& pattern,
+                                                          int row,
+                                                          int track,
+                                                          int noteLane)
+{
+    if (track < 0 || track >= kNumTracks || row <= 0 || pattern.numRows <= 0)
+        return std::nullopt;
+
+    const int firstRowAbove = juce::jmin (row, pattern.numRows) - 1;
+    const int lane = juce::jmax (0, noteLane);
+    for (int r = firstRowAbove; r >= 0; --r)
+    {
+        auto slot = pattern.getCell (r, track).getNoteLane (lane);
+        if (slot.note >= 0 && slot.note <= 127 && slot.instrument >= 0)
+            return juce::jlimit (0, 255, slot.instrument);
+    }
+
+    return std::nullopt;
+}
+
+inline int resolveCursorInstrument (const Pattern& pattern,
+                                    int row,
+                                    int track,
+                                    int noteLane,
+                                    int currentInstrument,
+                                    bool inferFromLastNoteAbove)
+{
+    const int fallbackInstrument = juce::jlimit (0, 255, currentInstrument);
+    if (track < 0 || track >= kNumTracks || row < 0 || row >= pattern.numRows)
+        return fallbackInstrument;
+
+    auto slot = pattern.getCell (row, track).getNoteLane (juce::jmax (0, noteLane));
+    if (slot.instrument >= 0)
+        return juce::jlimit (0, 255, slot.instrument);
+
+    if (inferFromLastNoteAbove)
+    {
+        if (auto instrument = findInstrumentForLastNoteAbove (pattern, row, track, noteLane))
+            return *instrument;
+    }
+
+    return fallbackInstrument;
 }
 
 inline bool applyPatternEdit (PatternData& patternData,
