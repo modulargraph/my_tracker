@@ -33,6 +33,8 @@ constexpr int kCcSamplerHardCut = 86;
 
 constexpr int kMinTempoCommandBpm = 20;
 constexpr int kMaxTempoCommandBpm = 300;
+constexpr double kMinProjectBpm = 20.0;
+constexpr double kMaxProjectBpm = 999.0;
 
 char getSlotCommandLetter (const FxSlot& slot)
 {
@@ -76,7 +78,10 @@ int getRowTempoCommand (const Pattern& pattern, int row)
 void setFirstTempoBpmWithoutRemapping (te::TempoSequence& tempoSequence, double bpm)
 {
     if (auto* tempo = tempoSequence.getTempo (0))
-        tempo->set (tempo->getStartBeat(), bpm, tempo->getCurve(), false);
+        tempo->set (tempo->getStartBeat(),
+                    juce::jlimit (te::TempoSetting::minBPM, te::TempoSetting::maxBPM, bpm),
+                    tempo->getCurve(),
+                    false);
 }
 
 float getTrackFaderGain (const TrackMixState& mixState)
@@ -334,7 +339,7 @@ void TrackerEngine::rebuildTempoSequenceFromPatternMasterLane (const Pattern& pa
         return;
 
     auto& tempoSequence = edit->tempoSequence;
-    const double baseBpm = tempoSequence.getTempos()[0]->getBpm();
+    const double baseBpm = projectBpm;
 
     while (tempoSequence.getNumTempos() > 1)
         tempoSequence.removeTempo (tempoSequence.getNumTempos() - 1, false);
@@ -370,7 +375,7 @@ void TrackerEngine::rebuildTempoSequenceFromArrangementMasterLane (const std::ve
         return;
 
     auto& tempoSequence = edit->tempoSequence;
-    const double baseBpm = tempoSequence.getTempos()[0]->getBpm();
+    const double baseBpm = projectBpm;
 
     while (tempoSequence.getNumTempos() > 1)
         tempoSequence.removeTempo (tempoSequence.getNumTempos() - 1, false);
@@ -1202,21 +1207,15 @@ void TrackerEngine::setRowsPerBeat (int rpb)
 
 void TrackerEngine::setBpm (double bpm)
 {
-    if (edit == nullptr)
-        return;
+    projectBpm = juce::jlimit (kMinProjectBpm, kMaxProjectBpm, bpm);
 
-    const double clampedBpm = juce::jlimit (te::TempoSetting::minBPM, te::TempoSetting::maxBPM, bpm);
-    setFirstTempoBpmWithoutRemapping (edit->tempoSequence, clampedBpm);
     if (sendEffectsPlugin != nullptr)
         sendEffectsPlugin->setTempoBpm (getBpm());
 }
 
 double TrackerEngine::getBpm() const
 {
-    if (edit == nullptr)
-        return 120.0;
-
-    return edit->tempoSequence.getTempos()[0]->getBpm();
+    return projectBpm;
 }
 
 juce::String TrackerEngine::loadSampleForInstrument (int instrumentIndex, const juce::File& sampleFile)

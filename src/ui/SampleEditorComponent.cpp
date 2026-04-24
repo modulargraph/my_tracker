@@ -65,11 +65,21 @@ juce::Colour getPluginSourceColour (int index)
     return juce::Colour (colours[static_cast<size_t> (juce::jlimit (0, 7, index % 8))]);
 }
 
-void fillRoundedRow (juce::Graphics& g, juce::Rectangle<int> row, juce::Colour colour, bool selected)
+juce::Colour getSampleEditorSurfaceColour (TrackerLookAndFeel& lookAndFeel, float amount)
 {
-    g.setColour (selected ? colour.withAlpha (0.16f) : juce::Colour (0xff171a1f));
+    auto background = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
+    return background.getPerceivedBrightness() >= 0.5f ? background.darker (amount)
+                                                       : background.brighter (amount);
+}
+
+void fillRoundedRow (juce::Graphics& g, juce::Rectangle<int> row, juce::Colour colour,
+                     bool selected, TrackerLookAndFeel& lookAndFeel)
+{
+    g.setColour (selected ? colour.withAlpha (0.16f)
+                          : getSampleEditorSurfaceColour (lookAndFeel, 0.06f));
     g.fillRoundedRectangle (row.toFloat(), 6.0f);
-    g.setColour (selected ? colour.withAlpha (0.75f) : juce::Colour (0xff30343b));
+    g.setColour (selected ? colour.withAlpha (0.75f)
+                          : lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
     g.drawRoundedRectangle (row.toFloat().reduced (0.5f), 6.0f, 1.0f);
 }
 }
@@ -91,13 +101,6 @@ SampleEditorComponent::SampleEditorComponent (TrackerLookAndFeel& lnf)
     pluginParameterSearchBox.setInputRestrictions (64);
     pluginParameterSearchBox.setFont (lookAndFeel.getMonoFont (10.0f));
     pluginParameterSearchBox.setTextToShowWhenEmpty ("search", lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.35f));
-    pluginParameterSearchBox.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff0b0d10));
-    pluginParameterSearchBox.setColour (juce::TextEditor::textColourId, lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
-    pluginParameterSearchBox.setColour (juce::TextEditor::outlineColourId,
-                                        lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
-    pluginParameterSearchBox.setColour (juce::TextEditor::focusedOutlineColourId,
-                                        lookAndFeel.findColour (TrackerLookAndFeel::fxColourId));
-    pluginParameterSearchBox.setColour (juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
     pluginParameterSearchBox.onTextChange = [this]
     {
         pluginParameterScroll = 0;
@@ -125,7 +128,7 @@ SampleEditorComponent::SampleEditorComponent (TrackerLookAndFeel& lnf)
     pluginParameterScrollbar.setAutoHide (false);
     pluginParameterScrollbar.setSingleStepSize (1.0);
     pluginParameterScrollbar.setColour (juce::ScrollBar::backgroundColourId,
-                                        juce::Colour (0xff0b0d10));
+                                        getSampleEditorSurfaceColour (lookAndFeel, 0.08f));
     pluginParameterScrollbar.setColour (juce::ScrollBar::trackColourId,
                                         lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId)
                                             .withAlpha (0.45f));
@@ -1105,7 +1108,7 @@ void SampleEditorComponent::drawPluginInstrumentPage (juce::Graphics& g, juce::R
         sourceArea.removeFromTop (8);
         const auto colour = getPluginSourceColour (i);
         const bool selected = i == selectedPluginSourceIndex;
-        fillRoundedRow (g, row, colour, selected);
+        fillRoundedRow (g, row, colour, selected, lookAndFeel);
 
         auto inner = row.reduced (8, 6);
         auto enableBox = inner.removeFromLeft (20).withSizeKeepingCentre (14, 14);
@@ -1194,7 +1197,7 @@ void SampleEditorComponent::drawPluginInstrumentPage (juce::Graphics& g, juce::R
         routesBlock.removeFromTop (6);
         const int sourceIndex = juce::jlimit (0, juce::jmax (0, static_cast<int> (pluginModulation.sources.size()) - 1), route.sourceIndex);
         const auto colour = getPluginSourceColour (sourceIndex);
-        fillRoundedRow (g, row, colour, i == selectedPluginRouteIndex);
+        fillRoundedRow (g, row, colour, i == selectedPluginRouteIndex, lookAndFeel);
 
         auto inner = row.reduced (7, 5);
         auto enableBox = inner.removeFromLeft (16).withSizeKeepingCentre (12, 12);
@@ -1223,7 +1226,7 @@ void SampleEditorComponent::drawPluginInstrumentPage (juce::Graphics& g, juce::R
         g.drawFittedText (route.parameterName.isNotEmpty() ? route.parameterName : ("Param " + juce::String (route.parameterIndex)),
                           paramBounds, juce::Justification::centredLeft, 1);
 
-        g.setColour (juce::Colour (0xff0b0d10));
+        g.setColour (getSampleEditorSurfaceColour (lookAndFeel, 0.08f));
         g.fillRect (amountBounds);
         g.setColour (gridCol);
         g.drawRect (amountBounds, 1);
@@ -1290,7 +1293,8 @@ void SampleEditorComponent::drawPluginInstrumentPage (juce::Graphics& g, juce::R
             }
         }
 
-        g.setColour (hasRoute ? accentCol.withAlpha (0.16f) : juce::Colour (0xff15181d));
+        g.setColour (hasRoute ? accentCol.withAlpha (0.16f)
+                              : getSampleEditorSurfaceColour (lookAndFeel, 0.06f));
         g.fillRect (row);
         g.setColour (hasRoute ? accentCol.withAlpha (0.65f) : gridCol);
         g.drawRect (row, 1);
@@ -1350,7 +1354,7 @@ void SampleEditorComponent::drawPluginLfoPreview (juce::Graphics& g,
                                                   const PluginModulatorSource& source,
                                                   juce::Colour colour)
 {
-    g.setColour (juce::Colour (0xff0b0d10));
+    g.setColour (getSampleEditorSurfaceColour (lookAndFeel, 0.08f));
     g.fillRect (bounds);
     g.setColour (colour.withAlpha (0.28f));
     g.drawRect (bounds, 1);
@@ -1388,7 +1392,7 @@ void SampleEditorComponent::drawPluginEnvelopePreview (juce::Graphics& g,
                                                        const PluginModulatorSource& source,
                                                        juce::Colour colour)
 {
-    g.setColour (juce::Colour (0xff0b0d10));
+    g.setColour (getSampleEditorSurfaceColour (lookAndFeel, 0.08f));
     g.fillRect (bounds);
     g.setColour (colour.withAlpha (0.28f));
     g.drawRect (bounds, 1);

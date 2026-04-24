@@ -1,5 +1,15 @@
 #include "ToolbarComponent.h"
 
+namespace
+{
+juce::Colour getToolbarButtonColour (TrackerLookAndFeel& lookAndFeel)
+{
+    auto header = lookAndFeel.findColour (TrackerLookAndFeel::headerColourId);
+    return header.getPerceivedBrightness() >= 0.5f ? header.darker (0.08f)
+                                                   : header.brighter (0.10f);
+}
+}
+
 ToolbarComponent::ToolbarComponent (TrackerLookAndFeel& lnf)
     : lookAndFeel (lnf)
 {
@@ -24,14 +34,19 @@ void ToolbarComponent::paint (juce::Graphics& g)
 
     g.setFont (lookAndFeel.getMonoFont (13.0f));
     auto textCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+    auto gridCol = lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId);
+    auto buttonCol = getToolbarButtonColour (lookAndFeel);
+    auto accentCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto playCol = lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
+    auto emphasisCol = lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId);
 
     int x = 8;
 
     // Arrangement panel toggle (left of pattern selector)
     arrangementToggleBounds = { x, 6, 24, 24 };
-    g.setColour (arrangementOn ? juce::Colour (0xff5c8abf) : juce::Colour (0xff3a3a3a));
+    g.setColour (arrangementOn ? accentCol : buttonCol);
     g.fillRoundedRectangle (arrangementToggleBounds.toFloat(), 3.0f);
-    g.setColour (arrangementOn ? juce::Colours::white : textCol);
+    g.setColour (arrangementOn ? accentCol.contrasting() : textCol);
     g.setFont (lookAndFeel.getMonoFont (11.0f));
     g.drawText ("ARR", arrangementToggleBounds, juce::Justification::centred);
     g.setFont (lookAndFeel.getMonoFont (13.0f));
@@ -46,7 +61,7 @@ void ToolbarComponent::paint (juce::Graphics& g)
 
     // [+] button
     addPatBounds = { x, 6, 24, 24 };
-    g.setColour (juce::Colour (0xff3a3a3a));
+    g.setColour (buttonCol);
     g.fillRoundedRectangle (addPatBounds.toFloat(), 3.0f);
     g.setColour (textCol);
     g.drawText ("+", addPatBounds, juce::Justification::centred);
@@ -54,7 +69,7 @@ void ToolbarComponent::paint (juce::Graphics& g)
 
     // [2x] duplicate button
     duplicatePatBounds = { x, 6, 30, 24 };
-    g.setColour (juce::Colour (0xff3a3a3a));
+    g.setColour (buttonCol);
     g.fillRoundedRectangle (duplicatePatBounds.toFloat(), 3.0f);
     g.setColour (textCol);
     g.setFont (lookAndFeel.getMonoFont (10.0f));
@@ -64,7 +79,7 @@ void ToolbarComponent::paint (juce::Graphics& g)
 
     // [-] button
     removePatBounds = { x, 6, 24, 24 };
-    g.setColour (juce::Colour (0xff3a3a3a));
+    g.setColour (buttonCol);
     g.fillRoundedRectangle (removePatBounds.toFloat(), 3.0f);
     g.setColour (textCol);
     g.drawText ("-", removePatBounds, juce::Justification::centred);
@@ -77,19 +92,19 @@ void ToolbarComponent::paint (juce::Graphics& g)
     x += 104;
 
     // Separator
-    g.setColour (juce::Colour (0xff444444));
+    g.setColour (gridCol);
     g.drawVerticalLine (x, 4.0f, static_cast<float> (kToolbarHeight - 4));
     x += 8;
 
     // Pattern length (draggable)
     auto lenStr = juce::String::formatted ("Len:%d", patternLength);
     lengthBounds = { x, 0, 60, kToolbarHeight };
-    g.setColour (dragTarget == DragTarget::Length ? juce::Colour (0xff88aacc) : textCol);
+    g.setColour (dragTarget == DragTarget::Length ? accentCol : textCol);
     g.drawText (lenStr, lengthBounds, juce::Justification::centredLeft);
     x += 64;
 
     // Separator
-    g.setColour (juce::Colour (0xff444444));
+    g.setColour (gridCol);
     g.drawVerticalLine (x, 4.0f, static_cast<float> (kToolbarHeight - 4));
     x += 8;
 
@@ -97,7 +112,7 @@ void ToolbarComponent::paint (juce::Graphics& g)
     auto instStr = juce::String::formatted ("Inst:%02X", instrument);
     instrumentBounds = { x, 0, 60, kToolbarHeight };
     g.setColour (dragTarget == DragTarget::Instrument
-                     ? juce::Colour (0xff88aacc)
+                     ? accentCol
                      : lookAndFeel.getInstrumentColour (instrument).brighter (0.18f));
     g.drawText (instStr, instrumentBounds, juce::Justification::centredLeft);
     x += 64;
@@ -116,54 +131,72 @@ void ToolbarComponent::paint (juce::Graphics& g)
     // Octave (draggable)
     auto octStr = juce::String::formatted ("Oct:%d", octave);
     octaveBounds = { x, 0, 50, kToolbarHeight };
-    g.setColour (dragTarget == DragTarget::Octave ? juce::Colour (0xff88aacc) : textCol);
+    g.setColour (dragTarget == DragTarget::Octave ? accentCol : textCol);
     g.drawText (octStr, octaveBounds, juce::Justification::centredLeft);
     x += 54;
+
+    // Chord root (draggable / scrollable text)
+    auto rootStr = "Key:" + chordRootLabel;
+    chordRootBounds = { x, 0, 54, kToolbarHeight };
+    g.setColour (dragTarget == DragTarget::ChordRoot
+                     ? accentCol
+                     : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
+    g.drawText (rootStr, chordRootBounds, juce::Justification::centredLeft);
+    x += 58;
+
+    // Chord scale (draggable / scrollable text)
+    auto scaleStr = "Scale:" + chordScaleLabel;
+    chordScaleBounds = { x, 0, 76, kToolbarHeight };
+    g.setColour (dragTarget == DragTarget::ChordScale
+                     ? accentCol
+                     : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
+    g.drawText (scaleStr, chordScaleBounds, juce::Justification::centredLeft);
+    x += 80;
 
     // Step (draggable)
     auto stepStr = juce::String::formatted ("Step:%d", step);
     stepBounds = { x, 0, 56, kToolbarHeight };
-    g.setColour (dragTarget == DragTarget::Step ? juce::Colour (0xff88aacc) : textCol);
+    g.setColour (dragTarget == DragTarget::Step ? accentCol : textCol);
     g.drawText (stepStr, stepBounds, juce::Justification::centredLeft);
     x += 60;
 
     // Separator
-    g.setColour (juce::Colour (0xff444444));
+    g.setColour (gridCol);
     g.drawVerticalLine (x, 4.0f, static_cast<float> (kToolbarHeight - 4));
     x += 8;
 
     // BPM (draggable)
     auto bpmStr = juce::String::formatted ("BPM:%.1f", bpm);
     bpmBounds = { x, 0, 80, kToolbarHeight };
-    g.setColour (dragTarget == DragTarget::Bpm ? juce::Colour (0xff88aacc) : textCol);
+    g.setColour (dragTarget == DragTarget::Bpm ? accentCol : textCol);
     g.drawText (bpmStr, bpmBounds, juce::Justification::centredLeft);
     x += 84;
 
     // RPB (draggable)
     auto rpbStr = juce::String::formatted ("RPB:%d", rowsPerBeatVal);
     rpbBounds = { x, 0, 50, kToolbarHeight };
-    g.setColour (dragTarget == DragTarget::Rpb ? juce::Colour (0xff88aacc) : textCol);
+    g.setColour (dragTarget == DragTarget::Rpb ? accentCol : textCol);
     g.drawText (rpbStr, rpbBounds, juce::Justification::centredLeft);
     x += 54;
 
     // Play state
     auto stateStr = playing ? "PLAYING" : "STOPPED";
-    g.setColour (playing ? juce::Colour (0xff5cba5c) : juce::Colour (0xff888888));
+    g.setColour (playing ? playCol : textCol.withAlpha (0.55f));
     g.drawText (stateStr, x, 0, 70, kToolbarHeight, juce::Justification::centredLeft);
     x += 74;
 
     // Mode toggle (clickable)
     auto modeStr = songMode ? "SONG" : "PAT";
     modeBounds = { x, 0, 50, kToolbarHeight };
-    g.setColour (songMode ? juce::Colour (0xffd4a843) : textCol);
+    g.setColour (songMode ? emphasisCol : textCol);
     g.drawText (modeStr, modeBounds, juce::Justification::centredLeft);
     x += 50;
 
     // Follow toggle (Off / CTR / PGE)
     followBounds = { x, 6, 28, 24 };
-    g.setColour (followModeVal > 0 ? juce::Colour (0xff5cba5c) : juce::Colour (0xff3a3a3a));
+    g.setColour (followModeVal > 0 ? playCol : buttonCol);
     g.fillRoundedRectangle (followBounds.toFloat(), 3.0f);
-    g.setColour (followModeVal > 0 ? juce::Colours::white : textCol);
+    g.setColour (followModeVal > 0 ? playCol.contrasting() : textCol);
     g.setFont (lookAndFeel.getMonoFont (9.0f));
     auto folStr = followModeVal == 0 ? "FOL" : (followModeVal == 1 ? "CTR" : "PGE");
     g.drawText (folStr, followBounds, juce::Justification::centred);
@@ -172,9 +205,9 @@ void ToolbarComponent::paint (juce::Graphics& g)
 
     // Metronome toggle
     metronomeBounds = { x, 6, 28, 24 };
-    g.setColour (metronomeOn ? juce::Colour (0xffd4a843) : juce::Colour (0xff3a3a3a));
+    g.setColour (metronomeOn ? emphasisCol : buttonCol);
     g.fillRoundedRectangle (metronomeBounds.toFloat(), 3.0f);
-    g.setColour (metronomeOn ? juce::Colours::white : textCol);
+    g.setColour (metronomeOn ? emphasisCol.contrasting() : textCol);
     g.setFont (lookAndFeel.getMonoFont (9.0f));
     g.drawText ("MET", metronomeBounds, juce::Justification::centred);
     g.setFont (lookAndFeel.getMonoFont (13.0f));
@@ -182,7 +215,7 @@ void ToolbarComponent::paint (juce::Graphics& g)
 
     // FX reference button
     fxRefBounds = { x, 6, 24, 24 };
-    g.setColour (juce::Colour (0xff3a3a3a));
+    g.setColour (buttonCol);
     g.fillRoundedRectangle (fxRefBounds.toFloat(), 3.0f);
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId));
     g.setFont (lookAndFeel.getMonoFont (9.0f));
@@ -190,32 +223,12 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.setFont (lookAndFeel.getMonoFont (13.0f));
     x += 28;
 
-    // Chord root selector
-    chordRootBounds = { x, 6, 30, 24 };
-    g.setColour (juce::Colour (0xff3a3a3a));
-    g.fillRoundedRectangle (chordRootBounds.toFloat(), 3.0f);
-    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
-    g.setFont (lookAndFeel.getMonoFont (9.0f));
-    g.drawText (chordRootLabel, chordRootBounds, juce::Justification::centred);
-    g.setFont (lookAndFeel.getMonoFont (13.0f));
-    x += 34;
-
-    // Chord scale selector
-    chordScaleBounds = { x, 6, 36, 24 };
-    g.setColour (juce::Colour (0xff3a3a3a));
-    g.fillRoundedRectangle (chordScaleBounds.toFloat(), 3.0f);
-    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
-    g.setFont (lookAndFeel.getMonoFont (9.0f));
-    g.drawText (chordScaleLabel, chordScaleBounds, juce::Justification::centred);
-    g.setFont (lookAndFeel.getMonoFont (13.0f));
-    x += 40;
-
     // Chord entry toggle
     chordEntryBounds = { x, 6, 34, 24 };
     g.setColour (chordEntryOn ? lookAndFeel.findColour (TrackerLookAndFeel::noteColourId).withAlpha (0.42f)
-                              : juce::Colour (0xff3a3a3a));
+                              : buttonCol);
     g.fillRoundedRectangle (chordEntryBounds.toFloat(), 3.0f);
-    g.setColour (chordEntryOn ? juce::Colours::white
+    g.setColour (chordEntryOn ? lookAndFeel.findColour (TrackerLookAndFeel::noteColourId).contrasting()
                               : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
     g.setFont (lookAndFeel.getMonoFont (9.0f));
     g.drawText ("CHD", chordEntryBounds, juce::Justification::centred);
@@ -225,7 +238,7 @@ void ToolbarComponent::paint (juce::Graphics& g)
     // Chord set selector
     chordSetBounds = { x, 6, 38, 24 };
     g.setColour (chordEntryOn ? lookAndFeel.findColour (TrackerLookAndFeel::noteColourId).withAlpha (0.28f)
-                              : juce::Colour (0xff3a3a3a));
+                              : buttonCol);
     g.fillRoundedRectangle (chordSetBounds.toFloat(), 3.0f);
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
     g.setFont (lookAndFeel.getMonoFont (9.0f));
@@ -235,15 +248,15 @@ void ToolbarComponent::paint (juce::Graphics& g)
 
     // Instrument panel toggle (right-aligned)
     instrumentToggleBounds = { getWidth() - 32, 6, 24, 24 };
-    g.setColour (instrumentPanelOn ? juce::Colour (0xff5c8abf) : juce::Colour (0xff3a3a3a));
+    g.setColour (instrumentPanelOn ? accentCol : buttonCol);
     g.fillRoundedRectangle (instrumentToggleBounds.toFloat(), 3.0f);
-    g.setColour (instrumentPanelOn ? juce::Colours::white : textCol);
+    g.setColour (instrumentPanelOn ? accentCol.contrasting() : textCol);
     g.setFont (lookAndFeel.getMonoFont (11.0f));
     g.drawText ("INS", instrumentToggleBounds, juce::Justification::centred);
     g.setFont (lookAndFeel.getMonoFont (13.0f));
 
     // Bottom border
-    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId));
+    g.setColour (gridCol);
     g.drawHorizontalLine (kToolbarHeight - 1, 0.0f, static_cast<float> (getWidth()));
 }
 
@@ -300,30 +313,16 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
         onShowFxReference();
         return;
     }
-    if (chordRootBounds.contains (pos))
+    if (chordRootBounds.contains (pos) && event.mods.isPopupMenu())
     {
-        if (event.mods.isPopupMenu())
-        {
-            if (onShowChordRootMenu)
-                onShowChordRootMenu (event.getScreenPosition());
-        }
-        else if (onCycleChordRoot)
-        {
-            onCycleChordRoot();
-        }
+        if (onShowChordRootMenu)
+            onShowChordRootMenu (event.getScreenPosition());
         return;
     }
-    if (chordScaleBounds.contains (pos))
+    if (chordScaleBounds.contains (pos) && event.mods.isPopupMenu())
     {
-        if (event.mods.isPopupMenu())
-        {
-            if (onShowChordScaleMenu)
-                onShowChordScaleMenu (event.getScreenPosition());
-        }
-        else if (onCycleChordScale)
-        {
-            onCycleChordScale();
-        }
+        if (onShowChordScaleMenu)
+            onShowChordScaleMenu (event.getScreenPosition());
         return;
     }
     if (chordSetBounds.contains (pos))
@@ -362,6 +361,10 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
         dragTarget = DragTarget::Instrument;
     else if (rpbBounds.contains (pos))
         dragTarget = DragTarget::Rpb;
+    else if (chordRootBounds.contains (pos))
+        dragTarget = DragTarget::ChordRoot;
+    else if (chordScaleBounds.contains (pos))
+        dragTarget = DragTarget::ChordScale;
 
     if (dragTarget != DragTarget::None)
         repaint();
@@ -400,6 +403,12 @@ void ToolbarComponent::mouseDrag (const juce::MouseEvent& event)
         case DragTarget::Rpb:
             if (onRpbDrag) onRpbDrag (steps);
             break;
+        case DragTarget::ChordRoot:
+            if (onChordRootDrag) onChordRootDrag (steps);
+            break;
+        case DragTarget::ChordScale:
+            if (onChordScaleDrag) onChordScaleDrag (steps);
+            break;
         case DragTarget::None: break;
     }
 }
@@ -421,8 +430,24 @@ void ToolbarComponent::mouseDoubleClick (const juce::MouseEvent& event)
 {
     auto pos = event.getPosition();
 
-    if (lengthBounds.contains (pos) && onPatternLengthClick)
+    if (patSelectorBounds.contains (pos) && onPatternSelectorDoubleClick)
+        onPatternSelectorDoubleClick();
+    else if (lengthBounds.contains (pos) && onPatternLengthClick)
         onPatternLengthClick();
+    else if (instrumentBounds.contains (pos) && onInstrumentDoubleClick)
+        onInstrumentDoubleClick();
+    else if (octaveBounds.contains (pos) && onOctaveDoubleClick)
+        onOctaveDoubleClick();
+    else if (chordRootBounds.contains (pos) && onChordRootDoubleClick)
+        onChordRootDoubleClick();
+    else if (chordScaleBounds.contains (pos) && onChordScaleDoubleClick)
+        onChordScaleDoubleClick();
+    else if (stepBounds.contains (pos) && onStepDoubleClick)
+        onStepDoubleClick();
+    else if (bpmBounds.contains (pos) && onBpmDoubleClick)
+        onBpmDoubleClick();
+    else if (rpbBounds.contains (pos) && onRpbDoubleClick)
+        onRpbDoubleClick();
     else if (patNameBounds.contains (pos) && onPatternNameDoubleClick)
         onPatternNameDoubleClick();
 }
@@ -430,13 +455,40 @@ void ToolbarComponent::mouseDoubleClick (const juce::MouseEvent& event)
 void ToolbarComponent::mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel)
 {
     auto pos = event.getPosition();
+    if (wheel.deltaY == 0.0f)
+        return;
+
+    const int steps = wheel.deltaY > 0.0f ? 1 : -1;
+
     if (patSelectorBounds.contains (pos))
     {
-        if (wheel.deltaY > 0 && onNextPattern)
+        if (steps > 0 && onNextPattern)
             onNextPattern();
-        else if (wheel.deltaY < 0 && onPrevPattern)
+        else if (steps < 0 && onPrevPattern)
             onPrevPattern();
+        return;
     }
+
+    if (lengthBounds.contains (pos) && onLengthDrag)
+        onLengthDrag (steps);
+    else if (instrumentBounds.contains (pos) && onInstrumentDrag)
+        onInstrumentDrag (steps);
+    else if (octaveBounds.contains (pos) && onOctaveDrag)
+        onOctaveDrag (steps);
+    else if (chordRootBounds.contains (pos) && onChordRootDrag)
+        onChordRootDrag (steps);
+    else if (chordScaleBounds.contains (pos) && onChordScaleDrag)
+        onChordScaleDrag (steps);
+    else if (stepBounds.contains (pos) && onStepDrag)
+        onStepDrag (steps);
+    else if (bpmBounds.contains (pos) && onBpmDrag)
+    {
+        onBpmDrag (static_cast<double> (steps));
+        if (onBpmDragEnd)
+            onBpmDragEnd();
+    }
+    else if (rpbBounds.contains (pos) && onRpbDrag)
+        onRpbDrag (steps);
 }
 
 void ToolbarComponent::setPatternInfo (int current, int total, const juce::String& name)

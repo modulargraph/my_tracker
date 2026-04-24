@@ -271,6 +271,7 @@ private:
     std::unique_ptr<te::Edit> edit;
     SimpleSampler sampler;
     std::unique_ptr<PluginCatalogService> pluginCatalog;
+    double projectBpm = 120.0;
     int rowsPerBeat = 4;
     std::array<int, kNumTracks + 3> currentTrackInstrument {};
 

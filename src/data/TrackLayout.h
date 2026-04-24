@@ -324,6 +324,46 @@ public:
         setTrackLaneCount (trackLaneCount - 1);
     }
 
+    bool removeTrackLaneAtVisual (int visualIndex)
+    {
+        if (trackLaneCount <= 1 || visualIndex < 0 || visualIndex >= trackLaneCount)
+            return false;
+
+        const int removedPhysicalTrack = visualOrder[static_cast<size_t> (visualIndex)];
+        auto candidateOrder = visualOrder;
+        for (int i = visualIndex; i < trackLaneCount - 1; ++i)
+            candidateOrder[static_cast<size_t> (i)] = candidateOrder[static_cast<size_t> (i + 1)];
+        candidateOrder[static_cast<size_t> (trackLaneCount - 1)] = removedPhysicalTrack;
+
+        auto candidateGroups = groups;
+        for (auto& group : candidateGroups)
+        {
+            group.trackIndices.erase (std::remove (group.trackIndices.begin(),
+                                                   group.trackIndices.end(),
+                                                   removedPhysicalTrack),
+                                      group.trackIndices.end());
+        }
+        candidateGroups.erase (std::remove_if (candidateGroups.begin(), candidateGroups.end(),
+                                               [] (const TrackGroup& group)
+                                               {
+                                                   return group.trackIndices.empty();
+                                               }),
+                               candidateGroups.end());
+
+        auto previousGroups = groups;
+        groups = candidateGroups;
+        if (! groupsAreConsecutiveInOrder (candidateOrder))
+        {
+            groups = std::move (previousGroups);
+            return false;
+        }
+
+        visualOrder = candidateOrder;
+        --trackLaneCount;
+        normalizeGroups();
+        return true;
+    }
+
     bool setVisualOrder (const std::array<int, kNumTracks>& order)
     {
         if (! isValidVisualOrder (order))

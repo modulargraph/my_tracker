@@ -40,6 +40,7 @@ struct StampSlot
 constexpr float kTrackpadRecordMinValue = 0.02f;
 constexpr float kTrackpadRecordMaxValue = 0.98f;
 constexpr int kControlAreaPadding = 4;
+constexpr const char* kAutomationPresetTypeComboId = "automationPresetTypeDropdown";
 
 juce::String formatStepHex (int row)
 {
@@ -247,11 +248,6 @@ PluginAutomationComponent::PluginAutomationComponent (TrackerLookAndFeel& lnf)
     parameterSearchBox.setInputRestrictions (64);
     parameterSearchBox.setFont (lnf.getMonoFont (10.0f));
     parameterSearchBox.setTextToShowWhenEmpty ("search", lnf.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.35f));
-    parameterSearchBox.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff15151a));
-    parameterSearchBox.setColour (juce::TextEditor::textColourId, lnf.findColour (TrackerLookAndFeel::textColourId));
-    parameterSearchBox.setColour (juce::TextEditor::outlineColourId, juce::Colour (0x55ffffff));
-    parameterSearchBox.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colour (0xff44aaff));
-    parameterSearchBox.setColour (juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
     parameterSearchBox.onTextChange = [this] { parameterFilterChanged(); };
     addAndMakeVisible (parameterSearchBox);
 
@@ -307,6 +303,7 @@ PluginAutomationComponent::PluginAutomationComponent (TrackerLookAndFeel& lnf)
     presetTypeDropdown.addItem ("Rhythm", 2);
     presetTypeDropdown.addItem ("Shapes", 3);
     presetTypeDropdown.addItem ("Stamps", 4);
+    presetTypeDropdown.setComponentID (kAutomationPresetTypeComboId);
     presetTypeDropdown.setSelectedId (1, juce::dontSendNotification);
     presetTypeDropdown.onChange = [this] { presetTypeChanged(); };
     addAndMakeVisible (presetTypeDropdown);
@@ -323,9 +320,9 @@ PluginAutomationComponent::PluginAutomationComponent (TrackerLookAndFeel& lnf)
     // Toggle buttons
     auto setupButton = [&] (juce::TextButton& btn)
     {
-        btn.setColour (juce::TextButton::textColourOffId, buttonColour);
-        btn.setColour (juce::TextButton::textColourOnId, juce::Colour (0xff1e1e2e));
-        btn.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff44aaff));
+        auto buttonOn = lnf.findColour (TrackerLookAndFeel::fxColourId);
+        btn.setColour (juce::TextButton::buttonOnColourId, buttonOn);
+        btn.setColour (juce::TextButton::textColourOnId, buttonOn.contrasting());
         btn.setClickingTogglesState (true);
         addAndMakeVisible (btn);
     };
@@ -334,15 +331,15 @@ PluginAutomationComponent::PluginAutomationComponent (TrackerLookAndFeel& lnf)
     setupButton (drawButton);
     setupButton (overlayButton);
 
-    recButton.setColour (juce::TextButton::textColourOffId, buttonColour);
-    recButton.setColour (juce::TextButton::textColourOnId, juce::Colour (0xff1e1e2e));
-    recButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffff4444));
+    auto recordButtonOn = lnf.findColour (TrackerLookAndFeel::muteColourId);
+    recButton.setColour (juce::TextButton::buttonOnColourId, recordButtonOn);
+    recButton.setColour (juce::TextButton::textColourOnId, recordButtonOn.contrasting());
     recButton.setClickingTogglesState (true);
     addAndMakeVisible (recButton);
 
-    trackpadButton.setColour (juce::TextButton::textColourOffId, buttonColour);
-    trackpadButton.setColour (juce::TextButton::textColourOnId, juce::Colour (0xff1e1e2e));
-    trackpadButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffffcc44));
+    auto trackpadButtonOn = lnf.findColour (TrackerLookAndFeel::soloColourId);
+    trackpadButton.setColour (juce::TextButton::buttonOnColourId, trackpadButtonOn);
+    trackpadButton.setColour (juce::TextButton::textColourOnId, trackpadButtonOn.contrasting());
     trackpadButton.setClickingTogglesState (false);
     addAndMakeVisible (trackpadButton);
 

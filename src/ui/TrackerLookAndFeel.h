@@ -40,6 +40,8 @@ public:
 
     juce::Font getMonoFont (float height) const;
     juce::Font getUIFont (float height, int styleFlags = juce::Font::plain) const;
+    juce::PopupMenu::Options getOptionsForComboBoxPopupMenu (juce::ComboBox& box,
+                                                             juce::Label& label) override;
 
 private:
     int colourSchemeIndex = 0;

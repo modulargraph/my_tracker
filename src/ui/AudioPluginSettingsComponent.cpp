@@ -1,5 +1,15 @@
 #include "AudioPluginSettingsComponent.h"
 
+namespace
+{
+juce::Colour getSettingsSurfaceColour (TrackerLookAndFeel& lookAndFeel, float amount)
+{
+    auto background = lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
+    return background.getPerceivedBrightness() >= 0.5f ? background.darker (amount)
+                                                       : background.brighter (amount);
+}
+}
+
 AudioPluginSettingsComponent::AudioPluginSettingsComponent (te::Engine& e,
                                                             PluginCatalogService& catalog,
                                                             TrackerLookAndFeel& lnf)
@@ -7,10 +17,15 @@ AudioPluginSettingsComponent::AudioPluginSettingsComponent (te::Engine& e,
       catalogService (catalog),
       lookAndFeel (lnf)
 {
+    auto textColour = lnf.findColour (TrackerLookAndFeel::textColourId);
+    auto accentColour = lnf.findColour (TrackerLookAndFeel::fxColourId);
+    auto listBackgroundColour = getSettingsSurfaceColour (lnf, 0.06f);
+    auto listOutlineColour = lnf.findColour (TrackerLookAndFeel::gridLineColourId);
+
     // --- Audio device section ---
     audioSectionLabel.setText ("Audio Output", juce::dontSendNotification);
     audioSectionLabel.setFont (lnf.getMonoFont (14.0f));
-    audioSectionLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcba6f7));
+    audioSectionLabel.setColour (juce::Label::textColourId, accentColour);
     addAndMakeVisible (audioSectionLabel);
 
     // Create the audio device selector:
@@ -33,19 +48,19 @@ AudioPluginSettingsComponent::AudioPluginSettingsComponent (te::Engine& e,
     // --- Plugin section ---
     pluginSectionLabel.setText ("Plugin Settings", juce::dontSendNotification);
     pluginSectionLabel.setFont (lnf.getMonoFont (14.0f));
-    pluginSectionLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcba6f7));
+    pluginSectionLabel.setColour (juce::Label::textColourId, accentColour);
     addAndMakeVisible (pluginSectionLabel);
 
     // Scan paths
     scanPathsLabel.setText ("Scan Paths:", juce::dontSendNotification);
     scanPathsLabel.setFont (lnf.getMonoFont (12.0f));
-    scanPathsLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
+    scanPathsLabel.setColour (juce::Label::textColourId, textColour);
     addAndMakeVisible (scanPathsLabel);
 
     scanPathsList.setModel (&scanPathListModel);
     scanPathsList.setRowHeight (20);
-    scanPathsList.setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff2a2a3a));
-    scanPathsList.setColour (juce::ListBox::outlineColourId, juce::Colour (0xff444466));
+    scanPathsList.setColour (juce::ListBox::backgroundColourId, listBackgroundColour);
+    scanPathsList.setColour (juce::ListBox::outlineColourId, listOutlineColour);
     addAndMakeVisible (scanPathsList);
 
     addAndMakeVisible (addPathButton);
@@ -54,7 +69,7 @@ AudioPluginSettingsComponent::AudioPluginSettingsComponent (te::Engine& e,
 
     scanStatusLabel.setText ({}, juce::dontSendNotification);
     scanStatusLabel.setFont (lnf.getMonoFont (12.0f));
-    scanStatusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffaaaaaa));
+    scanStatusLabel.setColour (juce::Label::textColourId, textColour.withAlpha (0.72f));
     addAndMakeVisible (scanStatusLabel);
 
     addPathButton.onClick = [this]
@@ -96,13 +111,13 @@ AudioPluginSettingsComponent::AudioPluginSettingsComponent (te::Engine& e,
     // Discovered plugins table
     discoveredPluginsLabel.setText ("Discovered Plugins:", juce::dontSendNotification);
     discoveredPluginsLabel.setFont (lnf.getMonoFont (12.0f));
-    discoveredPluginsLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
+    discoveredPluginsLabel.setColour (juce::Label::textColourId, textColour);
     addAndMakeVisible (discoveredPluginsLabel);
 
     pluginTable.setModel (&pluginTableModel);
     pluginTable.setRowHeight (20);
-    pluginTable.setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff2a2a3a));
-    pluginTable.setColour (juce::ListBox::outlineColourId, juce::Colour (0xff444466));
+    pluginTable.setColour (juce::ListBox::backgroundColourId, listBackgroundColour);
+    pluginTable.setColour (juce::ListBox::outlineColourId, listOutlineColour);
 
     auto& header = pluginTable.getHeader();
     header.addColumn ("Name",   1, 250, 100, 400);
@@ -257,12 +272,13 @@ void AudioPluginSettingsComponent::ScanPathListModel::paintListBoxItem (
     if (rowNumber < 0 || rowNumber >= owner.scanPaths.size())
         return;
 
+    auto rowColour = getSettingsSurfaceColour (owner.lookAndFeel, 0.06f);
     if (rowIsSelected)
-        g.fillAll (juce::Colour (0xff444466));
+        g.fillAll (owner.lookAndFeel.findColour (TrackerLookAndFeel::selectionColourId));
     else
-        g.fillAll (rowNumber % 2 == 0 ? juce::Colour (0xff2a2a3a) : juce::Colour (0xff252535));
+        g.fillAll (rowNumber % 2 == 0 ? rowColour : rowColour.contrasting (0.03f));
 
-    g.setColour (juce::Colour (0xffcccccc));
+    g.setColour (owner.lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
     g.setFont (owner.lookAndFeel.getMonoFont (12.0f));
     g.drawText (owner.scanPaths[rowNumber], 6, 0, width - 12, height,
                 juce::Justification::centredLeft);
@@ -280,10 +296,11 @@ void AudioPluginSettingsComponent::ScanPathListModel::listBoxItemClicked (int, c
 void AudioPluginSettingsComponent::PluginTableModel::paintRowBackground (
     juce::Graphics& g, int rowNumber, int /*width*/, int /*height*/, bool rowIsSelected)
 {
+    auto rowColour = getSettingsSurfaceColour (owner.lookAndFeel, 0.06f);
     if (rowIsSelected)
-        g.fillAll (juce::Colour (0xff444466));
+        g.fillAll (owner.lookAndFeel.findColour (TrackerLookAndFeel::selectionColourId));
     else
-        g.fillAll (rowNumber % 2 == 0 ? juce::Colour (0xff2a2a3a) : juce::Colour (0xff252535));
+        g.fillAll (rowNumber % 2 == 0 ? rowColour : rowColour.contrasting (0.03f));
 }
 
 void AudioPluginSettingsComponent::PluginTableModel::paintCell (
@@ -294,7 +311,7 @@ void AudioPluginSettingsComponent::PluginTableModel::paintCell (
 
     auto& desc = plugins.getReference (rowNumber);
 
-    g.setColour (juce::Colour (0xffcccccc));
+    g.setColour (owner.lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
     g.setFont (owner.lookAndFeel.getMonoFont (12.0f));
 
     juce::String text;

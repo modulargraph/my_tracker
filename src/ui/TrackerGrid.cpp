@@ -22,6 +22,35 @@ bool isStopOrKillNote (int note)
 {
     return note == 254 || note == 255;
 }
+
+constexpr int kHeaderRemoveButtonSize = 10;
+constexpr int kHeaderRemoveButtonInset = 3;
+
+juce::Rectangle<int> getTrackHeaderRemoveButtonBounds (int trackX, int headerY)
+{
+    return { trackX + kHeaderRemoveButtonInset,
+             headerY + (TrackerGrid::kHeaderHeight - kHeaderRemoveButtonSize) / 2,
+             kHeaderRemoveButtonSize,
+             kHeaderRemoveButtonSize };
+}
+
+juce::Rectangle<int> getNoteLaneRemoveButtonBounds (int trackX, int headerY, int noteLane, int noteLaneWidth)
+{
+    return { trackX + TrackerGrid::kCellPadding + (noteLane + 1) * noteLaneWidth - kHeaderRemoveButtonSize - 1,
+             headerY + TrackerGrid::kHeaderHeight - kHeaderRemoveButtonSize - 2,
+             kHeaderRemoveButtonSize,
+             kHeaderRemoveButtonSize };
+}
+
+void drawHeaderRemoveButton (juce::Graphics& g, TrackerLookAndFeel& lookAndFeel,
+                             juce::Rectangle<int> bounds, bool enabled)
+{
+    auto textColour = lookAndFeel.findColour (TrackerLookAndFeel::textColourId)
+                         .withAlpha (enabled ? 0.62f : 0.22f);
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.setColour (textColour);
+    g.drawText ("x", bounds, juce::Justification::centred);
+}
 }
 
 TrackerGrid::TrackerGrid (PatternData& patternData, TrackerLookAndFeel& lnf, TrackLayout& layout)
@@ -266,8 +295,14 @@ void TrackerGrid::drawHeaders (juce::Graphics& g)
         else
             g.setColour (textColour);
 
-        // Draw track name (leave room for note mode indicator)
-        g.drawText (text, xPos, headerY, cellW - 16, kHeaderHeight, juce::Justification::centred);
+        const bool canRemoveTrack = trackLayout.getTrackLaneCount() > 1;
+        const auto trackRemoveBounds = getTrackHeaderRemoveButtonBounds (xPos, headerY);
+        const int textLeftInset = canRemoveTrack ? trackRemoveBounds.getRight() - xPos + 1 : 0;
+
+        // Draw track name (leave room for remove affordance and note mode indicator)
+        g.drawText (text, xPos + textLeftInset, headerY,
+                    juce::jmax (0, cellW - textLeftInset - 16), kHeaderHeight,
+                    juce::Justification::centred);
 
         // Draw note mode toggle (K = kill, R = release) on right edge
         auto noteMode = trackLayout.getTrackNoteMode (physTrack);
@@ -278,6 +313,19 @@ void TrackerGrid::drawHeaders (juce::Graphics& g)
         g.setFont (lookAndFeel.getMonoFont (9.0f));
         g.setColour (modeColour);
         g.drawText (modeChar, xPos + cellW - 16, headerY, 14, kHeaderHeight, juce::Justification::centred);
+
+        drawHeaderRemoveButton (g, lookAndFeel, trackRemoveBounds, canRemoveTrack);
+
+        const int noteLaneCount = trackLayout.getTrackNoteLaneCount (physTrack);
+        if (noteLaneCount > 1)
+        {
+            const int noteLaneWidth = getVisibleNoteLaneWidth();
+            for (int lane = 0; lane < noteLaneCount; ++lane)
+                drawHeaderRemoveButton (g, lookAndFeel,
+                                        getNoteLaneRemoveButtonBounds (xPos, headerY, lane, noteLaneWidth),
+                                        true);
+        }
+
         g.setFont (lookAndFeel.getMonoFont (12.0f));
 
         xPos += cellW;
@@ -319,7 +367,7 @@ void TrackerGrid::drawRowNumbers (juce::Graphics& g)
         // More prominent bar marker every 4 beats.
         if (row % barRows == 0)
         {
-            g.setColour (juce::Colour (0xff2a2a2a));
+            g.setColour (beatColour.contrasting (0.08f));
             g.fillRect (0, y, kRowNumberWidth, kRowHeight);
         }
 
@@ -373,7 +421,7 @@ void TrackerGrid::drawCells (juce::Graphics& g)
         // Bar marker line every 4 beats.
         if (row % barRows == 0 && row > 0)
         {
-            g.setColour (juce::Colour (0xff444444));
+            g.setColour (gridColour.contrasting (0.12f));
             g.drawHorizontalLine (y, static_cast<float> (kRowNumberWidth),
                                   static_cast<float> (kRowNumberWidth + totalVisibleWidth));
         }
@@ -433,6 +481,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
     g.setFont (lookAndFeel.getMonoFont (12.0f));
 
     int textX = x + kCellPadding;
+    const auto cursorTextColour = lookAndFeel.findColour (TrackerLookAndFeel::cursorCellColourId).contrasting();
 
     // Note lane sub-columns (repeated per note lane)
     for (int nl = 0; nl < noteLaneCount; ++nl)
@@ -447,7 +496,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
 
         // Note sub-column
         juce::String noteStr = noteSlot.hasNote() ? noteToString (noteSlot.note) : "---";
-        auto noteColour = isCursor ? juce::Colours::white
+        auto noteColour = isCursor ? cursorTextColour
                                    : (noteSlot.hasNote() && hasLaneColour
                                           ? laneColour
                                           : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
@@ -460,7 +509,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
 
         // Instrument sub-column
         juce::String instStr = noteSlot.instrument >= 0 ? juce::String::formatted ("%02X", noteSlot.instrument) : "..";
-        auto instColour = isCursor ? juce::Colours::white
+        auto instColour = isCursor ? cursorTextColour
                                    : (noteSlot.instrument >= 0 && hasLaneColour
                                           ? laneColour
                                           : lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId));
@@ -473,7 +522,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
         if (velocityLanesVisible)
         {
             juce::String volStr = noteSlot.volume >= 0 ? juce::String::formatted ("%02X", noteSlot.volume) : "..";
-            auto volColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
+            auto volColour = isCursor ? cursorTextColour : lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
             if (isCursor && cursorSubColumn == SubColumn::Volume && cursorNoteLane == nl)
                 drawCursorSubColumnHighlight (g, textX - 1, y, kVolWidth + 2);
             g.setColour (volColour);
@@ -483,7 +532,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
     }
 
     // FX sub-columns (one or more lanes)
-    auto fxColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto fxColour = isCursor ? cursorTextColour : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
 
     for (int fxLane = 0; fxLane < fxLaneCount; ++fxLane)
     {
@@ -511,7 +560,9 @@ void TrackerGrid::drawMasterCell (juce::Graphics& g, const Pattern& pat, int row
                         juce::Colours::transparentBlack, false);
 
     g.setFont (lookAndFeel.getMonoFont (12.0f));
-    auto fxColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto fxColour = isCursor
+                        ? lookAndFeel.findColour (TrackerLookAndFeel::cursorCellColourId).contrasting()
+                        : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
 
     int textX = x + kCellPadding;
     int laneCount = trackLayout.getMasterFxLaneCount();
@@ -652,7 +703,7 @@ juce::Colour TrackerGrid::getInstrumentTextColour (int instrument) const
 
 void TrackerGrid::drawCursorSubColumnHighlight (juce::Graphics& g, int x, int y, int width) const
 {
-    g.setColour (juce::Colour (0xff3a5a7a));
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::cursorCellColourId).contrasting (0.16f));
     g.fillRect (x, y, width, kRowHeight);
 }
 
@@ -1027,10 +1078,36 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
             return;
         }
 
-        // Click on note mode toggle (rightmost 16px of track header, below group header)
+        // Header remove affordances and note mode toggle live below the group header.
         int headerY = trackLayout.hasGroups() ? kGroupHeaderHeight : 0;
         if (event.y >= headerY && ! event.mods.isPopupMenu())
         {
+            const int trackX = kRowNumberWidth + cellStartX;
+            if (trackLayout.getTrackLaneCount() > 1
+                && getTrackHeaderRemoveButtonBounds (trackX, headerY).contains (event.getPosition()))
+            {
+                if (onTrackRemoveRequested)
+                    onTrackRemoveRequested (physTrack);
+                return;
+            }
+
+            const int noteLaneCount = trackLayout.getTrackNoteLaneCount (physTrack);
+            if (noteLaneCount > 1)
+            {
+                const int noteLaneWidth = getVisibleNoteLaneWidth();
+                for (int lane = 0; lane < noteLaneCount; ++lane)
+                {
+                    if (getNoteLaneRemoveButtonBounds (trackX, headerY, lane, noteLaneWidth)
+                            .contains (event.getPosition()))
+                    {
+                        if (onNoteLaneRemoveRequested)
+                            onNoteLaneRemoveRequested (physTrack, lane);
+                        return;
+                    }
+                }
+            }
+
+            // Click on note mode toggle (rightmost 16px of track header)
             if (pixelInCell >= cellW - 16)
             {
                 trackLayout.toggleTrackNoteMode (physTrack);
@@ -1669,7 +1746,26 @@ void TrackerGrid::mouseDoubleClick (const juce::MouseEvent& event)
         int trackPixel = event.x - kRowNumberWidth;
         int visualIndex = visualTrackAtPixel (trackPixel);
         if (visualIndex < getRegularVisualColumnCount() && onTrackHeaderDoubleClick)
-            onTrackHeaderDoubleClick (visualToTrackIndex (visualIndex), event.getScreenPosition());
+        {
+            const int headerY = trackLayout.hasGroups() ? kGroupHeaderHeight : 0;
+            const int trackX = kRowNumberWidth + getTrackXOffset (visualIndex);
+            const int physTrack = visualToTrackIndex (visualIndex);
+            if (event.y >= headerY
+                && getTrackHeaderRemoveButtonBounds (trackX, headerY).contains (event.getPosition()))
+                return;
+
+            const int noteLaneCount = trackLayout.getTrackNoteLaneCount (physTrack);
+            if (event.y >= headerY && noteLaneCount > 1)
+            {
+                const int noteLaneWidth = getVisibleNoteLaneWidth();
+                for (int lane = 0; lane < noteLaneCount; ++lane)
+                    if (getNoteLaneRemoveButtonBounds (trackX, headerY, lane, noteLaneWidth)
+                            .contains (event.getPosition()))
+                        return;
+            }
+
+            onTrackHeaderDoubleClick (physTrack, event.getScreenPosition());
+        }
     }
 }
 

@@ -97,6 +97,10 @@ public:
     std::function<void (int track, const juce::File& file)> onFileDroppedOnTrack;
     // Callback for note mode toggle (K/R) on track header
     std::function<void (int track)> onNoteModeToggled;
+    // Callback for the track header remove affordance
+    std::function<void (int track)> onTrackRemoveRequested;
+    // Callback for the note-lane header remove affordance
+    std::function<void (int track, int noteLane)> onNoteLaneRemoveRequested;
     // Callback for validating note entry (returns empty string if allowed, error message if blocked)
     std::function<juce::String (int instrumentIndex, int trackIndex)> onValidateNoteEntry;
     // Callback for chord-entry note keys. Return true when the key was handled.

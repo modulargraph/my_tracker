@@ -40,7 +40,15 @@ public:
     std::function<void()> onAddPattern;
     std::function<void()> onDuplicatePattern;
     std::function<void()> onRemovePattern;
+    std::function<void()> onPatternSelectorDoubleClick;
     std::function<void()> onPatternLengthClick;
+    std::function<void()> onInstrumentDoubleClick;
+    std::function<void()> onOctaveDoubleClick;
+    std::function<void()> onStepDoubleClick;
+    std::function<void()> onBpmDoubleClick;
+    std::function<void()> onRpbDoubleClick;
+    std::function<void()> onChordRootDoubleClick;
+    std::function<void()> onChordScaleDoubleClick;
     std::function<void (int delta)> onLengthDrag;
     std::function<void (double delta)> onBpmDrag;
     std::function<void()> onBpmDragEnd;
@@ -60,6 +68,8 @@ public:
     std::function<void()> onCycleChordSet;
     std::function<void()> onCycleChordRoot;
     std::function<void()> onCycleChordScale;
+    std::function<void (int delta)> onChordRootDrag;
+    std::function<void (int delta)> onChordScaleDrag;
     std::function<void (juce::Point<int> screenPos)> onShowChordRootMenu;
     std::function<void (juce::Point<int> screenPos)> onShowChordScaleMenu;
     std::function<void (int delta)> onRpbDrag;
@@ -99,7 +109,7 @@ private:
     juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, fxRefBounds, chordRootBounds, chordScaleBounds, chordEntryBounds, chordSetBounds, rpbBounds;
 
     // Drag state
-    enum class DragTarget { None, Length, Bpm, Step, Octave, Instrument, Rpb };
+    enum class DragTarget { None, Length, Bpm, Step, Octave, Instrument, Rpb, ChordRoot, ChordScale };
     DragTarget dragTarget = DragTarget::None;
     int dragStartY = 0;
     int dragAccumulated = 0;

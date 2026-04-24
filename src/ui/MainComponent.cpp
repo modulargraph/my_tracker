@@ -122,6 +122,80 @@ bool remapInsertPluginIdAfterSlotRemoved (juce::String& pluginId, int trackIndex
     return false;
 }
 
+juce::Colour getThemedButtonColour (TrackerLookAndFeel& lookAndFeel)
+{
+    auto header = lookAndFeel.findColour (TrackerLookAndFeel::headerColourId);
+    return header.getPerceivedBrightness() >= 0.5f ? header.darker (0.08f)
+                                                   : header.brighter (0.10f);
+}
+
+class PatternDataAndTrackLayoutEditAction : public juce::UndoableAction
+{
+public:
+    PatternDataAndTrackLayoutEditAction (PatternData& patternDataRef,
+                                         TrackLayout& trackLayoutRef,
+                                         PatternData beforePatternData,
+                                         PatternData afterPatternData,
+                                         TrackLayout::Snapshot beforeTrackLayout,
+                                         TrackLayout::Snapshot afterTrackLayout)
+        : patternData (patternDataRef),
+          trackLayout (trackLayoutRef),
+          beforeData (std::move (beforePatternData)),
+          afterData (std::move (afterPatternData)),
+          beforeLayout (std::move (beforeTrackLayout)),
+          afterLayout (std::move (afterTrackLayout))
+    {
+    }
+
+    bool perform() override
+    {
+        patternData = afterData;
+        trackLayout.applySnapshot (afterLayout);
+        return true;
+    }
+
+    bool undo() override
+    {
+        patternData = beforeData;
+        trackLayout.applySnapshot (beforeLayout);
+        return true;
+    }
+
+private:
+    PatternData& patternData;
+    TrackLayout& trackLayout;
+    PatternData beforeData;
+    PatternData afterData;
+    TrackLayout::Snapshot beforeLayout;
+    TrackLayout::Snapshot afterLayout;
+};
+
+Cell makeCellWithRemovedNoteLane (const Cell& source, int removedLane, int visibleLaneCount)
+{
+    visibleLaneCount = juce::jmax (1, visibleLaneCount);
+
+    std::vector<NoteSlot> remainingLanes;
+    remainingLanes.reserve (static_cast<size_t> (juce::jmax (1, visibleLaneCount - 1)));
+
+    for (int lane = 0; lane < visibleLaneCount; ++lane)
+        if (lane != removedLane)
+            remainingLanes.push_back (source.getNoteLane (lane));
+
+    if (remainingLanes.empty())
+        remainingLanes.push_back ({});
+
+    auto result = source;
+    result.note = remainingLanes.front().note;
+    result.instrument = remainingLanes.front().instrument;
+    result.volume = remainingLanes.front().volume;
+    result.extraNoteLanes.clear();
+
+    for (size_t i = 1; i < remainingLanes.size(); ++i)
+        result.extraNoteLanes.push_back (remainingLanes[i]);
+
+    return result;
+}
+
 int getAutomationParameterPriority (const juce::String& name)
 {
     auto lo = name.toLowerCase();
@@ -452,6 +526,108 @@ juce::String getChordEntryScaleName (int scale)
 {
     return scale == 1 ? "Minor" : "Major";
 }
+
+int positiveModulo (int value, int modulo)
+{
+    auto result = value % modulo;
+    return result < 0 ? result + modulo : result;
+}
+
+int parseInstrumentText (juce::String text, int fallback)
+{
+    auto cleaned = text.trim().toUpperCase().removeCharacters (" \t");
+    if (cleaned.startsWith ("INST:"))
+        cleaned = cleaned.substring (5);
+
+    if (cleaned.startsWith ("0X"))
+        return cleaned.substring (2).getHexValue32();
+
+    bool hasHexLetter = false;
+    for (int i = 0; i < cleaned.length(); ++i)
+    {
+        const auto c = cleaned[i];
+        if (c >= 'A' && c <= 'F')
+            hasHexLetter = true;
+    }
+
+    if (cleaned.isEmpty())
+        return fallback;
+
+    return (hasHexLetter || cleaned.length() <= 2) ? cleaned.getHexValue32()
+                                                   : cleaned.getIntValue();
+}
+
+int parseChordRootText (juce::String text, int fallback)
+{
+    auto cleaned = text.trim().toUpperCase().removeCharacters (" \t");
+    if (cleaned.startsWith ("KEY:"))
+        cleaned = cleaned.substring (4);
+
+    struct RootAlias
+    {
+        const char* text;
+        int root;
+    };
+
+    static constexpr RootAlias aliases[] =
+    {
+        { "C", 0 },  { "C#", 1 }, { "DB", 1 }, { "D", 2 },
+        { "D#", 3 }, { "EB", 3 }, { "E", 4 },  { "F", 5 },
+        { "F#", 6 }, { "GB", 6 }, { "G", 7 },  { "G#", 8 },
+        { "AB", 8 }, { "A", 9 },  { "A#", 10 }, { "BB", 10 },
+        { "B", 11 }
+    };
+
+    for (const auto& alias : aliases)
+        if (cleaned == alias.text)
+            return alias.root;
+
+    auto digits = cleaned.retainCharacters ("0123456789");
+    return digits.isNotEmpty() ? juce::jlimit (0, 11, digits.getIntValue()) : fallback;
+}
+
+int parseChordScaleText (juce::String text, int fallback)
+{
+    auto cleaned = text.trim().toLowerCase();
+    if (cleaned.startsWith ("scale:"))
+        cleaned = cleaned.substring (6).trim();
+
+    if (cleaned.startsWith ("min") || cleaned.contains ("minor"))
+        return 1;
+    if (cleaned.startsWith ("maj") || cleaned.contains ("major"))
+        return 0;
+
+    auto digits = cleaned.retainCharacters ("0123456789");
+    if (digits.isNotEmpty())
+        return juce::jlimit (0, 1, digits.getIntValue());
+
+    return fallback;
+}
+
+void showTextEditorDialog (const juce::String& title,
+                           const juce::String& message,
+                           const juce::String& initialValue,
+                           std::function<void (const juce::String&)> onCommit)
+{
+    auto* aw = new juce::AlertWindow (title, message, juce::AlertWindow::NoIcon);
+    aw->addTextEditor ("value", initialValue);
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    aw->enterModalState (true, juce::ModalCallbackFunction::create (
+        [aw, commitCallback = std::move (onCommit)] (int result) mutable
+        {
+            if (result == 1 && commitCallback)
+                commitCallback (aw->getTextEditorContents ("value"));
+            delete aw;
+        }), true);
+
+    if (auto* editor = aw->getTextEditor ("value"))
+    {
+        editor->grabKeyboardFocus();
+        editor->selectAll();
+    }
+}
 }
 
 MainComponent::MainComponent()
@@ -551,31 +727,12 @@ MainComponent::MainComponent()
             switchToPattern (idx - 1);
         }
     };
+    toolbar->onPatternSelectorDoubleClick = [this] { showPatternSelectorEditor(); };
     toolbar->onPatternLengthClick = [this] { showPatternLengthEditor(); };
 
     toolbar->onLengthDrag = [this] (int delta)
     {
-        if (patternData.getNumPatterns() == 0) return;
-        auto& pat = patternData.getCurrentPattern();
-        int newLen = juce::jlimit (1, 256, pat.numRows + delta);
-        pat.resize (newLen);
-        trackerGrid->setCursorPosition (
-            juce::jmin (trackerGrid->getCursorRow(), newLen - 1),
-            trackerGrid->getCursorTrack());
-
-        if (trackerEngine.isPlaying())
-        {
-            if (songMode)
-                syncArrangementToEdit();
-            else
-            {
-                trackerEngine.syncPatternToEdit (pat, getReleaseModes());
-                trackerEngine.updateLoopRangeForPatternLength (pat.numRows);
-            }
-        }
-
-        updateToolbar();
-        markDirty();
+        setCurrentPatternLength (patternData.getCurrentPattern().numRows + delta);
     };
 
     toolbar->onBpmDrag = [this] (double delta)
@@ -594,34 +751,26 @@ MainComponent::MainComponent()
 
     toolbar->onRpbDrag = [this] (int delta)
     {
-        int rpb = juce::jlimit (1, 16, trackerEngine.getRowsPerBeat() + delta);
-        trackerEngine.setRowsPerBeat (rpb);
-        trackerGrid->setRowsPerBeat (rpb);
-        if (automationPanel != nullptr)
-            automationPanel->setRowsPerBeat (rpb);
-
-        if (trackerEngine.isPlaying())
-            resyncPlaybackForCurrentMode();
-
-        updateToolbar();
-        markDirty();
+        setRowsPerBeatFromToolbar (trackerEngine.getRowsPerBeat() + delta);
     };
 
     toolbar->onStepDrag = [this] (int delta)
     {
-        trackerGrid->setEditStep (juce::jlimit (0, 16, trackerGrid->getEditStep() + delta));
-        updateStatusBar();
-        updateToolbar();
+        setEditStepFromToolbar (trackerGrid->getEditStep() + delta);
     };
 
     toolbar->onOctaveDrag = [this] (int delta)
     {
-        int oct = juce::jlimit (0, 9, trackerGrid->getOctave() + delta);
-        trackerGrid->setOctave (oct);
-        sampleEditor->setOctave (oct);
-        updateStatusBar();
-        updateToolbar();
+        setOctaveFromToolbar (trackerGrid->getOctave() + delta);
     };
+
+    toolbar->onInstrumentDoubleClick = [this] { showInstrumentEditor(); };
+    toolbar->onOctaveDoubleClick = [this] { showOctaveEditor(); };
+    toolbar->onStepDoubleClick = [this] { showEditStepEditor(); };
+    toolbar->onBpmDoubleClick = [this] { showBpmEditor(); };
+    toolbar->onRpbDoubleClick = [this] { showRowsPerBeatEditor(); };
+    toolbar->onChordRootDoubleClick = [this] { showChordEntryRootEditor(); };
+    toolbar->onChordScaleDoubleClick = [this] { showChordEntryScaleEditor(); };
 
     toolbar->onModeToggle = [this]
     {
@@ -648,11 +797,7 @@ MainComponent::MainComponent()
 
     toolbar->onInstrumentDrag = [this] (int delta)
     {
-        int inst = juce::jlimit (0, 255, trackerGrid->getCurrentInstrument() + delta);
-        trackerGrid->setCurrentInstrument (inst);
-        instrumentPanel->setSelectedInstrument (inst);
-        updateStatusBar();
-        updateToolbar();
+        setCurrentInstrumentFromToolbar (trackerGrid->getCurrentInstrument() + delta);
     };
 
     toolbar->onFollowToggle = [this]
@@ -699,6 +844,16 @@ MainComponent::MainComponent()
     toolbar->onCycleChordScale = [this]
     {
         cycleChordEntryScale();
+    };
+
+    toolbar->onChordRootDrag = [this] (int delta)
+    {
+        setChordEntryRoot (positiveModulo (chordEntrySettings.keyRoot + delta, 12));
+    };
+
+    toolbar->onChordScaleDrag = [this] (int delta)
+    {
+        setChordEntryScale (positiveModulo (chordEntrySettings.scale + delta, 2));
     };
 
     toolbar->onShowChordRootMenu = [this] (juce::Point<int> screenPos)
@@ -1374,6 +1529,16 @@ MainComponent::MainComponent()
             resyncPlaybackForCurrentMode();
     };
 
+    trackerGrid->onTrackRemoveRequested = [this] (int track)
+    {
+        removeTrackLaneFromHeader (track);
+    };
+
+    trackerGrid->onNoteLaneRemoveRequested = [this] (int track, int noteLane)
+    {
+        removeNoteLaneFromHeader (track, noteLane);
+    };
+
     // Transport change callback
     trackerEngine.onTransportChanged = [this]
     {
@@ -1713,6 +1878,7 @@ void MainComponent::applyLookAndFeelColours()
     bpmLabel.setColour (juce::Label::textColourId, textColour);
     previewVolumeLabel.setColour (juce::Label::textColourId, textColour.withAlpha (0.7f));
     uiScaleLabel.setColour (juce::Label::textColourId, textColour.withAlpha (0.7f));
+    updateAutomationPanelButton();
 
     repaint();
     for (int i = 0; i < getNumChildComponents(); ++i)
@@ -2627,6 +2793,81 @@ void MainComponent::loadSampleForCurrentTrack()
                           });
 }
 
+void MainComponent::setCurrentPatternLength (int newLength)
+{
+    if (patternData.getNumPatterns() == 0)
+        return;
+
+    auto& pat = patternData.getCurrentPattern();
+    newLength = juce::jlimit (1, 256, newLength);
+    if (newLength == pat.numRows)
+        return;
+
+    pat.resize (newLength);
+    trackerGrid->setCursorPosition (
+        juce::jmin (trackerGrid->getCursorRow(), newLength - 1),
+        trackerGrid->getCursorTrack());
+
+    if (trackerEngine.isPlaying())
+    {
+        if (songMode)
+            syncArrangementToEdit();
+        else
+        {
+            trackerEngine.syncPatternToEdit (pat, getReleaseModes());
+            trackerEngine.updateLoopRangeForPatternLength (pat.numRows);
+        }
+    }
+
+    trackerGrid->repaint();
+    updateToolbar();
+    markDirty();
+}
+
+void MainComponent::setRowsPerBeatFromToolbar (int rowsPerBeat)
+{
+    const int rpb = juce::jlimit (1, 16, rowsPerBeat);
+    if (rpb == trackerEngine.getRowsPerBeat())
+        return;
+
+    trackerEngine.setRowsPerBeat (rpb);
+    trackerGrid->setRowsPerBeat (rpb);
+    if (automationPanel != nullptr)
+        automationPanel->setRowsPerBeat (rpb);
+
+    if (trackerEngine.isPlaying())
+        resyncPlaybackForCurrentMode();
+
+    updateStatusBar();
+    updateToolbar();
+    markDirty();
+}
+
+void MainComponent::setEditStepFromToolbar (int step)
+{
+    trackerGrid->setEditStep (juce::jlimit (0, 16, step));
+    updateStatusBar();
+    updateToolbar();
+}
+
+void MainComponent::setOctaveFromToolbar (int octave)
+{
+    const int oct = juce::jlimit (0, 9, octave);
+    trackerGrid->setOctave (oct);
+    sampleEditor->setOctave (oct);
+    updateStatusBar();
+    updateToolbar();
+}
+
+void MainComponent::setCurrentInstrumentFromToolbar (int instrument)
+{
+    const int inst = juce::jlimit (0, 255, instrument);
+    trackerGrid->setCurrentInstrument (inst);
+    instrumentPanel->setSelectedInstrument (inst);
+    updateStatusBar();
+    updateToolbar();
+}
+
 void MainComponent::switchToPattern (int index)
 {
     index = juce::jlimit (0, patternData.getNumPatterns() - 1, index);
@@ -2653,6 +2894,19 @@ void MainComponent::switchToPattern (int index)
         refreshAutomationPanel();
 }
 
+void MainComponent::showPatternSelectorEditor()
+{
+    const int total = patternData.getNumPatterns();
+    showTextEditorDialog ("Pattern",
+                          "Enter pattern number (1-" + juce::String (total) + "):",
+                          juce::String (patternData.getCurrentPatternIndex() + 1),
+                          [this, total] (const juce::String& text)
+                          {
+                              const int patternNumber = juce::jlimit (1, juce::jmax (1, total), text.getIntValue());
+                              switchToPattern (patternNumber - 1);
+                          });
+}
+
 void MainComponent::showPatternLengthEditor()
 {
     auto* aw = new juce::AlertWindow ("Pattern Length", "Enter new pattern length (1-256):", juce::AlertWindow::NoIcon);
@@ -2664,29 +2918,7 @@ void MainComponent::showPatternLengthEditor()
     {
         if (result == 1)
         {
-            int newLen = aw->getTextEditorContents ("length").getIntValue();
-            newLen = juce::jlimit (1, 256, newLen);
-            auto& pat = patternData.getCurrentPattern();
-            pat.resize (newLen);
-            trackerGrid->setCursorPosition (
-                juce::jmin (trackerGrid->getCursorRow(), newLen - 1),
-                trackerGrid->getCursorTrack());
-
-            // Re-sync edit while playing.
-            if (trackerEngine.isPlaying())
-            {
-                if (songMode)
-                    syncArrangementToEdit();
-                else
-                {
-                    trackerEngine.syncPatternToEdit (pat, getReleaseModes());
-                    trackerEngine.updateLoopRangeForPatternLength (pat.numRows);
-                }
-            }
-
-            trackerGrid->repaint();
-            updateToolbar();
-            markDirty();
+            setCurrentPatternLength (aw->getTextEditorContents ("length").getIntValue());
         }
         delete aw;
     }), true);
@@ -2697,6 +2929,62 @@ void MainComponent::showPatternLengthEditor()
         lengthEditor->grabKeyboardFocus();
         lengthEditor->selectAll();
     }
+}
+
+void MainComponent::showInstrumentEditor()
+{
+    showTextEditorDialog ("Instrument",
+                          "Enter instrument (00-FF or 0-255):",
+                          juce::String::formatted ("%02X", trackerGrid->getCurrentInstrument()),
+                          [this] (const juce::String& text)
+                          {
+                              setCurrentInstrumentFromToolbar (
+                                  parseInstrumentText (text, trackerGrid->getCurrentInstrument()));
+                          });
+}
+
+void MainComponent::showOctaveEditor()
+{
+    showTextEditorDialog ("Octave",
+                          "Enter octave (0-9):",
+                          juce::String (trackerGrid->getOctave()),
+                          [this] (const juce::String& text)
+                          {
+                              setOctaveFromToolbar (text.getIntValue());
+                          });
+}
+
+void MainComponent::showEditStepEditor()
+{
+    showTextEditorDialog ("Step Interval",
+                          "Enter step interval (0-16):",
+                          juce::String (trackerGrid->getEditStep()),
+                          [this] (const juce::String& text)
+                          {
+                              setEditStepFromToolbar (text.getIntValue());
+                          });
+}
+
+void MainComponent::showBpmEditor()
+{
+    showTextEditorDialog ("BPM",
+                          "Enter BPM (20-999):",
+                          juce::String (trackerEngine.getBpm(), 1),
+                          [this] (const juce::String& text)
+                          {
+                              applyBpmChange (text.getDoubleValue(), true);
+                          });
+}
+
+void MainComponent::showRowsPerBeatEditor()
+{
+    showTextEditorDialog ("Rows Per Beat",
+                          "Enter rows per beat (1-16):",
+                          juce::String (trackerEngine.getRowsPerBeat()),
+                          [this] (const juce::String& text)
+                          {
+                              setRowsPerBeatFromToolbar (text.getIntValue());
+                          });
 }
 
 void MainComponent::showPatternNameEditor()
@@ -2847,6 +3135,18 @@ void MainComponent::showChordEntryRootMenu (juce::Point<int> screenPos)
                         });
 }
 
+void MainComponent::showChordEntryRootEditor()
+{
+    showTextEditorDialog ("Chord Root",
+                          "Enter root (C, C#, Db, or 0-11):",
+                          getChordEntryRootName (chordEntrySettings.keyRoot),
+                          [this] (const juce::String& text)
+                          {
+                              setChordEntryRoot (
+                                  parseChordRootText (text, chordEntrySettings.keyRoot));
+                          });
+}
+
 void MainComponent::setChordEntryScale (int scale)
 {
     chordEntrySettings.scale = juce::jlimit (0, 1, scale);
@@ -2874,6 +3174,18 @@ void MainComponent::showChordEntryScaleMenu (juce::Point<int> screenPos)
                             if (result == 1 || result == 2)
                                 setChordEntryScale (result - 1);
                         });
+}
+
+void MainComponent::showChordEntryScaleEditor()
+{
+    showTextEditorDialog ("Chord Scale",
+                          "Enter scale (Major or Minor):",
+                          getChordEntryScaleName (chordEntrySettings.scale),
+                          [this] (const juce::String& text)
+                          {
+                              setChordEntryScale (
+                                  parseChordScaleText (text, chordEntrySettings.scale));
+                          });
 }
 
 juce::String MainComponent::getChordEntryToolbarLabel() const
@@ -3012,6 +3324,158 @@ void MainComponent::wiggleTrackVelocities (int track, int amount)
                         false, 2200);
 }
 
+bool MainComponent::trackHasProjectData (int track) const
+{
+    if (track < 0 || track >= kNumTracks)
+        return false;
+
+    for (int patternIndex = 0; patternIndex < patternData.getNumPatterns(); ++patternIndex)
+    {
+        const auto& pat = patternData.getPattern (patternIndex);
+        for (int row = 0; row < pat.numRows; ++row)
+            if (! pat.getCell (row, track).isEmpty())
+                return true;
+
+        for (const auto& lane : pat.getAutomationData().lanes)
+            if (lane.owningTrack == track && ! lane.isEmpty())
+                return true;
+    }
+
+    return false;
+}
+
+bool MainComponent::noteLaneHasProjectData (int track, int noteLane) const
+{
+    if (track < 0 || track >= kNumTracks || noteLane < 0)
+        return false;
+
+    const int visibleLaneCount = trackLayout.getTrackNoteLaneCount (track);
+    for (int patternIndex = 0; patternIndex < patternData.getNumPatterns(); ++patternIndex)
+    {
+        const auto& pat = patternData.getPattern (patternIndex);
+        for (int row = 0; row < pat.numRows; ++row)
+        {
+            const auto& cell = pat.getCell (row, track);
+            if (! cell.getNoteLane (noteLane).isEmpty())
+                return true;
+
+            for (int lane = visibleLaneCount; lane < cell.getNumNoteLanes(); ++lane)
+                if (! cell.getNoteLane (lane).isEmpty())
+                    return true;
+        }
+    }
+
+    return false;
+}
+
+void MainComponent::removeTrackLaneFromHeader (int track)
+{
+    if (track < 0 || track >= kNumTracks || trackLayout.getTrackLaneCount() <= 1)
+        return;
+
+    const int visualIndex = trackLayout.physicalToVisual (track);
+    if (visualIndex < 0 || visualIndex >= trackLayout.getTrackLaneCount())
+        return;
+
+    const bool hasData = trackHasProjectData (track);
+    if (hasData
+        && ! juce::AlertWindow::showOkCancelBox (
+            juce::AlertWindow::WarningIcon,
+            "Remove Track",
+            "Track " + juce::String (track + 1)
+                + " contains notes, FX, or automation in this project. Remove the track and clear that data?",
+            "Remove", "Cancel"))
+        return;
+
+    auto beforeData = patternData;
+    auto beforeLayout = trackLayout.createSnapshot();
+
+    if (! trackLayout.removeTrackLaneAtVisual (visualIndex))
+    {
+        setTemporaryStatus ("Could not remove Track " + juce::String (track + 1), true, 2200);
+        return;
+    }
+
+    if (hasData)
+    {
+        for (int patternIndex = 0; patternIndex < patternData.getNumPatterns(); ++patternIndex)
+        {
+            auto& pat = patternData.getPattern (patternIndex);
+            for (int row = 0; row < pat.numRows; ++row)
+                pat.getCell (row, track).clear();
+
+            pat.getAutomationData().removeAllLanesForTrack (track);
+        }
+    }
+
+    auto afterData = patternData;
+    auto afterLayout = trackLayout.createSnapshot();
+    undoManager.perform (new PatternDataAndTrackLayoutEditAction (patternData, trackLayout,
+                                                                  std::move (beforeData),
+                                                                  std::move (afterData),
+                                                                  std::move (beforeLayout),
+                                                                  std::move (afterLayout)));
+
+    trackerGrid->setCursorPosition (trackerGrid->getCursorRow(), track);
+    trackerGrid->clearSelection();
+    trackerGrid->repaint();
+    if (mixerComponent != nullptr)
+    {
+        mixerComponent->resized();
+        mixerComponent->repaint();
+    }
+    if (trackerGrid->onPatternDataChanged)
+        trackerGrid->onPatternDataChanged();
+}
+
+void MainComponent::removeNoteLaneFromHeader (int track, int noteLane)
+{
+    if (track < 0 || track >= kNumTracks || noteLane < 0)
+        return;
+
+    const int laneCount = trackLayout.getTrackNoteLaneCount (track);
+    if (laneCount <= 1 || noteLane >= laneCount)
+        return;
+
+    const bool hasData = noteLaneHasProjectData (track, noteLane);
+    if (hasData
+        && ! juce::AlertWindow::showOkCancelBox (
+            juce::AlertWindow::WarningIcon,
+            "Remove Note Lane",
+            "Note lane " + juce::String (noteLane + 1) + " on Track " + juce::String (track + 1)
+                + " contains notes in this project. Remove the lane and clear that data?",
+            "Remove", "Cancel"))
+        return;
+
+    auto beforeData = patternData;
+    auto beforeLayout = trackLayout.createSnapshot();
+
+    for (int patternIndex = 0; patternIndex < patternData.getNumPatterns(); ++patternIndex)
+    {
+        auto& pat = patternData.getPattern (patternIndex);
+        for (int row = 0; row < pat.numRows; ++row)
+        {
+            const auto oldCell = pat.getCell (row, track);
+            pat.setCell (row, track, makeCellWithRemovedNoteLane (oldCell, noteLane, laneCount));
+        }
+    }
+
+    trackLayout.setTrackNoteLaneCount (track, laneCount - 1);
+
+    auto afterData = patternData;
+    auto afterLayout = trackLayout.createSnapshot();
+    undoManager.perform (new PatternDataAndTrackLayoutEditAction (patternData, trackLayout,
+                                                                  std::move (beforeData),
+                                                                  std::move (afterData),
+                                                                  std::move (beforeLayout),
+                                                                  std::move (afterLayout)));
+
+    trackerGrid->setCursorPosition (trackerGrid->getCursorRow(), track);
+    trackerGrid->repaint();
+    if (trackerGrid->onPatternDataChanged)
+        trackerGrid->onPatternDataChanged();
+}
+
 void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
 {
     const bool isMasterColumn = (track == TrackerGrid::kMasterLaneTrack);
@@ -3044,12 +3508,9 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                                 }
                                 else if (result == 27)
                                 {
-                                    performUndoableTrackLayoutChange ([this]
-                                    {
-                                        trackLayout.removeTrackLane();
-                                    });
-                                    trackerGrid->setCursorPosition (trackerGrid->getCursorRow(),
-                                                                    TrackerGrid::kMasterLaneTrack);
+                                    const int lastVisual = trackLayout.getTrackLaneCount() - 1;
+                                    if (lastVisual >= 0)
+                                        removeTrackLaneFromHeader (trackLayout.visualToPhysical (lastVisual));
                                 }
                                 else if (result == 24)
                                 {
@@ -3158,6 +3619,7 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
     menu.addItem (11, "Move Track Right", rangeEnd < trackLaneCount - 1);
     menu.addItem (26, "Add Track (" + juce::String (trackLaneCount) + " -> "
                      + juce::String (trackLaneCount + 1) + ")", trackLaneCount < kNumTracks);
+    menu.addItem (27, "Remove Track", trackLaneCount > 1);
 
     // Group selected tracks (if selection spans multiple tracks)
     if (trackerGrid->hasSelection)
@@ -3347,6 +3809,10 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                                     trackLayout.addTrackLane();
                                 });
                             }
+                            else if (result == 27)
+                            {
+                                removeTrackLaneFromHeader (track);
+                            }
                             else if (result == 13 && groupIdx >= 0)
                             {
                                 performUndoableTrackLayoutChange ([this, track]
@@ -3399,10 +3865,7 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                             }
                             else if (result == 23)
                             {
-                                performUndoableTrackLayoutChange ([this, track]
-                                {
-                                    trackLayout.removeNoteLane (track);
-                                });
+                                removeNoteLaneFromHeader (track, trackLayout.getTrackNoteLaneCount (track) - 1);
                             }
                         });
 }
@@ -3791,8 +4254,10 @@ void MainComponent::showHelpOverlay()
         };
 
         std::array<std::vector<Section>, 3> columns;
+        TrackerLookAndFeel& lookAndFeel;
 
-        HelpComponent()
+        HelpComponent (TrackerLookAndFeel& lnf)
+            : lookAndFeel (lnf)
         {
             // Column 1: Navigation + Notes
             columns[0] = {
@@ -3872,7 +4337,7 @@ void MainComponent::showHelpOverlay()
 
         void paint (juce::Graphics& g) override
         {
-            g.fillAll (juce::Colour (0xff1e1e2e));
+            g.fillAll (lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId));
 
             auto area = getLocalBounds().reduced (16);
             int colWidth = area.getWidth() / 3;
@@ -3890,13 +4355,13 @@ void MainComponent::showHelpOverlay()
                 for (auto& section : columns[static_cast<size_t> (c)])
                 {
                     g.setFont (titleFont);
-                    g.setColour (juce::Colour (0xffcba6f7));
+                    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::fxColourId));
                     g.drawText (section.title, colArea.getX(), y, colArea.getWidth(), 18,
                                 juce::Justification::centredLeft);
                     y += 20;
 
                     g.setFont (font);
-                    g.setColour (juce::Colour (0xffcdd6f4));
+                    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
                     for (auto& shortcut : section.shortcuts)
                     {
                         g.drawText ("  " + shortcut, colArea.getX(), y, colArea.getWidth(), 16,
@@ -3909,20 +4374,20 @@ void MainComponent::showHelpOverlay()
 
             // Footer
             g.setFont (font);
-            g.setColour (juce::Colour (0xff6c7086));
+            g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.55f));
             g.drawText ("Drag audio files onto track headers to load samples.",
                         getLocalBounds().reduced (16).removeFromBottom (20),
                         juce::Justification::centred);
         }
     };
 
-    auto* content = new HelpComponent();
+    auto* content = new HelpComponent (trackerLookAndFeel);
     content->setSize (720, 480);
 
     juce::DialogWindow::LaunchOptions opts;
     opts.content.setOwned (content);
     opts.dialogTitle = "Keyboard Shortcuts";
-    opts.dialogBackgroundColour = juce::Colour (0xff1e1e2e);
+    opts.dialogBackgroundColour = trackerLookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
     opts.escapeKeyTriggersCloseButton = true;
     opts.useNativeTitleBar = false;
     opts.resizable = false;
@@ -4732,7 +5197,7 @@ void MainComponent::showAudioPluginSettings()
     juce::DialogWindow::LaunchOptions opts;
     opts.content.setOwned (content);
     opts.dialogTitle = "Audio & Plugin Settings";
-    opts.dialogBackgroundColour = juce::Colour (0xff1e1e2e);
+    opts.dialogBackgroundColour = trackerLookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
     opts.escapeKeyTriggersCloseButton = true;
     opts.useNativeTitleBar = false;
     opts.resizable = true;
@@ -4751,13 +5216,14 @@ void MainComponent::toggleAutomationPanel()
 void MainComponent::updateAutomationPanelButton()
 {
     const auto textCol = trackerLookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+    const auto accentCol = trackerLookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
     automationPanelButton.setColour (juce::TextButton::buttonColourId,
-                                     automationPanelVisible ? juce::Colour (0xff5c8abf)
-                                                            : juce::Colour (0xff3a3a3a));
-    automationPanelButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff5c8abf));
+                                     automationPanelVisible ? accentCol
+                                                            : getThemedButtonColour (trackerLookAndFeel));
+    automationPanelButton.setColour (juce::TextButton::buttonOnColourId, accentCol);
     automationPanelButton.setColour (juce::TextButton::textColourOffId,
-                                     automationPanelVisible ? juce::Colours::white : textCol);
-    automationPanelButton.setColour (juce::TextButton::textColourOnId, juce::Colours::white);
+                                     automationPanelVisible ? accentCol.contrasting() : textCol);
+    automationPanelButton.setColour (juce::TextButton::textColourOnId, accentCol.contrasting());
     automationPanelButton.repaint();
 }
 

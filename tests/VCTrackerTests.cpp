@@ -2585,6 +2585,65 @@ bool testTrackLayoutTrackLaneCountDefaultsAndRoundTrip()
     return true;
 }
 
+bool testTrackLayoutRemoveTrackLaneAtVisual()
+{
+    TrackLayout layout;
+    layout.setTrackLaneCount (5);
+
+    if (! layout.removeTrackLaneAtVisual (1))
+    {
+        std::cerr << "removeTrackLaneAtVisual should remove an active lane\n";
+        return false;
+    }
+
+    if (layout.getTrackLaneCount() != 4)
+    {
+        std::cerr << "removeTrackLaneAtVisual should decrement track lane count\n";
+        return false;
+    }
+
+    if (layout.visualToPhysical (0) != 0
+        || layout.visualToPhysical (1) != 2
+        || layout.visualToPhysical (2) != 3
+        || layout.visualToPhysical (3) != 4
+        || layout.visualToPhysical (4) != 1)
+    {
+        std::cerr << "removeTrackLaneAtVisual should move the removed track after active lanes\n";
+        return false;
+    }
+
+    if (layout.removeTrackLaneAtVisual (4))
+    {
+        std::cerr << "removeTrackLaneAtVisual should reject inactive visual lanes\n";
+        return false;
+    }
+
+    TrackLayout grouped;
+    grouped.setTrackLaneCount (4);
+    grouped.createGroup ("Group", 0, 2);
+
+    if (! grouped.removeTrackLaneAtVisual (1))
+    {
+        std::cerr << "removeTrackLaneAtVisual should remove grouped tracks\n";
+        return false;
+    }
+
+    if (grouped.getNumGroups() != 1)
+    {
+        std::cerr << "removeTrackLaneAtVisual should keep non-empty groups\n";
+        return false;
+    }
+
+    auto [firstVisual, lastVisual] = grouped.getGroupVisualRange (0);
+    if (firstVisual != 0 || lastVisual != 1)
+    {
+        std::cerr << "removeTrackLaneAtVisual should normalize group ranges after removal\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testTrackAutoNameUsesMostCommonSampleOrPlugin()
 {
     Pattern pattern (8);
@@ -6624,6 +6683,50 @@ bool testPluginAutomationMultiPluginTrack()
     return true;
 }
 
+bool testAutomationPresetComboPopupUsesFullSize()
+{
+    TrackerLookAndFeel lnf;
+    juce::Label popupLabel;
+    popupLabel.setBounds (0, 0, 86, 18);
+
+    juce::ComboBox normalCombo;
+    normalCombo.setBounds (0, 0, 86, 22);
+    normalCombo.addItem ("Osc", 1);
+
+    auto normalOptions = lnf.getOptionsForComboBoxPopupMenu (normalCombo, popupLabel);
+
+    juce::ComboBox presetCombo;
+    presetCombo.setComponentID ("automationPresetTypeDropdown");
+    presetCombo.setBounds (0, 0, 86, 22);
+    presetCombo.addItem ("Osc", 1);
+    presetCombo.addItem ("Rhythm", 2);
+    presetCombo.addItem ("Shapes", 3);
+    presetCombo.addItem ("Stamps", 4);
+
+    auto presetOptions = lnf.getOptionsForComboBoxPopupMenu (presetCombo, popupLabel);
+
+    if (presetOptions.getMinimumWidth() < 132)
+    {
+        std::cerr << "Automation preset dropdown popup should have a wider minimum width\n";
+        return false;
+    }
+
+    if (presetOptions.getStandardItemHeight() < 28)
+    {
+        std::cerr << "Automation preset dropdown popup should use full-height rows\n";
+        return false;
+    }
+
+    if (presetOptions.getMinimumWidth() <= normalOptions.getMinimumWidth()
+        || presetOptions.getStandardItemHeight() <= normalOptions.getStandardItemHeight())
+    {
+        std::cerr << "Automation preset dropdown popup should be larger than the default combo popup\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testTrackerGridClampsCursorNoteLaneOnTrackChange()
 {
     PatternData patternData;
@@ -6984,6 +7087,7 @@ int main()
         { "PatternMultiFxSlotRoundTrip", &testPatternMultiFxSlotRoundTrip },
         { "TrackLayoutFxLaneCountRoundTrip", &testTrackLayoutFxLaneCountRoundTrip },
         { "TrackLayoutTrackLaneCountDefaultsAndRoundTrip", &testTrackLayoutTrackLaneCountDefaultsAndRoundTrip },
+        { "TrackLayoutRemoveTrackLaneAtVisual", &testTrackLayoutRemoveTrackLaneAtVisual },
         { "TrackAutoNameUsesMostCommonSampleOrPlugin", &testTrackAutoNameUsesMostCommonSampleOrPlugin },
         { "SymbolicFxTokenRoundTrip", &testSymbolicFxTokenRoundTrip },
         { "MasterLaneRoundTrip", &testMasterLaneRoundTrip },
@@ -7051,6 +7155,7 @@ int main()
         { "PluginAutomationTrackpadRecordingBuffersOneLoop", &testPluginAutomationTrackpadRecordingBuffersOneLoop },
         { "PatternEditUtilsResolvesCursorInstrument", &testPatternEditUtilsResolvesCursorInstrument },
         { "PluginAutomationMultiPluginTrack", &testPluginAutomationMultiPluginTrack },
+        { "AutomationPresetComboPopupUsesFullSize", &testAutomationPresetComboPopupUsesFullSize },
         { "TrackerGridClampsCursorNoteLaneOnTrackChange", &testTrackerGridClampsCursorNoteLaneOnTrackChange },
         { "TrackerGridCanHideVelocityLanes", &testTrackerGridCanHideVelocityLanes },
         { "TrackerGridArrowKeysStepAcrossVisibleCells", &testTrackerGridArrowKeysStepAcrossVisibleCells },

@@ -132,10 +132,62 @@ const std::vector<ColourSchemeDefinition>& getColourSchemeDefinitions()
                 juce::Colour (0xffb48ead), juce::Colour (0xffbf616a),
                 juce::Colour (0xff5e81ac), juce::Colour (0xffc0a36e)
             }
+        },
+        {
+            "Light",
+            juce::Colour (0xfff8f6f1),
+            juce::Colour (0xffd8d2c8),
+            juce::Colour (0xff2f3437),
+            juce::Colour (0xffe8f1fb),
+            juce::Colour (0xffc9def3),
+            juce::Colour (0xffeee8dd),
+            juce::Colour (0xffe9e3d8),
+            juce::Colour (0xffd8ead2),
+            juce::Colour (0xff25313a),
+            juce::Colour (0xff9a651f),
+            juce::Colour (0xff2f7b47),
+            juce::Colour (0xff2e6f9e),
+            juce::Colour (0x445c84c8),
+            juce::Colour (0xffb34343),
+            juce::Colour (0xff9a7a13),
+            juce::Colour (0xffdfd7cb),
+            {
+                juce::Colour (0xff2e6f9e), juce::Colour (0xffa16026),
+                juce::Colour (0xff3d7c52), juce::Colour (0xffa14f78),
+                juce::Colour (0xff8a7520), juce::Colour (0xff297c77),
+                juce::Colour (0xff7257a4), juce::Colour (0xffb04f4f),
+                juce::Colour (0xff557b2f), juce::Colour (0xff8d6545),
+                juce::Colour (0xff4e7f91), juce::Colour (0xff6e6b5f)
+            }
         }
     };
 
     return schemes;
+}
+
+juce::Colour getInsetSurfaceColour (juce::Colour base, float amount)
+{
+    return base.getPerceivedBrightness() >= 0.5f ? base.darker (amount)
+                                                 : base.brighter (amount);
+}
+
+constexpr const char* kAutomationPresetTypeComboId = "automationPresetTypeDropdown";
+constexpr int kAutomationPresetPopupMinWidth = 132;
+constexpr int kAutomationPresetPopupItemHeight = 28;
+
+bool shouldOpenComboPopupUpwards (juce::ComboBox& box, int estimatedPopupHeight)
+{
+    const auto target = box.getScreenBounds();
+    const auto* display = juce::Desktop::getInstance().getDisplays().getDisplayForRect (target);
+
+    if (display == nullptr)
+        return false;
+
+    const auto visibleArea = display->userBounds.toNearestInt();
+    const int spaceBelow = visibleArea.getBottom() - target.getBottom();
+    const int spaceAbove = target.getY() - visibleArea.getY();
+
+    return spaceBelow < estimatedPopupHeight && spaceAbove > spaceBelow;
 }
 }
 
@@ -193,9 +245,40 @@ void TrackerLookAndFeel::setColourScheme (int schemeIndex)
     const auto& schemes = getColourSchemeDefinitions();
     colourSchemeIndex = clampColourSchemeIndex (schemeIndex);
     const auto& scheme = schemes[static_cast<size_t> (colourSchemeIndex)];
+    const auto controlSurface = getInsetSurfaceColour (scheme.background, 0.06f);
+    const auto onText = scheme.fx.contrasting();
 
     setColour (juce::ResizableWindow::backgroundColourId, scheme.background);
     setColour (juce::Label::textColourId, scheme.text);
+    setColour (juce::TextButton::buttonColourId, controlSurface);
+    setColour (juce::TextButton::buttonOnColourId, scheme.fx);
+    setColour (juce::TextButton::textColourOffId, scheme.text);
+    setColour (juce::TextButton::textColourOnId, onText);
+    setColour (juce::TextEditor::backgroundColourId, controlSurface);
+    setColour (juce::TextEditor::textColourId, scheme.text);
+    setColour (juce::TextEditor::highlightColourId, scheme.selection);
+    setColour (juce::TextEditor::highlightedTextColourId, scheme.text);
+    setColour (juce::TextEditor::outlineColourId, scheme.gridLine);
+    setColour (juce::TextEditor::focusedOutlineColourId, scheme.fx);
+    setColour (juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
+    setColour (juce::ComboBox::backgroundColourId, controlSurface);
+    setColour (juce::ComboBox::textColourId, scheme.text);
+    setColour (juce::ComboBox::outlineColourId, scheme.gridLine);
+    setColour (juce::ComboBox::buttonColourId, controlSurface);
+    setColour (juce::ComboBox::arrowColourId, scheme.text);
+    setColour (juce::ComboBox::focusedOutlineColourId, scheme.fx);
+    setColour (juce::PopupMenu::backgroundColourId, scheme.background);
+    setColour (juce::PopupMenu::textColourId, scheme.text);
+    setColour (juce::PopupMenu::headerTextColourId, scheme.fx);
+    setColour (juce::PopupMenu::highlightedBackgroundColourId, scheme.fx);
+    setColour (juce::PopupMenu::highlightedTextColourId, onText);
+    setColour (juce::ListBox::backgroundColourId, controlSurface);
+    setColour (juce::ListBox::outlineColourId, scheme.gridLine);
+    setColour (juce::ListBox::textColourId, scheme.text);
+    setColour (juce::TableHeaderComponent::backgroundColourId, scheme.header);
+    setColour (juce::TableHeaderComponent::textColourId, scheme.text);
+    setColour (juce::TableHeaderComponent::outlineColourId, scheme.gridLine);
+    setColour (juce::TableHeaderComponent::highlightColourId, getInsetSurfaceColour (scheme.header, 0.10f));
 
     setColour (backgroundColourId,     scheme.background);
     setColour (gridLineColourId,       scheme.gridLine);
@@ -228,4 +311,29 @@ juce::Font TrackerLookAndFeel::getMonoFont (float height) const
 juce::Font TrackerLookAndFeel::getUIFont (float height, int styleFlags) const
 {
     return juce::Font (juce::FontOptions (juce::Font::getDefaultSansSerifFontName(), height, styleFlags));
+}
+
+juce::PopupMenu::Options TrackerLookAndFeel::getOptionsForComboBoxPopupMenu (juce::ComboBox& box,
+                                                                             juce::Label& label)
+{
+    auto options = juce::LookAndFeel_V4::getOptionsForComboBoxPopupMenu (box, label);
+
+    if (box.getComponentID() != kAutomationPresetTypeComboId)
+        return options;
+
+    const int itemCount = box.getRootMenu() != nullptr ? box.getRootMenu()->getNumItems() : 0;
+    const int itemHeight = juce::jmax (kAutomationPresetPopupItemHeight, label.getHeight());
+    const int estimatedPopupHeight = juce::jmax (1, itemCount) * itemHeight + 12;
+
+    options = options.withMinimumWidth (juce::jmax (kAutomationPresetPopupMinWidth, box.getWidth()))
+                     .withStandardItemHeight (itemHeight)
+                     .withMaximumNumColumns (1);
+
+    if (shouldOpenComboPopupUpwards (box, estimatedPopupHeight))
+    {
+        options = options.withPreferredPopupDirection (
+            juce::PopupMenu::Options::PopupDirection::upwards);
+    }
+
+    return options;
 }
