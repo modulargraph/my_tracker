@@ -5,6 +5,7 @@
 #include <atomic>
 #include "MixerState.h"
 #include "SendBuffers.h"
+#include "GroupRoutingBuffers.h"
 
 namespace te = tracktion;
 
@@ -43,6 +44,13 @@ public:
 
     void setMixState (const TrackMixState& s);
     void setSendBuffers (SendBuffers* b) { sendBuffers = b; }
+    void setGroupRouting (GroupRoutingBuffers* buffers, int groupIndex, bool suppressDirectOutput)
+    {
+        groupRoutingBuffers.store (buffers, std::memory_order_release);
+        groupRouteIndex.store (groupIndex, std::memory_order_release);
+        suppressForGroupSolo.store (suppressDirectOutput, std::memory_order_release);
+    }
+    int getGroupRouteIndex() const { return groupRouteIndex.load (std::memory_order_acquire); }
 
     // Peak level metering (audio thread writes, UI thread reads)
     float getPeakLevel() const { return peakLevel.load (std::memory_order_relaxed); }
@@ -64,6 +72,9 @@ private:
     AtomicOutputState sharedMixState;
     TrackMixState localMixState;
     SendBuffers* sendBuffers = nullptr;
+    std::atomic<GroupRoutingBuffers*> groupRoutingBuffers { nullptr };
+    std::atomic<int> groupRouteIndex { -1 };
+    std::atomic<bool> suppressForGroupSolo { false };
 
     // Smoothed gain
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedGainL { 1.0f };
@@ -74,6 +85,7 @@ private:
 
     void processVolumeAndPan (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
     void processSends (const juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
+    void routeToGroupIfNeeded (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackOutputPlugin)
 };

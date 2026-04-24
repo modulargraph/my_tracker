@@ -210,6 +210,30 @@ int getMasterInsertAppendPosition (te::PluginList& pluginList)
 
     return insertPos;
 }
+
+bool shouldSuppressDirectOutputForGroupSolo (const MixerState* mixerState, int groupIndex)
+{
+    if (mixerState == nullptr)
+        return false;
+
+    bool anyGroupSoloed = false;
+    for (const auto& groupState : mixerState->groupBuses)
+    {
+        if (groupState.soloed)
+        {
+            anyGroupSoloed = true;
+            break;
+        }
+    }
+
+    if (! anyGroupSoloed)
+        return false;
+
+    if (groupIndex < 0 || groupIndex >= kMaxGroupBuses)
+        return true;
+
+    return ! mixerState->groupBuses[static_cast<size_t> (groupIndex)].soloed;
+}
 } // namespace
 
 TrackerEngine::TrackerEngine()
@@ -1624,6 +1648,7 @@ void TrackerEngine::setupSendEffectsTrack()
 
     // Prepare send buffers (default block size, stereo)
     sampler.getSendBuffers().prepare (8192, 2);
+    groupRoutingBuffers.prepare (8192, 2);
 
     // Older builds hosted this on a silent bus track, which meant master
     // processing could miss the real summed mix. Keep the final send/master
@@ -1650,6 +1675,7 @@ void TrackerEngine::setupSendEffectsTrack()
     if (existing != nullptr)
     {
         existing->setSendBuffers (&sampler.getSendBuffers());
+        existing->setGroupRoutingBuffers (&groupRoutingBuffers);
         existing->setMixerState (mixerStatePtr);
         existing->setTempoBpm (getBpm());
         sendEffectsPlugin = existing;
@@ -1688,6 +1714,12 @@ void TrackerEngine::setMixerState (MixerState* state)
     setupSendEffectsTrack();
     setupMixerPlugins();
     rebuildMasterInsertChain();
+}
+
+void TrackerEngine::setTrackLayout (TrackLayout* layout)
+{
+    trackLayoutPtr = layout;
+    refreshMixerRouting();
 }
 
 void TrackerEngine::setupChannelStripAndOutput (int trackIndex)
@@ -1733,6 +1765,10 @@ void TrackerEngine::setupChannelStripAndOutput (int trackIndex)
     {
         output->setMixState (mixerStatePtr->tracks[static_cast<size_t> (trackIndex)]);
         output->setSendBuffers (&sampler.getSendBuffers());
+        const int groupIndex = trackLayoutPtr != nullptr ? trackLayoutPtr->getGroupForTrack (trackIndex) : -1;
+        output->setGroupRouting (&groupRoutingBuffers,
+                                 groupIndex,
+                                 shouldSuppressDirectOutputForGroupSolo (mixerStatePtr, groupIndex));
     }
 
     if (auto* fxPlugin = track->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
@@ -1802,6 +1838,22 @@ void TrackerEngine::rebuildMixerPluginChains()
         rebuildInsertChain (t);
 
     rebuildMasterInsertChain();
+}
+
+void TrackerEngine::refreshMixerRouting()
+{
+    if (edit == nullptr)
+        return;
+
+    auto tracks = te::getAudioTracks (*edit);
+    for (int trackIndex = 0; trackIndex < kNumTracks && trackIndex < tracks.size(); ++trackIndex)
+    {
+        const int groupIndex = trackLayoutPtr != nullptr ? trackLayoutPtr->getGroupForTrack (trackIndex) : -1;
+        if (auto* output = tracks[trackIndex]->pluginList.findFirstPluginOfType<TrackOutputPlugin>())
+            output->setGroupRouting (&groupRoutingBuffers,
+                                     groupIndex,
+                                     shouldSuppressDirectOutputForGroupSolo (mixerStatePtr, groupIndex));
+    }
 }
 
 float TrackerEngine::getTrackPeakLevel (int trackIndex) const
