@@ -3477,6 +3477,9 @@ void MainComponent::performUndoableTrackLayoutChange (const std::function<void()
 
 void MainComponent::markDirty()
 {
+    if (isDirty)
+        return;
+
     isDirty = true;
     updateWindowTitle();
 }
