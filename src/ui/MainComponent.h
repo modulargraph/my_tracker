@@ -21,20 +21,11 @@ class SendEffectsComponent;
 class ToolbarComponent;
 class TrackerGrid;
 
-struct MidiGeneratorSettings
+struct ChordEntrySettings
 {
     int keyRoot = 0;
     int scale = 0;
-    int progression = 0;
-    int outputMode = 0;
-    int chordStyle = 0;
     int chordSet = 0;
-    int chordRhythm = 0;
-    int bassPattern = 0;
-    int bars = 8;
-    int transpose = 0;
-    int randomAmount = 20;
-    bool startAtCursor = false;
 };
 
 class MainComponent : public juce::Component,
@@ -121,7 +112,7 @@ private:
     std::unique_ptr<SendEffectsComponent> sendEffectsComponent;
     std::unique_ptr<PluginAutomationComponent> automationPanel;
     bool automationPanelVisible = false;
-    MidiGeneratorSettings lastMidiGeneratorSettings;
+    ChordEntrySettings chordEntrySettings;
     bool chordEntryEnabled = false;
     int lastAutomationPopulateTrack = -1;
     int lastPluginModTriggerRowSerial = -1;
@@ -176,12 +167,18 @@ private:
     void switchToPattern (int index);
     void showPatternLengthEditor();
     void showPatternNameEditor();
-    void showMidiGeneratorDialog (int targetTrack = -1);
-    void applyGeneratedMidiToTrack (int targetTrack, const MidiGeneratorSettings& settings);
     bool enterChordFromKeyboardNote (int rootNote, int row, int targetTrack, int startNoteLane, int instrument);
     void setChordEntryEnabled (bool enabled);
     void cycleChordEntrySet();
+    void setChordEntryRoot (int keyRoot);
+    void cycleChordEntryRoot();
+    void showChordEntryRootMenu (juce::Point<int> screenPos);
+    void setChordEntryScale (int scale);
+    void cycleChordEntryScale();
+    void showChordEntryScaleMenu (juce::Point<int> screenPos);
     juce::String getChordEntryToolbarLabel() const;
+    juce::String getChordEntryRootToolbarLabel() const;
+    juce::String getChordEntryScaleToolbarLabel() const;
     juce::String getChordEntryStatusText() const;
     void transposeNotesInRange (int startRow, int endRow, int startVisualTrack, int endVisualTrack, int semitones);
     void transposeSelectedNotes (int semitones);

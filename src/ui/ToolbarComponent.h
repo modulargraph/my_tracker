@@ -31,7 +31,8 @@ public:
     void setArrangementVisible (bool v) { arrangementOn = v; repaint(); }
     void setInstrumentPanelVisible (bool v) { instrumentPanelOn = v; repaint(); }
     void setMetronomeEnabled (bool v) { metronomeOn = v; repaint(); }
-    void setChordEntryState (bool enabled, const juce::String& label);
+    void setChordEntryState (bool enabled, const juce::String& chordSetLabel,
+                             const juce::String& rootLabel, const juce::String& scaleLabel);
     // 0 = off, 1 = center, 2 = page
     void setFollowMode (int mode) { followModeVal = mode; repaint(); }
 
@@ -54,9 +55,12 @@ public:
     std::function<void()> onFollowToggle;
     std::function<void()> onMetronomeToggle;
     std::function<void()> onShowFxReference;
-    std::function<void()> onShowMidiGenerator;
     std::function<void()> onToggleChordEntry;
     std::function<void()> onCycleChordSet;
+    std::function<void()> onCycleChordRoot;
+    std::function<void()> onCycleChordScale;
+    std::function<void (juce::Point<int> screenPos)> onShowChordRootMenu;
+    std::function<void (juce::Point<int> screenPos)> onShowChordScaleMenu;
     std::function<void (int delta)> onRpbDrag;
 
     void setRowsPerBeat (int rpb) { rowsPerBeatVal = rpb; repaint(); }
@@ -82,6 +86,8 @@ private:
     bool metronomeOn = false;
     bool chordEntryOn = false;
     juce::String chordEntryLabel = "CHD";
+    juce::String chordRootLabel = "C";
+    juce::String chordScaleLabel = "MAJ";
     int followModeVal = 0; // 0=off, 1=center, 2=page
     int rowsPerBeatVal = 4;
 
@@ -89,7 +95,7 @@ private:
     juce::Rectangle<int> addPatBounds, duplicatePatBounds, removePatBounds;
     juce::Rectangle<int> lengthBounds, bpmBounds, stepBounds, octaveBounds, modeBounds, patNameBounds;
     juce::Rectangle<int> arrangementToggleBounds, instrumentToggleBounds, patSelectorBounds;
-    juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, fxRefBounds, midiGeneratorBounds, chordEntryBounds, chordSetBounds, rpbBounds;
+    juce::Rectangle<int> instrumentBounds, followBounds, metronomeBounds, fxRefBounds, chordRootBounds, chordScaleBounds, chordEntryBounds, chordSetBounds, rpbBounds;
 
     // Drag state
     enum class DragTarget { None, Length, Bpm, Step, Octave, Instrument, Rpb };

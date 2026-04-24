@@ -7,10 +7,13 @@ ToolbarComponent::ToolbarComponent (TrackerLookAndFeel& lnf)
     setMouseClickGrabsKeyboardFocus (false);
 }
 
-void ToolbarComponent::setChordEntryState (bool enabled, const juce::String& label)
+void ToolbarComponent::setChordEntryState (bool enabled, const juce::String& chordSetLabel,
+                                           const juce::String& rootLabel, const juce::String& scaleLabel)
 {
     chordEntryOn = enabled;
-    chordEntryLabel = label.isNotEmpty() ? label : "CHD";
+    chordEntryLabel = chordSetLabel.isNotEmpty() ? chordSetLabel : "CHD";
+    chordRootLabel = rootLabel.isNotEmpty() ? rootLabel : "C";
+    chordScaleLabel = scaleLabel.isNotEmpty() ? scaleLabel : "MAJ";
     repaint();
 }
 
@@ -187,15 +190,25 @@ void ToolbarComponent::paint (juce::Graphics& g)
     g.setFont (lookAndFeel.getMonoFont (13.0f));
     x += 28;
 
-    // MIDI generator
-    midiGeneratorBounds = { x, 6, 42, 24 };
+    // Chord root selector
+    chordRootBounds = { x, 6, 30, 24 };
     g.setColour (juce::Colour (0xff3a3a3a));
-    g.fillRoundedRectangle (midiGeneratorBounds.toFloat(), 3.0f);
+    g.fillRoundedRectangle (chordRootBounds.toFloat(), 3.0f);
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
     g.setFont (lookAndFeel.getMonoFont (9.0f));
-    g.drawText ("MIDI", midiGeneratorBounds, juce::Justification::centred);
+    g.drawText (chordRootLabel, chordRootBounds, juce::Justification::centred);
     g.setFont (lookAndFeel.getMonoFont (13.0f));
-    x += 46;
+    x += 34;
+
+    // Chord scale selector
+    chordScaleBounds = { x, 6, 36, 24 };
+    g.setColour (juce::Colour (0xff3a3a3a));
+    g.fillRoundedRectangle (chordScaleBounds.toFloat(), 3.0f);
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.drawText (chordScaleLabel, chordScaleBounds, juce::Justification::centred);
+    g.setFont (lookAndFeel.getMonoFont (13.0f));
+    x += 40;
 
     // Chord entry toggle
     chordEntryBounds = { x, 6, 34, 24 };
@@ -287,9 +300,30 @@ void ToolbarComponent::mouseDown (const juce::MouseEvent& event)
         onShowFxReference();
         return;
     }
-    if (midiGeneratorBounds.contains (pos) && onShowMidiGenerator)
+    if (chordRootBounds.contains (pos))
     {
-        onShowMidiGenerator();
+        if (event.mods.isPopupMenu())
+        {
+            if (onShowChordRootMenu)
+                onShowChordRootMenu (event.getScreenPosition());
+        }
+        else if (onCycleChordRoot)
+        {
+            onCycleChordRoot();
+        }
+        return;
+    }
+    if (chordScaleBounds.contains (pos))
+    {
+        if (event.mods.isPopupMenu())
+        {
+            if (onShowChordScaleMenu)
+                onShowChordScaleMenu (event.getScreenPosition());
+        }
+        else if (onCycleChordScale)
+        {
+            onCycleChordScale();
+        }
         return;
     }
     if (chordSetBounds.contains (pos))

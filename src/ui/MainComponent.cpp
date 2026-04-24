@@ -1,5 +1,4 @@
 #include <cmath>
-#include <regex>
 #include "MainComponent.h"
 #include "Pattern.h"
 #include "PluginAutomationData.h"
@@ -149,7 +148,6 @@ int getAutomationParameterPriority (const juce::String& name)
     return 99;
 }
 
-constexpr int kMenuGenerateMidi = 30;
 constexpr int kMenuTransposeSelectionUpSemitone = 40;
 constexpr int kMenuTransposeSelectionDownSemitone = 41;
 constexpr int kMenuTransposeSelectionUpOctave = 42;
@@ -190,47 +188,6 @@ int noteFromScaleStep (int rootPitchClass, const std::array<int, 7>& scaleInterv
     auto octaveOffset = floorDiv7 (scaleStep);
     auto degree = positiveMod7 (scaleStep);
     return octave * 12 + rootPitchClass + scaleIntervals[static_cast<size_t> (degree)] + octaveOffset * 12;
-}
-
-std::vector<int> getProgressionDegrees (int progression, int bars, juce::Random& random)
-{
-    switch (progression)
-    {
-        case 0: return { 0, 4, 5, 3 }; // I-V-vi-IV
-        case 1: return { 5, 3, 0, 4 }; // vi-IV-I-V
-        case 2: return { 0, 5, 3, 4 }; // I-vi-IV-V
-        case 3: return { 1, 4, 0, 0 }; // ii-V-I-I
-        case 4: return { 0, 3, 4, 3 }; // I-IV-V-IV
-        case 5: return { 0, 0, 3, 4 }; // I-I-IV-V
-        case 6: return { 0, 5, 2, 6 }; // i-VI-III-VII
-        case 7: return { 0, 3, 5, 4 }; // i-iv-VI-V
-        case 8: return { 0, 0, 0, 0, 3, 3, 0, 0, 4, 3, 0, 4 }; // 12-bar blues
-        case 9:
-        {
-            static constexpr int weightedDegrees[] = { 0, 0, 0, 3, 3, 4, 4, 5, 1, 2, 6 };
-            std::vector<int> degrees;
-            degrees.reserve (static_cast<size_t> (juce::jmax (1, bars)));
-            for (int i = 0; i < juce::jmax (1, bars); ++i)
-                degrees.push_back (weightedDegrees[random.nextInt (static_cast<int> (sizeof (weightedDegrees) / sizeof (weightedDegrees[0])))]);
-            return degrees;
-        }
-        default: break;
-    }
-
-    return { 0, 4, 5, 3 };
-}
-
-std::vector<int> getChordScaleSteps (int degree, int chordStyle)
-{
-    switch (chordStyle)
-    {
-        case 1: return { degree, degree + 2, degree + 4, degree + 6 };
-        case 2: return { degree, degree + 4, degree + 7, degree + 9 };
-        case 3: return { degree, degree + 4, degree + 7 };
-        default: break;
-    }
-
-    return { degree, degree + 2, degree + 4 };
 }
 
 enum class ChordEntryToneSet
@@ -464,7 +421,7 @@ void applyChordEntryInversion (std::vector<int>& notes, int inversion)
 }
 
 std::vector<int> buildChordNotesForKeyboardKey (int keyIndex, int keyboardOctave,
-                                                const MidiGeneratorSettings& settings)
+                                                const ChordEntrySettings& settings)
 {
     const auto& entries = getChordEntrySetEntries (settings.chordSet);
     const auto entry = entries[static_cast<size_t> (juce::jlimit (0, static_cast<int> (entries.size()) - 1, keyIndex))];
@@ -479,338 +436,20 @@ std::vector<int> buildChordNotesForKeyboardKey (int keyIndex, int keyboardOctave
                                             entry.degree + toneStep, chordOctave));
 
     applyChordEntryInversion (notes, entry.inversion);
-    for (auto& note : notes)
-        note += settings.transpose;
-
     return normalizeChordNotes (std::move (notes));
 }
 
-juce::String getMidiGeneratorKeyName (int keyRoot)
+juce::String getChordEntryRootName (int keyRoot)
 {
     static const char* keys[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
     return keys[static_cast<size_t> (juce::jlimit (0, 11, keyRoot))];
 }
 
-juce::String getMidiGeneratorScaleName (int scale)
+juce::String getChordEntryScaleName (int scale)
 {
     return scale == 1 ? "Minor" : "Major";
 }
 
-std::vector<int> getChordHitOffsets (int chordRhythm, int barRows, int rowsPerBeat)
-{
-    std::vector<int> offsets;
-    const int halfBeat = juce::jmax (1, rowsPerBeat / 2);
-
-    switch (chordRhythm)
-    {
-        case 1:
-            offsets = { 0, barRows / 2 };
-            break;
-        case 2:
-            for (int beat = 0; beat < 4; ++beat)
-                offsets.push_back (beat * rowsPerBeat);
-            break;
-        case 3:
-            offsets = { 0, rowsPerBeat + halfBeat, 2 * rowsPerBeat + halfBeat };
-            break;
-        default:
-            offsets = { 0 };
-            break;
-    }
-
-    offsets.erase (std::remove_if (offsets.begin(), offsets.end(),
-                                   [barRows] (int offset) { return offset < 0 || offset >= barRows; }),
-                   offsets.end());
-    if (offsets.empty())
-        offsets.push_back (0);
-    return offsets;
-}
-
-int randomizedVelocity (juce::Random& random, int baseVelocity, int randomAmount)
-{
-    const int spread = juce::roundToInt (static_cast<float> (randomAmount) * 0.24f);
-    if (spread <= 0)
-        return juce::jlimit (1, 127, baseVelocity);
-
-    return juce::jlimit (1, 127, baseVelocity + random.nextInt (spread * 2 + 1) - spread);
-}
-
-void randomizeChordVoicing (std::vector<int>& notes, juce::Random& random, int randomAmount)
-{
-    if (notes.size() < 3 || randomAmount <= 0)
-        return;
-
-    const float chance = juce::jlimit (0.0f, 0.75f, static_cast<float> (randomAmount) / 140.0f);
-    if (random.nextFloat() >= chance)
-        return;
-
-    std::sort (notes.begin(), notes.end());
-    const int moves = 1 + random.nextInt (juce::jmin (2, static_cast<int> (notes.size()) - 1));
-    for (int i = 0; i < moves; ++i)
-    {
-        notes.front() += 12;
-        std::sort (notes.begin(), notes.end());
-    }
-}
-
-class MidiGeneratorComponent : public juce::Component
-{
-public:
-    MidiGeneratorComponent (TrackerLookAndFeel& lnf, int trackIndex,
-                            const MidiGeneratorSettings& initialSettings)
-        : lookAndFeel (lnf)
-    {
-        titleLabel.setText ("Track " + juce::String (trackIndex + 1) + " MIDI generator", juce::dontSendNotification);
-        titleLabel.setFont (lookAndFeel.getMonoFont (15.0f));
-        titleLabel.setColour (juce::Label::textColourId, lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
-        addAndMakeVisible (titleLabel);
-
-        addCombo (keyLabel, keyBox, "Key");
-        static const char* keys[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-        for (int i = 0; i < 12; ++i)
-            keyBox.addItem (keys[i], i + 1);
-        keyBox.setSelectedId (1);
-
-        addCombo (scaleLabel, scaleBox, "Scale");
-        scaleBox.addItem ("Major", 1);
-        scaleBox.addItem ("Natural Minor", 2);
-        scaleBox.setSelectedId (1);
-
-        addCombo (progressionLabel, progressionBox, "Progression");
-        progressionBox.addItem ("I-V-vi-IV", 1);
-        progressionBox.addItem ("vi-IV-I-V", 2);
-        progressionBox.addItem ("I-vi-IV-V", 3);
-        progressionBox.addItem ("ii-V-I-I", 4);
-        progressionBox.addItem ("I-IV-V-IV", 5);
-        progressionBox.addItem ("I-I-IV-V", 6);
-        progressionBox.addItem ("i-VI-III-VII", 7);
-        progressionBox.addItem ("i-iv-VI-V", 8);
-        progressionBox.addItem ("12-bar blues", 9);
-        progressionBox.addItem ("Random diatonic", 10);
-        progressionBox.setSelectedId (1);
-
-        addCombo (outputLabel, outputBox, "Output");
-        outputBox.addItem ("Chords", 1);
-        outputBox.addItem ("Bass", 2);
-        outputBox.addItem ("Chords + Bass", 3);
-        outputBox.setSelectedId (1);
-
-        addCombo (chordStyleLabel, chordStyleBox, "Chord voicing");
-        chordStyleBox.addItem ("Triads", 1);
-        chordStyleBox.addItem ("Sevenths", 2);
-        chordStyleBox.addItem ("Open", 3);
-        chordStyleBox.addItem ("Power", 4);
-        chordStyleBox.setSelectedId (1);
-
-        addCombo (chordSetLabel, chordSetBox, "Chord set");
-        for (int i = 0; i < getChordEntrySetCount(); ++i)
-            chordSetBox.addItem (getChordEntrySetDisplayName (i), i + 1);
-        chordSetBox.setSelectedId (1);
-
-        addCombo (chordRhythmLabel, chordRhythmBox, "Chord rhythm");
-        chordRhythmBox.addItem ("Sustained", 1);
-        chordRhythmBox.addItem ("Half notes", 2);
-        chordRhythmBox.addItem ("Quarter pulses", 3);
-        chordRhythmBox.addItem ("Syncopated", 4);
-        chordRhythmBox.setSelectedId (1);
-
-        addCombo (bassPatternLabel, bassPatternBox, "Bass pattern");
-        bassPatternBox.addItem ("Root", 1);
-        bassPatternBox.addItem ("Root + fifth", 2);
-        bassPatternBox.addItem ("Octave pulse", 3);
-        bassPatternBox.addItem ("Eighth pulse", 4);
-        bassPatternBox.addItem ("Walking", 5);
-        bassPatternBox.addItem ("Offbeat", 6);
-        bassPatternBox.setSelectedId (2);
-
-        addSlider (barsLabel, barsSlider, "Bars", 1.0, 32.0, 1.0, 8.0);
-        addSlider (transposeLabel, transposeSlider, "Transpose", -24.0, 24.0, 1.0, 0.0);
-        addSlider (randomLabel, randomSlider, "Randomize", 0.0, 100.0, 1.0, 20.0);
-
-        startAtCursorToggle.setButtonText ("Start at cursor row");
-        startAtCursorToggle.setColour (juce::ToggleButton::textColourId,
-                                       lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
-        addAndMakeVisible (startAtCursorToggle);
-
-        generateButton.setButtonText ("Generate MIDI");
-        generateButton.setColour (juce::TextButton::buttonColourId,
-                                  lookAndFeel.findColour (TrackerLookAndFeel::noteColourId).withAlpha (0.28f));
-        generateButton.setColour (juce::TextButton::textColourOffId,
-                                  lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
-        generateButton.onClick = [this]
-        {
-            auto settings = getSettings();
-            if (onSettingsChanged)
-                onSettingsChanged (settings);
-            if (onGenerate)
-                onGenerate (settings);
-            closeDialog();
-        };
-        addAndMakeVisible (generateButton);
-
-        cancelButton.setButtonText ("Cancel");
-        cancelButton.onClick = [this]
-        {
-            notifySettingsChanged();
-            closeDialog();
-        };
-        addAndMakeVisible (cancelButton);
-
-        applySettings (initialSettings);
-        installChangeHandlers();
-
-        setSize (460, 520);
-    }
-
-    std::function<void (const MidiGeneratorSettings&)> onGenerate;
-    std::function<void (const MidiGeneratorSettings&)> onSettingsChanged;
-
-    void paint (juce::Graphics& g) override
-    {
-        g.fillAll (lookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId));
-    }
-
-    void resized() override
-    {
-        auto area = getLocalBounds().reduced (18);
-        titleLabel.setBounds (area.removeFromTop (24));
-        area.removeFromTop (8);
-
-        layoutRow (area, keyLabel, keyBox);
-        layoutRow (area, scaleLabel, scaleBox);
-        layoutRow (area, progressionLabel, progressionBox);
-        layoutRow (area, outputLabel, outputBox);
-        layoutRow (area, chordStyleLabel, chordStyleBox);
-        layoutRow (area, chordSetLabel, chordSetBox);
-        layoutRow (area, chordRhythmLabel, chordRhythmBox);
-        layoutRow (area, bassPatternLabel, bassPatternBox);
-        layoutRow (area, barsLabel, barsSlider);
-        layoutRow (area, transposeLabel, transposeSlider);
-        layoutRow (area, randomLabel, randomSlider);
-
-        startAtCursorToggle.setBounds (area.removeFromTop (28).removeFromRight (280));
-        area.removeFromTop (10);
-
-        auto buttons = area.removeFromBottom (32);
-        cancelButton.setBounds (buttons.removeFromRight (92));
-        buttons.removeFromRight (8);
-        generateButton.setBounds (buttons.removeFromRight (132));
-    }
-
-private:
-    void addCombo (juce::Label& label, juce::ComboBox& box, const juce::String& text)
-    {
-        label.setText (text, juce::dontSendNotification);
-        label.setJustificationType (juce::Justification::centredRight);
-        label.setColour (juce::Label::textColourId,
-                         lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.72f));
-        addAndMakeVisible (label);
-        addAndMakeVisible (box);
-    }
-
-    void addSlider (juce::Label& label, juce::Slider& slider, const juce::String& text,
-                    double min, double max, double interval, double value)
-    {
-        label.setText (text, juce::dontSendNotification);
-        label.setJustificationType (juce::Justification::centredRight);
-        label.setColour (juce::Label::textColourId,
-                         lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.72f));
-        addAndMakeVisible (label);
-
-        slider.setSliderStyle (juce::Slider::LinearHorizontal);
-        slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 54, 20);
-        slider.setRange (min, max, interval);
-        slider.setValue (value, juce::dontSendNotification);
-        addAndMakeVisible (slider);
-    }
-
-    void layoutRow (juce::Rectangle<int>& area, juce::Label& label, juce::Component& control)
-    {
-        auto row = area.removeFromTop (30);
-        label.setBounds (row.removeFromLeft (126));
-        row.removeFromLeft (10);
-        control.setBounds (row);
-        area.removeFromTop (4);
-    }
-
-    MidiGeneratorSettings getSettings() const
-    {
-        MidiGeneratorSettings settings;
-        settings.keyRoot = juce::jmax (0, keyBox.getSelectedId() - 1);
-        settings.scale = juce::jmax (0, scaleBox.getSelectedId() - 1);
-        settings.progression = juce::jmax (0, progressionBox.getSelectedId() - 1);
-        settings.outputMode = juce::jmax (0, outputBox.getSelectedId() - 1);
-        settings.chordStyle = juce::jmax (0, chordStyleBox.getSelectedId() - 1);
-        settings.chordSet = juce::jlimit (0, getChordEntrySetCount() - 1, chordSetBox.getSelectedId() - 1);
-        settings.chordRhythm = juce::jmax (0, chordRhythmBox.getSelectedId() - 1);
-        settings.bassPattern = juce::jmax (0, bassPatternBox.getSelectedId() - 1);
-        settings.bars = juce::jlimit (1, 32, juce::roundToInt (barsSlider.getValue()));
-        settings.transpose = juce::jlimit (-24, 24, juce::roundToInt (transposeSlider.getValue()));
-        settings.randomAmount = juce::jlimit (0, 100, juce::roundToInt (randomSlider.getValue()));
-        settings.startAtCursor = startAtCursorToggle.getToggleState();
-        return settings;
-    }
-
-    void applySettings (const MidiGeneratorSettings& settings)
-    {
-        juce::ScopedValueSetter<bool> suppressor (suppressSettingsCallback, true);
-
-        keyBox.setSelectedId (juce::jlimit (1, 12, settings.keyRoot + 1), juce::dontSendNotification);
-        scaleBox.setSelectedId (juce::jlimit (1, 2, settings.scale + 1), juce::dontSendNotification);
-        progressionBox.setSelectedId (juce::jlimit (1, 10, settings.progression + 1), juce::dontSendNotification);
-        outputBox.setSelectedId (juce::jlimit (1, 3, settings.outputMode + 1), juce::dontSendNotification);
-        chordStyleBox.setSelectedId (juce::jlimit (1, 4, settings.chordStyle + 1), juce::dontSendNotification);
-        chordSetBox.setSelectedId (juce::jlimit (1, getChordEntrySetCount(), settings.chordSet + 1), juce::dontSendNotification);
-        chordRhythmBox.setSelectedId (juce::jlimit (1, 4, settings.chordRhythm + 1), juce::dontSendNotification);
-        bassPatternBox.setSelectedId (juce::jlimit (1, 6, settings.bassPattern + 1), juce::dontSendNotification);
-        barsSlider.setValue (juce::jlimit (1, 32, settings.bars), juce::dontSendNotification);
-        transposeSlider.setValue (juce::jlimit (-24, 24, settings.transpose), juce::dontSendNotification);
-        randomSlider.setValue (juce::jlimit (0, 100, settings.randomAmount), juce::dontSendNotification);
-        startAtCursorToggle.setToggleState (settings.startAtCursor, juce::dontSendNotification);
-    }
-
-    void installChangeHandlers()
-    {
-        auto notify = [this] { notifySettingsChanged(); };
-
-        keyBox.onChange = notify;
-        scaleBox.onChange = notify;
-        progressionBox.onChange = notify;
-        outputBox.onChange = notify;
-        chordStyleBox.onChange = notify;
-        chordSetBox.onChange = notify;
-        chordRhythmBox.onChange = notify;
-        bassPatternBox.onChange = notify;
-        barsSlider.onValueChange = notify;
-        transposeSlider.onValueChange = notify;
-        randomSlider.onValueChange = notify;
-        startAtCursorToggle.onClick = notify;
-    }
-
-    void notifySettingsChanged()
-    {
-        if (! suppressSettingsCallback && onSettingsChanged)
-            onSettingsChanged (getSettings());
-    }
-
-    void closeDialog()
-    {
-        if (auto* dialog = findParentComponentOfClass<juce::DialogWindow>())
-            dialog->exitModalState (0);
-    }
-
-    TrackerLookAndFeel& lookAndFeel;
-    bool suppressSettingsCallback = false;
-    juce::Label titleLabel;
-    juce::Label keyLabel, scaleLabel, progressionLabel, outputLabel, chordStyleLabel, chordSetLabel, chordRhythmLabel, bassPatternLabel;
-    juce::Label barsLabel, transposeLabel, randomLabel;
-    juce::ComboBox keyBox, scaleBox, progressionBox, outputBox, chordStyleBox, chordSetBox, chordRhythmBox, bassPatternBox;
-    juce::Slider barsSlider, transposeSlider, randomSlider;
-    juce::ToggleButton startAtCursorToggle;
-    juce::TextButton generateButton, cancelButton;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MidiGeneratorComponent)
-};
 }
 
 MainComponent::MainComponent()
@@ -1034,10 +673,6 @@ MainComponent::MainComponent()
         trackerGrid->showFxCommandPopupAt (mousePos);
     };
 
-    toolbar->onShowMidiGenerator = [this]
-    {
-        showMidiGeneratorDialog();
-    };
 
     toolbar->onToggleChordEntry = [this]
     {
@@ -1047,6 +682,26 @@ MainComponent::MainComponent()
     toolbar->onCycleChordSet = [this]
     {
         cycleChordEntrySet();
+    };
+
+    toolbar->onCycleChordRoot = [this]
+    {
+        cycleChordEntryRoot();
+    };
+
+    toolbar->onCycleChordScale = [this]
+    {
+        cycleChordEntryScale();
+    };
+
+    toolbar->onShowChordRootMenu = [this] (juce::Point<int> screenPos)
+    {
+        showChordEntryRootMenu (screenPos);
+    };
+
+    toolbar->onShowChordScaleMenu = [this] (juce::Point<int> screenPos)
+    {
+        showChordEntryScaleMenu (screenPos);
     };
 
     previewVolumeLabel.setText ("Preview", juce::dontSendNotification);
@@ -2889,7 +2544,8 @@ void MainComponent::updateToolbar()
     toolbar->setPlaybackMode (songMode);
 
     updateAutomationPanelButton();
-    toolbar->setChordEntryState (chordEntryEnabled, getChordEntryToolbarLabel());
+    toolbar->setChordEntryState (chordEntryEnabled, getChordEntryToolbarLabel(),
+                                 getChordEntryRootToolbarLabel(), getChordEntryScaleToolbarLabel());
 
     // Show sample name for current instrument
     auto sampleFile = trackerEngine.getSampler().getSampleFile (trackerGrid->getCurrentInstrument());
@@ -3019,238 +2675,6 @@ void MainComponent::showPatternNameEditor()
     }), true);
 }
 
-void MainComponent::showMidiGeneratorDialog (int targetTrack)
-{
-    if (targetTrack < 0)
-        targetTrack = trackerGrid->getCursorTrack();
-
-    if (targetTrack < 0 || targetTrack >= kNumTracks)
-    {
-        setTemporaryStatus ("Select a regular track before generating MIDI.", true, 3000);
-        return;
-    }
-
-    auto* content = new MidiGeneratorComponent (trackerLookAndFeel, targetTrack, lastMidiGeneratorSettings);
-    content->onSettingsChanged = [this] (const MidiGeneratorSettings& settings)
-    {
-        lastMidiGeneratorSettings = settings;
-        updateToolbar();
-        updateStatusBar();
-    };
-    content->onGenerate = [this, targetTrack] (const MidiGeneratorSettings& settings)
-    {
-        lastMidiGeneratorSettings = settings;
-        applyGeneratedMidiToTrack (targetTrack, settings);
-    };
-
-    juce::DialogWindow::LaunchOptions opts;
-    opts.content.setOwned (content);
-    opts.dialogTitle = "Generate MIDI";
-    opts.dialogBackgroundColour = trackerLookAndFeel.findColour (TrackerLookAndFeel::backgroundColourId);
-    opts.escapeKeyTriggersCloseButton = true;
-    opts.useNativeTitleBar = false;
-    opts.resizable = false;
-    opts.launchAsync();
-}
-
-void MainComponent::applyGeneratedMidiToTrack (int targetTrack, const MidiGeneratorSettings& settings)
-{
-    if (targetTrack < 0 || targetTrack >= kNumTracks)
-        return;
-
-    const int instrument = trackerGrid->getCurrentInstrument();
-    if (auto error = trackerEngine.validateNoteEntry (instrument, targetTrack); error.isNotEmpty())
-    {
-        setTemporaryStatus (error, true, 3000);
-        return;
-    }
-
-    auto& pat = patternData.getCurrentPattern();
-    const int startRow = settings.startAtCursor ? trackerGrid->getCursorRow() : 0;
-    if (startRow < 0 || startRow >= pat.numRows)
-        return;
-
-    const int rowsPerBeat = juce::jmax (1, trackerEngine.getRowsPerBeat());
-    const int barRows = rowsPerBeat * 4;
-    const int requestedRows = juce::jmax (1, settings.bars) * barRows;
-    const int endRow = juce::jmin (pat.numRows, startRow + requestedRows);
-    if (endRow <= startRow)
-        return;
-
-    juce::Random random;
-    auto scaleIntervals = getScaleIntervals (settings.scale);
-    auto progression = getProgressionDegrees (settings.progression, settings.bars, random);
-    if (progression.empty())
-        progression = { 0 };
-
-    std::vector<Cell> newCells;
-    newCells.reserve (static_cast<size_t> (endRow - startRow));
-    for (int row = startRow; row < endRow; ++row)
-    {
-        auto cell = pat.getCell (row, targetTrack);
-        cell.note = -1;
-        cell.instrument = -1;
-        cell.volume = -1;
-        cell.extraNoteLanes.clear();
-        newCells.push_back (cell);
-    }
-
-    int maxWrittenLane = 0;
-    const int chordOctave = juce::jlimit (1, 8, trackerGrid->getOctave());
-    const int bassOctave = juce::jmax (0, chordOctave - 1);
-    const bool generateChords = settings.outputMode == 0 || settings.outputMode == 2;
-    const bool generateBass = settings.outputMode == 1 || settings.outputMode == 2;
-    const int chordLaneOffset = generateBass && generateChords ? 1 : 0;
-
-    auto writeNote = [&] (int row, int lane, int note, int velocity)
-    {
-        if (row < startRow || row >= endRow || lane < 0)
-            return;
-
-        note = juce::jlimit (0, 127, note + settings.transpose);
-        auto& cell = newCells[static_cast<size_t> (row - startRow)];
-        NoteSlot slot;
-        slot.note = note;
-        slot.instrument = instrument;
-        slot.volume = juce::jlimit (1, 127, velocity);
-        cell.setNoteLane (lane, slot);
-        maxWrittenLane = juce::jmax (maxWrittenLane, lane + 1);
-    };
-
-    auto addBassPattern = [&] (int barStart, int degree, int nextDegree)
-    {
-        auto bassNote = [&] (int scaleStep)
-        {
-            return noteFromScaleStep (settings.keyRoot, scaleIntervals, scaleStep, bassOctave);
-        };
-
-        auto add = [&] (int offset, int scaleStep, int baseVelocity = 112)
-        {
-            writeNote (barStart + offset, 0, bassNote (scaleStep),
-                       randomizedVelocity (random, baseVelocity, settings.randomAmount));
-        };
-
-        switch (settings.bassPattern)
-        {
-            case 0:
-                add (0, degree);
-                break;
-            case 1:
-                add (0, degree);
-                add (barRows / 2, degree + 4, 108);
-                break;
-            case 2:
-                for (int beat = 0; beat < 4; ++beat)
-                    add (beat * rowsPerBeat, beat % 2 == 0 ? degree : degree + 7, 110);
-                break;
-            case 3:
-            {
-                const int stepRows = juce::jmax (1, rowsPerBeat / 2);
-                for (int offset = 0, i = 0; offset < barRows; offset += stepRows, ++i)
-                {
-                    const int sequence[] = { degree, degree, degree + 4, degree + 7 };
-                    add (offset, sequence[i % 4], i % 2 == 0 ? 108 : 98);
-                }
-                break;
-            }
-            case 4:
-            {
-                add (0, degree, 114);
-                add (rowsPerBeat, degree + 2, 104);
-                add (2 * rowsPerBeat, degree + 4, 108);
-                add (3 * rowsPerBeat, nextDegree >= degree ? nextDegree - 1 : nextDegree + 1, 100);
-                break;
-            }
-            case 5:
-            {
-                const int halfBeat = juce::jmax (1, rowsPerBeat / 2);
-                for (int beat = 0; beat < 4; ++beat)
-                    add (beat * rowsPerBeat + halfBeat, beat % 2 == 0 ? degree : degree + 4, 104);
-                break;
-            }
-            default:
-                add (0, degree);
-                break;
-        }
-
-        if (settings.randomAmount > 55 && random.nextFloat() < static_cast<float> (settings.randomAmount) / 180.0f)
-        {
-            const int pickupOffset = juce::jmax (0, barRows - juce::jmax (1, rowsPerBeat / 2));
-            add (pickupOffset, nextDegree >= degree ? nextDegree - 1 : nextDegree + 1, 90);
-        }
-    };
-
-    const auto chordHitOffsets = getChordHitOffsets (settings.chordRhythm, barRows, rowsPerBeat);
-    const int totalBarsToWrite = juce::jmax (1, (endRow - startRow + barRows - 1) / barRows);
-
-    for (int bar = 0; bar < totalBarsToWrite; ++bar)
-    {
-        const int barStart = startRow + bar * barRows;
-        if (barStart >= endRow)
-            break;
-
-        const int degree = progression[static_cast<size_t> (bar % static_cast<int> (progression.size()))];
-        const int nextDegree = progression[static_cast<size_t> ((bar + 1) % static_cast<int> (progression.size()))];
-
-        if (generateBass)
-            addBassPattern (barStart, degree, nextDegree);
-
-        if (generateChords)
-        {
-            auto scaleSteps = getChordScaleSteps (degree, settings.chordStyle);
-            std::vector<int> chordNotes;
-            chordNotes.reserve (scaleSteps.size());
-            for (auto step : scaleSteps)
-                chordNotes.push_back (noteFromScaleStep (settings.keyRoot, scaleIntervals, step, chordOctave));
-
-            randomizeChordVoicing (chordNotes, random, settings.randomAmount);
-
-            for (auto offset : chordHitOffsets)
-            {
-                const int row = barStart + offset;
-                if (row >= endRow)
-                    continue;
-
-                for (int lane = 0; lane < static_cast<int> (chordNotes.size()); ++lane)
-                    writeNote (row, chordLaneOffset + lane, chordNotes[static_cast<size_t> (lane)],
-                               randomizedVelocity (random, 104, settings.randomAmount));
-            }
-        }
-    }
-
-    std::vector<MultiCellEditAction::CellRecord> records;
-    for (int row = startRow; row < endRow; ++row)
-    {
-        const auto oldCell = pat.getCell (row, targetTrack);
-        const auto& newCell = newCells[static_cast<size_t> (row - startRow)];
-        if (! PatternEditUtils::sameCell (oldCell, newCell))
-            records.push_back ({ row, targetTrack, oldCell, newCell });
-    }
-
-    if (maxWrittenLane > trackLayout.getTrackNoteLaneCount (targetTrack))
-    {
-        performUndoableTrackLayoutChange ([this, targetTrack, maxWrittenLane]
-        {
-            trackLayout.setTrackNoteLaneCount (targetTrack, maxWrittenLane);
-        });
-    }
-
-    const bool changed = PatternEditUtils::applyPatternEdit (patternData, &undoManager,
-                                                             patternData.getCurrentPatternIndex(),
-                                                             std::move (records), {});
-    if (changed)
-    {
-        trackerGrid->setCursorPosition (startRow, targetTrack);
-        if (trackerGrid->onPatternDataChanged)
-            trackerGrid->onPatternDataChanged();
-        trackerGrid->repaint();
-        commandManager.commandStatusChanged();
-        setTemporaryStatus ("Generated MIDI on Track " + juce::String (targetTrack + 1)
-                                + " (" + juce::String (endRow - startRow) + " rows)",
-                            false, 3000);
-    }
-}
-
 bool MainComponent::enterChordFromKeyboardNote (int rootNote, int row, int targetTrack,
                                                 int startNoteLane, int instrument)
 {
@@ -3265,7 +2689,7 @@ bool MainComponent::enterChordFromKeyboardNote (int rootNote, int row, int targe
 
     const int keyboardOctave = trackerGrid->getOctave();
     const int keyIndex = rootNote - keyboardOctave * 12;
-    auto chordNotes = buildChordNotesForKeyboardKey (keyIndex, keyboardOctave, lastMidiGeneratorSettings);
+    auto chordNotes = buildChordNotesForKeyboardKey (keyIndex, keyboardOctave, chordEntrySettings);
     if (chordNotes.empty())
         return false;
 
@@ -3341,8 +2765,8 @@ void MainComponent::setChordEntryEnabled (bool enabled)
 
 void MainComponent::cycleChordEntrySet()
 {
-    lastMidiGeneratorSettings.chordSet =
-        (lastMidiGeneratorSettings.chordSet + 1) % getChordEntrySetCount();
+    chordEntrySettings.chordSet =
+        (chordEntrySettings.chordSet + 1) % getChordEntrySetCount();
     if (activeTab == Tab::Tracker)
         trackerGrid->grabKeyboardFocus();
     updateToolbar();
@@ -3350,26 +2774,84 @@ void MainComponent::cycleChordEntrySet()
     setTemporaryStatus ("Chord set: " + getChordEntryStatusText(), false, 1800);
 }
 
+void MainComponent::setChordEntryRoot (int keyRoot)
+{
+    chordEntrySettings.keyRoot = juce::jlimit (0, 11, keyRoot);
+    if (activeTab == Tab::Tracker)
+        trackerGrid->grabKeyboardFocus();
+    updateToolbar();
+    updateStatusBar();
+    setTemporaryStatus ("Chord root: " + getChordEntryStatusText(), false, 1800);
+}
+
+void MainComponent::cycleChordEntryRoot()
+{
+    setChordEntryRoot ((chordEntrySettings.keyRoot + 1) % 12);
+}
+
+void MainComponent::showChordEntryRootMenu (juce::Point<int> screenPos)
+{
+    juce::PopupMenu menu;
+    for (int i = 0; i < 12; ++i)
+        menu.addItem (i + 1, getChordEntryRootName (i), true, i == chordEntrySettings.keyRoot);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }),
+                        [this] (int result)
+                        {
+                            if (result >= 1 && result <= 12)
+                                setChordEntryRoot (result - 1);
+                        });
+}
+
+void MainComponent::setChordEntryScale (int scale)
+{
+    chordEntrySettings.scale = juce::jlimit (0, 1, scale);
+    if (activeTab == Tab::Tracker)
+        trackerGrid->grabKeyboardFocus();
+    updateToolbar();
+    updateStatusBar();
+    setTemporaryStatus ("Chord scale: " + getChordEntryStatusText(), false, 1800);
+}
+
+void MainComponent::cycleChordEntryScale()
+{
+    setChordEntryScale (chordEntrySettings.scale == 0 ? 1 : 0);
+}
+
+void MainComponent::showChordEntryScaleMenu (juce::Point<int> screenPos)
+{
+    juce::PopupMenu menu;
+    menu.addItem (1, "Major", true, chordEntrySettings.scale == 0);
+    menu.addItem (2, "Natural Minor", true, chordEntrySettings.scale == 1);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea ({ screenPos.x, screenPos.y, 1, 1 }),
+                        [this] (int result)
+                        {
+                            if (result == 1 || result == 2)
+                                setChordEntryScale (result - 1);
+                        });
+}
+
 juce::String MainComponent::getChordEntryToolbarLabel() const
 {
-    return getChordEntrySetShortName (lastMidiGeneratorSettings.chordSet);
+    return getChordEntrySetShortName (chordEntrySettings.chordSet);
+}
+
+juce::String MainComponent::getChordEntryRootToolbarLabel() const
+{
+    return getChordEntryRootName (chordEntrySettings.keyRoot);
+}
+
+juce::String MainComponent::getChordEntryScaleToolbarLabel() const
+{
+    return chordEntrySettings.scale == 1 ? "MIN" : "MAJ";
 }
 
 juce::String MainComponent::getChordEntryStatusText() const
 {
-    juce::String text = getChordEntrySetDisplayName (lastMidiGeneratorSettings.chordSet)
-        + " " + getMidiGeneratorKeyName (lastMidiGeneratorSettings.keyRoot)
-        + " " + getMidiGeneratorScaleName (lastMidiGeneratorSettings.scale);
-
-    if (lastMidiGeneratorSettings.transpose != 0)
-    {
-        text += " T:";
-        if (lastMidiGeneratorSettings.transpose > 0)
-            text += "+";
-        text += juce::String (lastMidiGeneratorSettings.transpose);
-    }
-
-    return text;
+    return getChordEntrySetDisplayName (chordEntrySettings.chordSet)
+        + " " + getChordEntryRootName (chordEntrySettings.keyRoot)
+        + " " + getChordEntryScaleName (chordEntrySettings.scale);
 }
 
 void MainComponent::transposeNotesInRange (int startRow, int endRow, int startVisualTrack,
@@ -3577,7 +3059,6 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                   autoNames[static_cast<size_t> (track)].isNotEmpty());
     menu.addItem (kMenuAutoNameCurrentTracks, "Auto Name All Current Tracks...",
                   canAutoNameCurrentTracks);
-    menu.addItem (kMenuGenerateMidi, "Generate MIDI...");
     menu.addSeparator();
 
     // Selection bounds are in visual space; get visual range
@@ -3726,11 +3207,6 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                                                         false, 2500);
                                 else
                                     setTemporaryStatus ("No current track names changed", false, 2500);
-                            }
-                            else if (result == kMenuGenerateMidi)
-                            {
-                                trackerGrid->setCursorPosition (trackerGrid->getCursorRow(), track);
-                                showMidiGeneratorDialog (track);
                             }
                             else if (result == kMenuTransposeSelectionUpSemitone)
                             {
@@ -4256,7 +3732,7 @@ void MainComponent::showHelpOverlay()
                     "Cmd+Opt+Shift+Right Add pattern",
                     "Ctrl+Up/Down     Semitone note/sel",
                     "Ctrl+Left/Right  Octave note/sel",
-                    "Right-click      Generate / transpose",
+                    "Right-click      Track menu / transpose",
                     "Cmd+Down/Up       Instrument +/-",
                     "Cmd+M             Mute track",
                     "Cmd+Shift+M       Solo track" }},
