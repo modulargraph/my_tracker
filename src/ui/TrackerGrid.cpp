@@ -2274,7 +2274,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     {
         // Note entry
         int note = keyToNote (key);
-        if (note >= 0 && note <= 127)
+        if (note >= 0)
         {
             if (chordEntryEnabled)
             {
@@ -2287,6 +2287,9 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
 
                 return true;
             }
+
+            if (note > 127)
+                return true;
 
             // Validate note entry (ownership/track mode check)
             if (onValidateNoteEntry)

@@ -149,17 +149,6 @@ int positiveMod7 (int value)
     return mod < 0 ? mod + 7 : mod;
 }
 
-int floorDiv12 (int value)
-{
-    return value >= 0 ? value / 12 : (value - 11) / 12;
-}
-
-int positiveMod12 (int value)
-{
-    auto mod = value % 12;
-    return mod < 0 ? mod + 12 : mod;
-}
-
 int noteFromScaleStep (int rootPitchClass, const std::array<int, 7>& scaleIntervals,
                        int scaleStep, int octave)
 {
@@ -209,30 +198,204 @@ std::vector<int> getChordScaleSteps (int degree, int chordStyle)
     return { degree, degree + 2, degree + 4 };
 }
 
-int findScaleDegreeForPitchClass (int pitchClass, int rootPitchClass, const std::array<int, 7>& scaleIntervals)
+enum class ChordEntryToneSet
 {
-    for (int degree = 0; degree < static_cast<int> (scaleIntervals.size()); ++degree)
-        if (positiveMod12 (rootPitchClass + scaleIntervals[static_cast<size_t> (degree)]) == pitchClass)
-            return degree;
+    Triad,
+    Seventh,
+    Add9,
+    Sus2,
+    Sus4,
+    Sixth,
+    Power
+};
 
-    return -1;
+struct ChordEntry
+{
+    int degree = 0;
+    ChordEntryToneSet toneSet = ChordEntryToneSet::Triad;
+    int inversion = 0;
+    int octaveOffset = 0;
+};
+
+constexpr ChordEntry chordEntry (int degree, ChordEntryToneSet toneSet = ChordEntryToneSet::Triad,
+                                 int inversion = 0, int octaveOffset = 0)
+{
+    return { degree, toneSet, inversion, octaveOffset };
 }
 
-std::vector<int> getChromaticChordIntervals (int scale, int chordStyle)
-{
-    const bool minor = scale == 1;
-    const int third = minor ? 3 : 4;
-    const int seventh = minor ? 10 : 11;
+constexpr int kChordEntrySetCount = 8;
 
-    switch (chordStyle)
+const std::array<ChordEntry, 24>& getChordEntrySetEntries (int chordSet)
+{
+    static constexpr std::array<ChordEntry, 24> pop {{
+        chordEntry (0, ChordEntryToneSet::Add9),      chordEntry (4, ChordEntryToneSet::Triad, 1),
+        chordEntry (5),                               chordEntry (3, ChordEntryToneSet::Add9, 2),
+        chordEntry (0, ChordEntryToneSet::Sixth, 1),  chordEntry (4, ChordEntryToneSet::Seventh, 2),
+        chordEntry (1, ChordEntryToneSet::Seventh),   chordEntry (3, ChordEntryToneSet::Triad, 1),
+        chordEntry (2),                               chordEntry (5, ChordEntryToneSet::Seventh, 1),
+        chordEntry (3, ChordEntryToneSet::Sixth, 2),  chordEntry (4, ChordEntryToneSet::Sus4),
+        chordEntry (0, ChordEntryToneSet::Add9, 1, 1), chordEntry (4, ChordEntryToneSet::Triad, 0, 1),
+        chordEntry (5, ChordEntryToneSet::Seventh, 2, 1), chordEntry (3, ChordEntryToneSet::Add9, 0, 1),
+        chordEntry (1, ChordEntryToneSet::Seventh, 1, 1), chordEntry (4, ChordEntryToneSet::Seventh, 0, 1),
+        chordEntry (0, ChordEntryToneSet::Sixth, 2, 1), chordEntry (3, ChordEntryToneSet::Triad, 1, 1),
+        chordEntry (2, ChordEntryToneSet::Seventh, 0, 1), chordEntry (5, ChordEntryToneSet::Triad, 1, 1),
+        chordEntry (1, ChordEntryToneSet::Sus2, 0, 1), chordEntry (4, ChordEntryToneSet::Sus4, 1, 1)
+    }};
+
+    static constexpr std::array<ChordEntry, 24> axis {{
+        chordEntry (5),                               chordEntry (3, ChordEntryToneSet::Add9),
+        chordEntry (0, ChordEntryToneSet::Triad, 1),  chordEntry (4, ChordEntryToneSet::Seventh),
+        chordEntry (5, ChordEntryToneSet::Seventh, 1), chordEntry (3, ChordEntryToneSet::Triad, 2),
+        chordEntry (0, ChordEntryToneSet::Add9),      chordEntry (4, ChordEntryToneSet::Sus4),
+        chordEntry (1, ChordEntryToneSet::Seventh),   chordEntry (3, ChordEntryToneSet::Sixth, 1),
+        chordEntry (5, ChordEntryToneSet::Triad, 2),  chordEntry (4, ChordEntryToneSet::Triad, 1),
+        chordEntry (5, ChordEntryToneSet::Add9, 1, 1), chordEntry (3, ChordEntryToneSet::Add9, 2, 1),
+        chordEntry (0, ChordEntryToneSet::Sixth, 1, 1), chordEntry (4, ChordEntryToneSet::Seventh, 2, 1),
+        chordEntry (5, ChordEntryToneSet::Seventh, 0, 1), chordEntry (3, ChordEntryToneSet::Triad, 1, 1),
+        chordEntry (0, ChordEntryToneSet::Add9, 2, 1), chordEntry (4, ChordEntryToneSet::Sus2, 0, 1),
+        chordEntry (2, ChordEntryToneSet::Seventh, 1, 1), chordEntry (1, ChordEntryToneSet::Seventh, 0, 1),
+        chordEntry (3, ChordEntryToneSet::Sixth, 2, 1), chordEntry (4, ChordEntryToneSet::Sus4, 1, 1)
+    }};
+
+    static constexpr std::array<ChordEntry, 24> circle {{
+        chordEntry (0, ChordEntryToneSet::Seventh),   chordEntry (5, ChordEntryToneSet::Seventh, 1),
+        chordEntry (1, ChordEntryToneSet::Seventh),   chordEntry (4, ChordEntryToneSet::Seventh, 2),
+        chordEntry (2, ChordEntryToneSet::Seventh),   chordEntry (5, ChordEntryToneSet::Triad),
+        chordEntry (1, ChordEntryToneSet::Triad, 1),  chordEntry (4, ChordEntryToneSet::Sus4),
+        chordEntry (0, ChordEntryToneSet::Add9, 1),   chordEntry (3, ChordEntryToneSet::Seventh),
+        chordEntry (1, ChordEntryToneSet::Seventh, 2), chordEntry (4, ChordEntryToneSet::Seventh),
+        chordEntry (0, ChordEntryToneSet::Seventh, 1, 1), chordEntry (5, ChordEntryToneSet::Seventh, 2, 1),
+        chordEntry (1, ChordEntryToneSet::Seventh, 1, 1), chordEntry (4, ChordEntryToneSet::Seventh, 0, 1),
+        chordEntry (2, ChordEntryToneSet::Seventh, 2, 1), chordEntry (5, ChordEntryToneSet::Triad, 1, 1),
+        chordEntry (1, ChordEntryToneSet::Sus2, 0, 1), chordEntry (4, ChordEntryToneSet::Sus4, 1, 1),
+        chordEntry (0, ChordEntryToneSet::Sixth, 2, 1), chordEntry (3, ChordEntryToneSet::Add9, 1, 1),
+        chordEntry (1, ChordEntryToneSet::Seventh, 0, 1), chordEntry (4, ChordEntryToneSet::Seventh, 2, 1)
+    }};
+
+    static constexpr std::array<ChordEntry, 24> soul {{
+        chordEntry (0, ChordEntryToneSet::Seventh),   chordEntry (5, ChordEntryToneSet::Seventh),
+        chordEntry (1, ChordEntryToneSet::Seventh, 1), chordEntry (4, ChordEntryToneSet::Seventh),
+        chordEntry (3, ChordEntryToneSet::Add9, 1),   chordEntry (2, ChordEntryToneSet::Seventh),
+        chordEntry (5, ChordEntryToneSet::Sixth, 2),  chordEntry (4, ChordEntryToneSet::Sus4),
+        chordEntry (0, ChordEntryToneSet::Sixth, 1),  chordEntry (3, ChordEntryToneSet::Seventh, 2),
+        chordEntry (1, ChordEntryToneSet::Add9),      chordEntry (4, ChordEntryToneSet::Seventh, 1),
+        chordEntry (0, ChordEntryToneSet::Seventh, 2, 1), chordEntry (5, ChordEntryToneSet::Seventh, 1, 1),
+        chordEntry (1, ChordEntryToneSet::Seventh, 0, 1), chordEntry (4, ChordEntryToneSet::Seventh, 2, 1),
+        chordEntry (3, ChordEntryToneSet::Add9, 0, 1), chordEntry (2, ChordEntryToneSet::Seventh, 1, 1),
+        chordEntry (5, ChordEntryToneSet::Sixth, 1, 1), chordEntry (4, ChordEntryToneSet::Sus2, 0, 1),
+        chordEntry (0, ChordEntryToneSet::Add9, 1, 1), chordEntry (3, ChordEntryToneSet::Seventh, 0, 1),
+        chordEntry (1, ChordEntryToneSet::Seventh, 2, 1), chordEntry (4, ChordEntryToneSet::Seventh, 1, 1)
+    }};
+
+    static constexpr std::array<ChordEntry, 24> dance {{
+        chordEntry (0, ChordEntryToneSet::Power),     chordEntry (4, ChordEntryToneSet::Power),
+        chordEntry (5, ChordEntryToneSet::Power),     chordEntry (3, ChordEntryToneSet::Power),
+        chordEntry (0, ChordEntryToneSet::Sus2),      chordEntry (4, ChordEntryToneSet::Sus4),
+        chordEntry (5, ChordEntryToneSet::Triad, 1),  chordEntry (3, ChordEntryToneSet::Add9),
+        chordEntry (1, ChordEntryToneSet::Power),     chordEntry (4, ChordEntryToneSet::Seventh),
+        chordEntry (0, ChordEntryToneSet::Sixth),     chordEntry (5, ChordEntryToneSet::Sus2),
+        chordEntry (0, ChordEntryToneSet::Power, 0, 1), chordEntry (4, ChordEntryToneSet::Power, 0, 1),
+        chordEntry (5, ChordEntryToneSet::Power, 0, 1), chordEntry (3, ChordEntryToneSet::Power, 0, 1),
+        chordEntry (0, ChordEntryToneSet::Sus2, 1, 1), chordEntry (4, ChordEntryToneSet::Sus4, 1, 1),
+        chordEntry (5, ChordEntryToneSet::Triad, 2, 1), chordEntry (3, ChordEntryToneSet::Add9, 1, 1),
+        chordEntry (1, ChordEntryToneSet::Power, 0, 1), chordEntry (4, ChordEntryToneSet::Seventh, 2, 1),
+        chordEntry (0, ChordEntryToneSet::Sixth, 1, 1), chordEntry (5, ChordEntryToneSet::Sus4, 0, 1)
+    }};
+
+    static constexpr std::array<ChordEntry, 24> ambient {{
+        chordEntry (0, ChordEntryToneSet::Add9),      chordEntry (3, ChordEntryToneSet::Add9, 1),
+        chordEntry (5, ChordEntryToneSet::Seventh),   chordEntry (1, ChordEntryToneSet::Sus2),
+        chordEntry (4, ChordEntryToneSet::Sus4),      chordEntry (0, ChordEntryToneSet::Sixth, 2),
+        chordEntry (2, ChordEntryToneSet::Seventh, 1), chordEntry (3, ChordEntryToneSet::Sixth),
+        chordEntry (5, ChordEntryToneSet::Add9, 2),   chordEntry (1, ChordEntryToneSet::Seventh),
+        chordEntry (4, ChordEntryToneSet::Sus2, 1),   chordEntry (0, ChordEntryToneSet::Add9, 1),
+        chordEntry (0, ChordEntryToneSet::Add9, 2, 1), chordEntry (3, ChordEntryToneSet::Add9, 0, 1),
+        chordEntry (5, ChordEntryToneSet::Seventh, 1, 1), chordEntry (1, ChordEntryToneSet::Sus2, 1, 1),
+        chordEntry (4, ChordEntryToneSet::Sus4, 2, 1), chordEntry (0, ChordEntryToneSet::Sixth, 1, 1),
+        chordEntry (2, ChordEntryToneSet::Seventh, 0, 1), chordEntry (3, ChordEntryToneSet::Sixth, 2, 1),
+        chordEntry (5, ChordEntryToneSet::Add9, 1, 1), chordEntry (1, ChordEntryToneSet::Seventh, 2, 1),
+        chordEntry (4, ChordEntryToneSet::Sus2, 0, 1), chordEntry (0, ChordEntryToneSet::Add9, 0, 1)
+    }};
+
+    static constexpr std::array<ChordEntry, 24> jazz {{
+        chordEntry (1, ChordEntryToneSet::Seventh),   chordEntry (4, ChordEntryToneSet::Seventh),
+        chordEntry (0, ChordEntryToneSet::Seventh, 1), chordEntry (5, ChordEntryToneSet::Seventh),
+        chordEntry (2, ChordEntryToneSet::Seventh),   chordEntry (5, ChordEntryToneSet::Seventh, 2),
+        chordEntry (1, ChordEntryToneSet::Seventh, 1), chordEntry (4, ChordEntryToneSet::Sus4),
+        chordEntry (0, ChordEntryToneSet::Sixth),     chordEntry (3, ChordEntryToneSet::Seventh),
+        chordEntry (6, ChordEntryToneSet::Seventh),   chordEntry (4, ChordEntryToneSet::Seventh, 1),
+        chordEntry (1, ChordEntryToneSet::Seventh, 2, 1), chordEntry (4, ChordEntryToneSet::Seventh, 0, 1),
+        chordEntry (0, ChordEntryToneSet::Seventh, 2, 1), chordEntry (5, ChordEntryToneSet::Seventh, 1, 1),
+        chordEntry (2, ChordEntryToneSet::Seventh, 1, 1), chordEntry (5, ChordEntryToneSet::Seventh, 0, 1),
+        chordEntry (1, ChordEntryToneSet::Add9, 1, 1), chordEntry (4, ChordEntryToneSet::Sus4, 2, 1),
+        chordEntry (0, ChordEntryToneSet::Sixth, 1, 1), chordEntry (3, ChordEntryToneSet::Seventh, 2, 1),
+        chordEntry (6, ChordEntryToneSet::Seventh, 1, 1), chordEntry (4, ChordEntryToneSet::Seventh, 2, 1)
+    }};
+
+    static constexpr std::array<ChordEntry, 24> tension {{
+        chordEntry (2, ChordEntryToneSet::Seventh),   chordEntry (5, ChordEntryToneSet::Seventh),
+        chordEntry (1, ChordEntryToneSet::Seventh),   chordEntry (4, ChordEntryToneSet::Seventh),
+        chordEntry (6, ChordEntryToneSet::Triad),     chordEntry (0, ChordEntryToneSet::Add9),
+        chordEntry (3, ChordEntryToneSet::Add9),      chordEntry (4, ChordEntryToneSet::Sus4),
+        chordEntry (2, ChordEntryToneSet::Add9, 1),   chordEntry (5, ChordEntryToneSet::Triad, 2),
+        chordEntry (6, ChordEntryToneSet::Seventh),   chordEntry (4, ChordEntryToneSet::Sus2),
+        chordEntry (2, ChordEntryToneSet::Seventh, 1, 1), chordEntry (5, ChordEntryToneSet::Seventh, 2, 1),
+        chordEntry (1, ChordEntryToneSet::Seventh, 2, 1), chordEntry (4, ChordEntryToneSet::Seventh, 1, 1),
+        chordEntry (6, ChordEntryToneSet::Triad, 1, 1), chordEntry (0, ChordEntryToneSet::Add9, 2, 1),
+        chordEntry (3, ChordEntryToneSet::Add9, 1, 1), chordEntry (4, ChordEntryToneSet::Sus4, 2, 1),
+        chordEntry (2, ChordEntryToneSet::Add9, 0, 1), chordEntry (5, ChordEntryToneSet::Triad, 1, 1),
+        chordEntry (6, ChordEntryToneSet::Seventh, 0, 1), chordEntry (4, ChordEntryToneSet::Sus2, 1, 1)
+    }};
+
+    switch (juce::jlimit (0, kChordEntrySetCount - 1, chordSet))
     {
-        case 1: return { 0, third, 7, seventh };
-        case 2: return { 0, 7, 12, 12 + third };
-        case 3: return { 0, 7, 12 };
+        case 1: return axis;
+        case 2: return circle;
+        case 3: return soul;
+        case 4: return dance;
+        case 5: return ambient;
+        case 6: return jazz;
+        case 7: return tension;
         default: break;
     }
 
-    return { 0, third, 7 };
+    return pop;
+}
+
+int getChordEntrySetCount()
+{
+    return kChordEntrySetCount;
+}
+
+juce::String getChordEntrySetShortName (int chordSet)
+{
+    static constexpr const char* names[] = { "POP", "AXS", "CIR", "SOL", "DNC", "AMB", "JAZ", "TEN" };
+    return names[static_cast<size_t> (juce::jlimit (0, kChordEntrySetCount - 1, chordSet))];
+}
+
+juce::String getChordEntrySetDisplayName (int chordSet)
+{
+    static constexpr const char* names[] = {
+        "Pop", "Axis", "Circle", "Soul", "Dance", "Ambient", "Jazz", "Tension"
+    };
+    return names[static_cast<size_t> (juce::jlimit (0, kChordEntrySetCount - 1, chordSet))];
+}
+
+std::vector<int> getChordEntryToneScaleSteps (ChordEntryToneSet toneSet)
+{
+    switch (toneSet)
+    {
+        case ChordEntryToneSet::Seventh: return { 0, 2, 4, 6 };
+        case ChordEntryToneSet::Add9:    return { 0, 2, 4, 8 };
+        case ChordEntryToneSet::Sus2:    return { 0, 1, 4 };
+        case ChordEntryToneSet::Sus4:    return { 0, 3, 4 };
+        case ChordEntryToneSet::Sixth:   return { 0, 2, 4, 5 };
+        case ChordEntryToneSet::Power:   return { 0, 4, 7 };
+        case ChordEntryToneSet::Triad:
+        default: break;
+    }
+
+    return { 0, 2, 4 };
 }
 
 std::vector<int> normalizeChordNotes (std::vector<int> notes)
@@ -251,32 +414,38 @@ std::vector<int> normalizeChordNotes (std::vector<int> notes)
     return notes;
 }
 
-std::vector<int> buildChordNotesForRoot (int rootNote, const MidiGeneratorSettings& settings)
+void applyChordEntryInversion (std::vector<int>& notes, int inversion)
 {
-    rootNote = juce::jlimit (0, 127, rootNote);
+    if (notes.size() < 2 || inversion <= 0)
+        return;
 
+    std::sort (notes.begin(), notes.end());
+    const int moves = juce::jlimit (0, static_cast<int> (notes.size()) - 1, inversion);
+    for (int i = 0; i < moves; ++i)
+    {
+        notes.front() += 12;
+        std::sort (notes.begin(), notes.end());
+    }
+}
+
+std::vector<int> buildChordNotesForKeyboardKey (int keyIndex, int keyboardOctave,
+                                                const MidiGeneratorSettings& settings)
+{
+    const auto& entries = getChordEntrySetEntries (settings.chordSet);
+    const auto entry = entries[static_cast<size_t> (juce::jlimit (0, static_cast<int> (entries.size()) - 1, keyIndex))];
     const auto scaleIntervals = getScaleIntervals (settings.scale);
-    const int degree = findScaleDegreeForPitchClass (positiveMod12 (rootNote),
-                                                     settings.keyRoot,
-                                                     scaleIntervals);
+    const int chordOctave = juce::jlimit (0, 9, keyboardOctave + entry.octaveOffset);
+    const auto toneSteps = getChordEntryToneScaleSteps (entry.toneSet);
 
     std::vector<int> notes;
-    if (degree >= 0)
-    {
-        const int scaleOctave = floorDiv12 (rootNote - settings.keyRoot
-                                            - scaleIntervals[static_cast<size_t> (degree)]);
-        const auto scaleSteps = getChordScaleSteps (degree, settings.chordStyle);
-        notes.reserve (scaleSteps.size());
-        for (auto step : scaleSteps)
-            notes.push_back (noteFromScaleStep (settings.keyRoot, scaleIntervals, step, scaleOctave));
-    }
-    else
-    {
-        const auto intervals = getChromaticChordIntervals (settings.scale, settings.chordStyle);
-        notes.reserve (intervals.size());
-        for (auto interval : intervals)
-            notes.push_back (rootNote + interval);
-    }
+    notes.reserve (toneSteps.size());
+    for (auto toneStep : toneSteps)
+        notes.push_back (noteFromScaleStep (settings.keyRoot, scaleIntervals,
+                                            entry.degree + toneStep, chordOctave));
+
+    applyChordEntryInversion (notes, entry.inversion);
+    for (auto& note : notes)
+        note += settings.transpose;
 
     return normalizeChordNotes (std::move (notes));
 }
@@ -290,32 +459,6 @@ juce::String getMidiGeneratorKeyName (int keyRoot)
 juce::String getMidiGeneratorScaleName (int scale)
 {
     return scale == 1 ? "Minor" : "Major";
-}
-
-juce::String getChordStyleShortName (int chordStyle)
-{
-    switch (chordStyle)
-    {
-        case 1: return "7TH";
-        case 2: return "OPN";
-        case 3: return "PWR";
-        default: break;
-    }
-
-    return "TRI";
-}
-
-juce::String getChordStyleDisplayName (int chordStyle)
-{
-    switch (chordStyle)
-    {
-        case 1: return "Sevenths";
-        case 2: return "Open";
-        case 3: return "Power";
-        default: break;
-    }
-
-    return "Triads";
 }
 
 std::vector<int> getChordHitOffsets (int chordRhythm, int barRows, int rowsPerBeat)
@@ -424,6 +567,11 @@ public:
         chordStyleBox.addItem ("Power", 4);
         chordStyleBox.setSelectedId (1);
 
+        addCombo (chordSetLabel, chordSetBox, "Chord set");
+        for (int i = 0; i < getChordEntrySetCount(); ++i)
+            chordSetBox.addItem (getChordEntrySetDisplayName (i), i + 1);
+        chordSetBox.setSelectedId (1);
+
         addCombo (chordRhythmLabel, chordRhythmBox, "Chord rhythm");
         chordRhythmBox.addItem ("Sustained", 1);
         chordRhythmBox.addItem ("Half notes", 2);
@@ -476,7 +624,7 @@ public:
         applySettings (initialSettings);
         installChangeHandlers();
 
-        setSize (460, 486);
+        setSize (460, 520);
     }
 
     std::function<void (const MidiGeneratorSettings&)> onGenerate;
@@ -498,6 +646,7 @@ public:
         layoutRow (area, progressionLabel, progressionBox);
         layoutRow (area, outputLabel, outputBox);
         layoutRow (area, chordStyleLabel, chordStyleBox);
+        layoutRow (area, chordSetLabel, chordSetBox);
         layoutRow (area, chordRhythmLabel, chordRhythmBox);
         layoutRow (area, bassPatternLabel, bassPatternBox);
         layoutRow (area, barsLabel, barsSlider);
@@ -557,6 +706,7 @@ private:
         settings.progression = juce::jmax (0, progressionBox.getSelectedId() - 1);
         settings.outputMode = juce::jmax (0, outputBox.getSelectedId() - 1);
         settings.chordStyle = juce::jmax (0, chordStyleBox.getSelectedId() - 1);
+        settings.chordSet = juce::jlimit (0, getChordEntrySetCount() - 1, chordSetBox.getSelectedId() - 1);
         settings.chordRhythm = juce::jmax (0, chordRhythmBox.getSelectedId() - 1);
         settings.bassPattern = juce::jmax (0, bassPatternBox.getSelectedId() - 1);
         settings.bars = juce::jlimit (1, 32, juce::roundToInt (barsSlider.getValue()));
@@ -575,6 +725,7 @@ private:
         progressionBox.setSelectedId (juce::jlimit (1, 10, settings.progression + 1), juce::dontSendNotification);
         outputBox.setSelectedId (juce::jlimit (1, 3, settings.outputMode + 1), juce::dontSendNotification);
         chordStyleBox.setSelectedId (juce::jlimit (1, 4, settings.chordStyle + 1), juce::dontSendNotification);
+        chordSetBox.setSelectedId (juce::jlimit (1, getChordEntrySetCount(), settings.chordSet + 1), juce::dontSendNotification);
         chordRhythmBox.setSelectedId (juce::jlimit (1, 4, settings.chordRhythm + 1), juce::dontSendNotification);
         bassPatternBox.setSelectedId (juce::jlimit (1, 6, settings.bassPattern + 1), juce::dontSendNotification);
         barsSlider.setValue (juce::jlimit (1, 32, settings.bars), juce::dontSendNotification);
@@ -592,6 +743,7 @@ private:
         progressionBox.onChange = notify;
         outputBox.onChange = notify;
         chordStyleBox.onChange = notify;
+        chordSetBox.onChange = notify;
         chordRhythmBox.onChange = notify;
         bassPatternBox.onChange = notify;
         barsSlider.onValueChange = notify;
@@ -615,9 +767,9 @@ private:
     TrackerLookAndFeel& lookAndFeel;
     bool suppressSettingsCallback = false;
     juce::Label titleLabel;
-    juce::Label keyLabel, scaleLabel, progressionLabel, outputLabel, chordStyleLabel, chordRhythmLabel, bassPatternLabel;
+    juce::Label keyLabel, scaleLabel, progressionLabel, outputLabel, chordStyleLabel, chordSetLabel, chordRhythmLabel, bassPatternLabel;
     juce::Label barsLabel, transposeLabel, randomLabel;
-    juce::ComboBox keyBox, scaleBox, progressionBox, outputBox, chordStyleBox, chordRhythmBox, bassPatternBox;
+    juce::ComboBox keyBox, scaleBox, progressionBox, outputBox, chordStyleBox, chordSetBox, chordRhythmBox, bassPatternBox;
     juce::Slider barsSlider, transposeSlider, randomSlider;
     juce::ToggleButton startAtCursorToggle;
     juce::TextButton generateButton, cancelButton;
@@ -863,7 +1015,7 @@ MainComponent::MainComponent()
 
     toolbar->onCycleChordSet = [this]
     {
-        cycleMidiGeneratorChordStyle();
+        cycleChordEntrySet();
     };
 
     previewVolumeLabel.setText ("Preview", juce::dontSendNotification);
@@ -2733,6 +2885,8 @@ void MainComponent::showMidiGeneratorDialog (int targetTrack)
     content->onSettingsChanged = [this] (const MidiGeneratorSettings& settings)
     {
         lastMidiGeneratorSettings = settings;
+        updateToolbar();
+        updateStatusBar();
     };
     content->onGenerate = [this, targetTrack] (const MidiGeneratorSettings& settings)
     {
@@ -2960,7 +3114,9 @@ bool MainComponent::enterChordFromKeyboardNote (int rootNote, int row, int targe
         return false;
     }
 
-    auto chordNotes = buildChordNotesForRoot (rootNote, lastMidiGeneratorSettings);
+    const int keyboardOctave = trackerGrid->getOctave();
+    const int keyIndex = rootNote - keyboardOctave * 12;
+    auto chordNotes = buildChordNotesForKeyboardKey (keyIndex, keyboardOctave, lastMidiGeneratorSettings);
     if (chordNotes.empty())
         return false;
 
@@ -3034,9 +3190,10 @@ void MainComponent::setChordEntryEnabled (bool enabled)
                         false, 1800);
 }
 
-void MainComponent::cycleMidiGeneratorChordStyle()
+void MainComponent::cycleChordEntrySet()
 {
-    lastMidiGeneratorSettings.chordStyle = (lastMidiGeneratorSettings.chordStyle + 1) % 4;
+    lastMidiGeneratorSettings.chordSet =
+        (lastMidiGeneratorSettings.chordSet + 1) % getChordEntrySetCount();
     if (activeTab == Tab::Tracker)
         trackerGrid->grabKeyboardFocus();
     updateToolbar();
@@ -3046,15 +3203,24 @@ void MainComponent::cycleMidiGeneratorChordStyle()
 
 juce::String MainComponent::getChordEntryToolbarLabel() const
 {
-    return chordEntryEnabled ? getChordStyleShortName (lastMidiGeneratorSettings.chordStyle)
-                             : "CHD";
+    return getChordEntrySetShortName (lastMidiGeneratorSettings.chordSet);
 }
 
 juce::String MainComponent::getChordEntryStatusText() const
 {
-    return getChordStyleDisplayName (lastMidiGeneratorSettings.chordStyle)
+    juce::String text = getChordEntrySetDisplayName (lastMidiGeneratorSettings.chordSet)
         + " " + getMidiGeneratorKeyName (lastMidiGeneratorSettings.keyRoot)
         + " " + getMidiGeneratorScaleName (lastMidiGeneratorSettings.scale);
+
+    if (lastMidiGeneratorSettings.transpose != 0)
+    {
+        text += " T:";
+        if (lastMidiGeneratorSettings.transpose > 0)
+            text += "+";
+        text += juce::String (lastMidiGeneratorSettings.transpose);
+    }
+
+    return text;
 }
 
 void MainComponent::transposeNotesInRange (int startRow, int endRow, int startVisualTrack,

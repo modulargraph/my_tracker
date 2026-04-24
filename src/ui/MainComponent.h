@@ -27,6 +27,7 @@ struct MidiGeneratorSettings
     int progression = 0;
     int outputMode = 0;
     int chordStyle = 0;
+    int chordSet = 0;
     int chordRhythm = 0;
     int bassPattern = 0;
     int bars = 8;
@@ -171,7 +172,7 @@ private:
     void applyGeneratedMidiToTrack (int targetTrack, const MidiGeneratorSettings& settings);
     bool enterChordFromKeyboardNote (int rootNote, int row, int targetTrack, int startNoteLane, int instrument);
     void setChordEntryEnabled (bool enabled);
-    void cycleMidiGeneratorChordStyle();
+    void cycleChordEntrySet();
     juce::String getChordEntryToolbarLabel() const;
     juce::String getChordEntryStatusText() const;
     void transposeNotesInRange (int startRow, int endRow, int startVisualTrack, int endVisualTrack, int semitones);
