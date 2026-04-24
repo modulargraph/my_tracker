@@ -44,6 +44,10 @@ public:
     static void saveGlobalBrowserDir (const juce::String& dir);
     static juce::String loadGlobalBrowserDir();
 
+    // Global recent project persistence (independent of project files)
+    static void saveGlobalRecentProjectFiles (const juce::StringArray& paths);
+    static juce::StringArray loadGlobalRecentProjectFiles();
+
     // Global plugin scan path persistence (independent of project files)
     static void saveGlobalPluginScanPaths (const juce::StringArray& paths);
     static juce::StringArray loadGlobalPluginScanPaths();

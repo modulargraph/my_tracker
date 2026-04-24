@@ -221,6 +221,10 @@ private:
     juce::String loadSampleAndMaybeDetectPitch (int instrument, const juce::File& file);
     void maybeAutoDetectSamplePitch (int instrument);
     void syncDetectedPitchLabelsToBrowser();
+    bool loadProjectFile (const juce::File& file);
+    void addRecentProjectFile (const juce::File& file);
+    void removeRecentProjectFile (const juce::File& file);
+    void clearRecentProjectFiles();
     void loadSampleForInstrument (int instrument);
     void clearSampleForInstrument (int instrument);
     void updateSampleEditorForCurrentInstrument();
@@ -241,6 +245,7 @@ private:
                                                   const juce::String& excludedPluginId = {},
                                                   int excludedParamIndex = -1);
     int resolvePluginInstrumentForTrackRow (int trackIndex, const NoteSlot& noteSlot) const;
+    juce::StringArray recentProjectMenuPaths;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

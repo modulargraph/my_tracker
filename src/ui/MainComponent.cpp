@@ -162,6 +162,9 @@ constexpr int kMenuWiggleTrackVelocitiesStrong = 50;
 constexpr int kMenuAutoNameTrack = 51;
 constexpr int kMenuAutoNameCurrentTracks = 52;
 constexpr int kMenuColourSchemeBase = 3000;
+constexpr int kMenuRecentProjectBase = 4000;
+constexpr int kMenuClearRecentProjects = 4099;
+constexpr int kMaxRecentProjects = 10;
 
 std::array<int, 7> getScaleIntervals (int scale)
 {
@@ -449,7 +452,6 @@ juce::String getChordEntryScaleName (int scale)
 {
     return scale == 1 ? "Minor" : "Major";
 }
-
 }
 
 MainComponent::MainComponent()
@@ -672,7 +674,6 @@ MainComponent::MainComponent()
         auto mousePos = juce::Desktop::getInstance().getMousePosition();
         trackerGrid->showFxCommandPopupAt (mousePos);
     };
-
 
     toolbar->onToggleChordEntry = [this]
     {
@@ -1690,6 +1691,7 @@ void MainComponent::setColourSchemeIndex (int schemeIndex, bool persist)
 
     applyLookAndFeelColours();
     commandManager.commandStatusChanged();
+    menuItemsChanged();
 }
 
 void MainComponent::applyLookAndFeelColours()
@@ -2275,6 +2277,35 @@ juce::PopupMenu MainComponent::getMenuForIndex (int menuIndex, const juce::Strin
     {
         menu.addCommandItem (&commandManager, cmdNewProject);
         menu.addCommandItem (&commandManager, cmdOpen);
+        recentProjectMenuPaths.clear();
+        juce::PopupMenu recentMenu;
+        const auto recentProjects = ProjectSerializer::loadGlobalRecentProjectFiles();
+        for (auto& path : recentProjects)
+        {
+            if (recentProjectMenuPaths.size() >= kMaxRecentProjects)
+                break;
+
+            juce::File file (path);
+            if (! file.existsAsFile())
+                continue;
+
+            const int itemId = kMenuRecentProjectBase + recentProjectMenuPaths.size();
+            recentMenu.addItem (itemId,
+                                file.getFileName() + "  (" + file.getParentDirectory().getFullPathName() + ")");
+            recentProjectMenuPaths.add (path);
+        }
+
+        if (recentProjectMenuPaths.isEmpty())
+        {
+            recentMenu.addItem (kMenuRecentProjectBase, "No Recent Projects", false, false);
+        }
+        else
+        {
+            recentMenu.addSeparator();
+            recentMenu.addItem (kMenuClearRecentProjects, "Clear Menu");
+        }
+
+        menu.addSubMenu ("Open Recent", recentMenu);
         menu.addSeparator();
         menu.addCommandItem (&commandManager, cmdSave);
         menu.addCommandItem (&commandManager, cmdSaveAs);
@@ -2305,12 +2336,13 @@ juce::PopupMenu MainComponent::getMenuForIndex (int menuIndex, const juce::Strin
         menu.addCommandItem (&commandManager, cmdToggleVelocityLanes);
         menu.addCommandItem (&commandManager, cmdToggleInstrumentColourTrails);
         juce::PopupMenu colourSchemeMenu;
+        const int activeColourSchemeIndex = trackerLookAndFeel.getColourSchemeIndex();
         for (int i = 0; i < TrackerLookAndFeel::getColourSchemeCount(); ++i)
         {
             colourSchemeMenu.addItem (kMenuColourSchemeBase + i,
                                       TrackerLookAndFeel::getColourSchemeName (i),
                                       true,
-                                      i == colourSchemeIndex);
+                                      i == activeColourSchemeIndex);
         }
         menu.addSubMenu ("Color Scheme", colourSchemeMenu);
         menu.addSeparator();
@@ -2328,6 +2360,17 @@ void MainComponent::menuItemSelected (int menuItemID, int)
     const int schemeCount = TrackerLookAndFeel::getColourSchemeCount();
     if (menuItemID >= kMenuColourSchemeBase && menuItemID < kMenuColourSchemeBase + schemeCount)
         setColourSchemeIndex (menuItemID - kMenuColourSchemeBase, true);
+
+    if (menuItemID >= kMenuRecentProjectBase && menuItemID < kMenuRecentProjectBase + kMaxRecentProjects)
+    {
+        const int recentIndex = menuItemID - kMenuRecentProjectBase;
+        if (recentIndex >= 0 && recentIndex < recentProjectMenuPaths.size() && confirmDiscardChanges())
+            loadProjectFile (juce::File (recentProjectMenuPaths[recentIndex]));
+        return;
+    }
+
+    if (menuItemID == kMenuClearRecentProjects)
+        clearRecentProjectFiles();
 }
 
 //==============================================================================
@@ -2653,6 +2696,13 @@ void MainComponent::showPatternLengthEditor()
         }
         delete aw;
     }), true);
+
+    auto* lengthEditor = aw->getTextEditor ("length");
+    if (lengthEditor != nullptr)
+    {
+        lengthEditor->grabKeyboardFocus();
+        lengthEditor->selectAll();
+    }
 }
 
 void MainComponent::showPatternNameEditor()
@@ -3510,104 +3560,151 @@ void MainComponent::openProject()
                               auto file = fc.getResult();
                               if (! file.existsAsFile()) return;
 
-                              trackerEngine.stop();
-                              arrangement.clear();
-
-                              double bpm = 120.0;
-                              int rpb = 4;
-                              std::map<int, juce::File> samples;
-                              std::map<int, InstrumentParams> instParams;
-
-                              DelayParams loadedDelay;
-                              ReverbParams loadedReverb;
-                              int loadedFollowMode = 0;
-                              juce::String browserDir;
-                              std::map<int, InstrumentSlotInfo> loadedPluginSlots;
-                              auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams, arrangement, trackLayout, mixerState, loadedDelay, loadedReverb, &loadedFollowMode, &browserDir, &loadedPluginSlots);
-                              if (error.isNotEmpty())
-                              {
-                                  juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
-                                                                          "Load Error", error);
-                                  return;
-                              }
-
-                              trackerEngine.setBpm (bpm);
-                              trackerEngine.setRowsPerBeat (rpb);
-                              trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
-                              if (automationPanel != nullptr)
-                                  automationPanel->setRowsPerBeat (trackerEngine.getRowsPerBeat());
-
-                              // Reload samples
-                              trackerEngine.getSampler().clearLoadedSamples();
-                              detectedSamplePitchLabels.clear();
-
-                              for (auto& [index, sampleFile] : samples)
-                                  trackerEngine.loadSampleForInstrument (index, sampleFile);
-
-                              // Restore instrument params
-                              for (auto& [index, params] : instParams)
-                                  trackerEngine.getSampler().setParams (index, params);
-
-                              // Restore plugin instrument slots
-                              trackerEngine.setInstrumentSlotInfos (loadedPluginSlots);
-
-                              // Restore send effects params
-                              trackerEngine.setDelayParams (loadedDelay);
-                              trackerEngine.setReverbParams (loadedReverb);
-
-                              // Restore follow mode
-                              followMode = static_cast<FollowMode> (juce::jlimit (0, 2, loadedFollowMode));
-                              toolbar->setFollowMode (static_cast<int> (followMode));
-
-                              // Restore mute/solo from mixer state
-                              for (int i = 0; i < kNumTracks; ++i)
-                              {
-                                  auto* t = trackerEngine.getTrack (i);
-                                  if (t != nullptr)
-                                  {
-                                      t->setMute (mixerState.tracks[static_cast<size_t> (i)].muted);
-                                      t->setSolo (mixerState.tracks[static_cast<size_t> (i)].soloed);
-                                  }
-                              }
-
-                              // Refresh mixer plugins with loaded state
-                              trackerEngine.rebuildMixerPluginChains();
-
-                              // Invalidate track instrument cache so next sync re-loads correctly
-                              trackerEngine.invalidateTrackInstruments();
-                              invalidateAutomationPluginCache();
-
-                              arrangementComponent->setSelectedEntry (arrangement.getNumEntries() > 0 ? 0 : -1);
-
-                              trackerGrid->setCursorPosition (0, 0);
-                              trackerGrid->clearSelection();
-                              undoManager.clearUndoHistory();
-                              currentProjectFile = file;
-                              isDirty = false;
-                              updateWindowTitle();
-                              updateStatusBar();
-                              updateToolbar();
-                              updateInstrumentPanel();
-                              if (mixerComponent != nullptr)
-                              {
-                                  mixerComponent->resized();
-                                  mixerComponent->repaint();
-                              }
-                              fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
-                              syncDetectedPitchLabelsToBrowser();
-                              if (automationPanelVisible)
-                                  refreshAutomationPanel();
-
-                              // Restore browser directory from project
-                              if (browserDir.isNotEmpty())
-                              {
-                                  juce::File dir (browserDir);
-                                  if (dir.isDirectory())
-                                      fileBrowser->setCurrentDirectory (dir);
-                              }
-
-                              trackerGrid->repaint();
+                              loadProjectFile (file);
                           });
+}
+
+bool MainComponent::loadProjectFile (const juce::File& file)
+{
+    if (! file.existsAsFile())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                "Load Error",
+                                                "Project file not found:\n" + file.getFullPathName());
+        removeRecentProjectFile (file);
+        return false;
+    }
+
+    trackerEngine.stop();
+    arrangement.clear();
+
+    double bpm = 120.0;
+    int rpb = 4;
+    std::map<int, juce::File> samples;
+    std::map<int, InstrumentParams> instParams;
+
+    DelayParams loadedDelay;
+    ReverbParams loadedReverb;
+    int loadedFollowMode = 0;
+    juce::String browserDir;
+    std::map<int, InstrumentSlotInfo> loadedPluginSlots;
+    auto error = ProjectSerializer::loadFromFile (file, patternData, bpm, rpb, samples, instParams,
+                                                  arrangement, trackLayout, mixerState, loadedDelay,
+                                                  loadedReverb, &loadedFollowMode, &browserDir,
+                                                  &loadedPluginSlots);
+    if (error.isNotEmpty())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                "Load Error", error);
+        return false;
+    }
+
+    trackerEngine.setBpm (bpm);
+    trackerEngine.setRowsPerBeat (rpb);
+    trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
+    if (automationPanel != nullptr)
+        automationPanel->setRowsPerBeat (trackerEngine.getRowsPerBeat());
+
+    trackerEngine.getSampler().clearLoadedSamples();
+    detectedSamplePitchLabels.clear();
+
+    for (auto& [index, sampleFile] : samples)
+        trackerEngine.loadSampleForInstrument (index, sampleFile);
+
+    for (auto& [index, params] : instParams)
+        trackerEngine.getSampler().setParams (index, params);
+
+    trackerEngine.setInstrumentSlotInfos (loadedPluginSlots);
+    trackerEngine.setDelayParams (loadedDelay);
+    trackerEngine.setReverbParams (loadedReverb);
+
+    followMode = static_cast<FollowMode> (juce::jlimit (0, 2, loadedFollowMode));
+    toolbar->setFollowMode (static_cast<int> (followMode));
+
+    for (int i = 0; i < kNumTracks; ++i)
+    {
+        auto* t = trackerEngine.getTrack (i);
+        if (t != nullptr)
+        {
+            t->setMute (mixerState.tracks[static_cast<size_t> (i)].muted);
+            t->setSolo (mixerState.tracks[static_cast<size_t> (i)].soloed);
+        }
+    }
+
+    trackerEngine.rebuildMixerPluginChains();
+    trackerEngine.invalidateTrackInstruments();
+    invalidateAutomationPluginCache();
+
+    arrangementComponent->setSelectedEntry (arrangement.getNumEntries() > 0 ? 0 : -1);
+
+    trackerGrid->setCursorPosition (0, 0);
+    trackerGrid->clearSelection();
+    undoManager.clearUndoHistory();
+    currentProjectFile = file;
+    isDirty = false;
+    updateWindowTitle();
+    updateStatusBar();
+    updateToolbar();
+    updateInstrumentPanel();
+    if (mixerComponent != nullptr)
+    {
+        mixerComponent->resized();
+        mixerComponent->repaint();
+    }
+    fileBrowser->updateInstrumentSlots (trackerEngine.getSampler().getLoadedSamples());
+    syncDetectedPitchLabelsToBrowser();
+    if (automationPanelVisible)
+        refreshAutomationPanel();
+
+    if (browserDir.isNotEmpty())
+    {
+        juce::File dir (browserDir);
+        if (dir.isDirectory())
+            fileBrowser->setCurrentDirectory (dir);
+    }
+
+    addRecentProjectFile (file);
+    trackerGrid->repaint();
+    return true;
+}
+
+void MainComponent::addRecentProjectFile (const juce::File& file)
+{
+    if (file == juce::File())
+        return;
+
+    const auto path = file.getFullPathName();
+    if (path.isEmpty())
+        return;
+
+    auto recent = ProjectSerializer::loadGlobalRecentProjectFiles();
+    recent.removeString (path, true);
+    recent.insert (0, path);
+
+    while (recent.size() > kMaxRecentProjects)
+        recent.remove (recent.size() - 1);
+
+    ProjectSerializer::saveGlobalRecentProjectFiles (recent);
+    menuItemsChanged();
+}
+
+void MainComponent::removeRecentProjectFile (const juce::File& file)
+{
+    const auto path = file.getFullPathName();
+    if (path.isEmpty())
+        return;
+
+    auto recent = ProjectSerializer::loadGlobalRecentProjectFiles();
+    recent.removeString (path, true);
+    ProjectSerializer::saveGlobalRecentProjectFiles (recent);
+    menuItemsChanged();
+}
+
+void MainComponent::clearRecentProjectFiles()
+{
+    ProjectSerializer::saveGlobalRecentProjectFiles ({});
+    recentProjectMenuPaths.clear();
+    menuItemsChanged();
 }
 
 void MainComponent::saveProject()
@@ -3636,6 +3733,7 @@ void MainComponent::saveProject()
         {
             isDirty = false;
             updateWindowTitle();
+            addRecentProjectFile (currentProjectFile);
         }
     }
     else
@@ -3683,6 +3781,7 @@ void MainComponent::saveProjectAs()
                                   currentProjectFile = f;
                                   isDirty = false;
                                   updateWindowTitle();
+                                  addRecentProjectFile (currentProjectFile);
                               }
                           });
 }

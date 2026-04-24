@@ -1595,6 +1595,57 @@ juce::String ProjectSerializer::loadGlobalBrowserDir()
 }
 
 //==============================================================================
+// Global recent project persistence
+//==============================================================================
+
+void ProjectSerializer::saveGlobalRecentProjectFiles (const juce::StringArray& paths)
+{
+    auto prefsFile = getCurrentGlobalPrefsFile();
+    if (! prefsFile.getParentDirectory().createDirectory())
+        return;
+
+    auto root = loadGlobalPrefsTree();
+
+    auto existing = root.getChildWithName ("RecentProjects");
+    if (existing.isValid())
+        root.removeChild (existing, nullptr);
+
+    juce::ValueTree recentTree ("RecentProjects");
+    for (auto& path : paths)
+    {
+        if (path.isEmpty())
+            continue;
+
+        juce::ValueTree projectTree ("Project");
+        projectTree.setProperty ("path", path, nullptr);
+        recentTree.addChild (projectTree, -1, nullptr);
+    }
+    root.addChild (recentTree, -1, nullptr);
+
+    if (auto xml = root.createXml())
+        xml->writeTo (prefsFile);
+}
+
+juce::StringArray ProjectSerializer::loadGlobalRecentProjectFiles()
+{
+    auto root = loadGlobalPrefsTree();
+    auto recentTree = root.getChildWithName ("RecentProjects");
+    if (! recentTree.isValid())
+        return {};
+
+    juce::StringArray paths;
+    for (int i = 0; i < recentTree.getNumChildren(); ++i)
+    {
+        auto projectTree = recentTree.getChild (i);
+        auto path = projectTree.getProperty ("path", "").toString();
+        if (path.isNotEmpty())
+            paths.addIfNotAlreadyThere (path);
+    }
+
+    return paths;
+}
+
+//==============================================================================
 // Global plugin scan path persistence
 //==============================================================================
 
