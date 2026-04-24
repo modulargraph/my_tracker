@@ -1,4 +1,5 @@
 #include "SendEffectsPlugin.h"
+#include "DspUtils.h"
 
 const char* SendEffectsPlugin::xmlTypeName = "SendEffects";
 
@@ -353,7 +354,7 @@ void SendEffectsPlugin::initialise (const te::PluginInitialisationInfo& info)
     assignStereoBiquadCoefficients (masterEqHighL, masterEqHighR, flatCoeffs);
 
     masterCompEnvelope = 0.0f;
-    masterLimiterEnvelope = 0.0f;
+    masterLimiterEnvelope = 1.0f;
 }
 
 void SendEffectsPlugin::deinitialise()
@@ -620,15 +621,7 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
         // Master volume and pan
         auto& master = activeMasterState;
-        float masterGain;
-        if (master.volume <= -99.0)
-            masterGain = 0.0f;
-        else
-            masterGain = juce::Decibels::decibelsToGain (static_cast<float> (master.volume));
-
-        float panNorm = (static_cast<float> (master.pan) + 50.0f) / 100.0f;
-        float masterGainL = masterGain * std::cos (panNorm * juce::MathConstants<float>::halfPi);
-        float masterGainR = masterGain * std::sin (panNorm * juce::MathConstants<float>::halfPi);
+        const auto masterGains = DspUtils::getEqualPowerPanGains (master.volume, master.pan);
 
         if (buffer.getNumChannels() >= 2)
         {
@@ -636,15 +629,15 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             auto* right = buffer.getWritePointer (1, startSample);
             for (int i = 0; i < numSamples; ++i)
             {
-                left[i]  *= masterGainL;
-                right[i] *= masterGainR;
+                left[i]  *= masterGains.left;
+                right[i] *= masterGains.right;
             }
         }
         else if (buffer.getNumChannels() >= 1)
         {
             auto* data = buffer.getWritePointer (0, startSample);
             for (int i = 0; i < numSamples; ++i)
-                data[i] *= masterGainL;
+                data[i] *= masterGains.left;
         }
 
         // Master peak metering
@@ -802,15 +795,7 @@ void SendEffectsPlugin::processSendReturnEQ (juce::AudioBuffer<float>& buffer, i
 void SendEffectsPlugin::applySendReturnVolumePan (juce::AudioBuffer<float>& buffer, int numSamples,
                                                   const SendReturnState& sendState)
 {
-    float gain;
-    if (sendState.volume <= -99.0)
-        gain = 0.0f;
-    else
-        gain = juce::Decibels::decibelsToGain (static_cast<float> (sendState.volume));
-
-    float panNorm = (static_cast<float> (sendState.pan) + 50.0f) / 100.0f;
-    float gainL = gain * std::cos (panNorm * juce::MathConstants<float>::halfPi);
-    float gainR = gain * std::sin (panNorm * juce::MathConstants<float>::halfPi);
+    const auto gains = DspUtils::getEqualPowerPanGains (sendState.volume, sendState.pan);
 
     if (buffer.getNumChannels() >= 2)
     {
@@ -818,15 +803,15 @@ void SendEffectsPlugin::applySendReturnVolumePan (juce::AudioBuffer<float>& buff
         auto* right = buffer.getWritePointer (1);
         for (int i = 0; i < numSamples; ++i)
         {
-            left[i]  *= gainL;
-            right[i] *= gainR;
+            left[i]  *= gains.left;
+            right[i] *= gains.right;
         }
     }
     else if (buffer.getNumChannels() >= 1)
     {
         auto* data = buffer.getWritePointer (0);
         for (int i = 0; i < numSamples; ++i)
-            data[i] *= gainL;
+            data[i] *= gains.left;
     }
 }
 
@@ -886,37 +871,9 @@ void SendEffectsPlugin::processMasterEQ (juce::AudioBuffer<float>& buffer, int s
 void SendEffectsPlugin::processMasterCompressor (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
 {
     auto& master = activeMasterState;
-    if (master.compThreshold >= 0.0 && master.compRatio <= 1.0) return;
-
-    float thresholdLinear = juce::Decibels::decibelsToGain (static_cast<float> (master.compThreshold));
-    float ratio = static_cast<float> (juce::jmax (1.0, master.compRatio));
-    float attackCoeff  = std::exp (-1.0f / (static_cast<float> (master.compAttack) * 0.001f * static_cast<float> (sampleRate)));
-    float releaseCoeff = std::exp (-1.0f / (static_cast<float> (master.compRelease) * 0.001f * static_cast<float> (sampleRate)));
-
-    int numChannels = buffer.getNumChannels();
-
-    for (int i = 0; i < numSamples; ++i)
-    {
-        float peak = 0.0f;
-        for (int ch = 0; ch < numChannels; ++ch)
-            peak = juce::jmax (peak, std::abs (buffer.getSample (ch, startSample + i)));
-
-        if (peak > masterCompEnvelope)
-            masterCompEnvelope = attackCoeff * masterCompEnvelope + (1.0f - attackCoeff) * peak;
-        else
-            masterCompEnvelope = releaseCoeff * masterCompEnvelope + (1.0f - releaseCoeff) * peak;
-
-        float gain = 1.0f;
-        if (masterCompEnvelope > thresholdLinear && thresholdLinear > 0.0f)
-        {
-            float overDB = juce::Decibels::gainToDecibels (masterCompEnvelope / thresholdLinear);
-            float reductionDB = overDB * (1.0f - 1.0f / ratio);
-            gain = juce::Decibels::decibelsToGain (-reductionDB);
-        }
-
-        for (int ch = 0; ch < numChannels; ++ch)
-            buffer.getWritePointer (ch)[startSample + i] *= gain;
-    }
+    DspUtils::processCompressor (buffer, startSample, numSamples, sampleRate, masterCompEnvelope,
+                                 master.compThreshold, master.compRatio,
+                                 master.compAttack, master.compRelease);
 }
 
 //==============================================================================
@@ -926,32 +883,6 @@ void SendEffectsPlugin::processMasterCompressor (juce::AudioBuffer<float>& buffe
 void SendEffectsPlugin::processMasterLimiter (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
 {
     auto& master = activeMasterState;
-    if (master.limiterThreshold >= 0.0) return;  // 0 dB = off
-
-    float thresholdLinear = juce::Decibels::decibelsToGain (static_cast<float> (master.limiterThreshold));
-    float releaseCoeff = std::exp (-1.0f / (static_cast<float> (master.limiterRelease) * 0.001f * static_cast<float> (sampleRate)));
-
-    int numChannels = buffer.getNumChannels();
-
-    for (int i = 0; i < numSamples; ++i)
-    {
-        float peak = 0.0f;
-        for (int ch = 0; ch < numChannels; ++ch)
-            peak = juce::jmax (peak, std::abs (buffer.getSample (ch, startSample + i)));
-
-        float targetGain = 1.0f;
-        if (peak > thresholdLinear && thresholdLinear > 0.0f)
-            targetGain = thresholdLinear / peak;
-
-        // Fast attack (essentially instant), slow release
-        if (targetGain < masterLimiterEnvelope)
-            masterLimiterEnvelope = targetGain;
-        else
-            masterLimiterEnvelope = releaseCoeff * masterLimiterEnvelope + (1.0f - releaseCoeff) * targetGain;
-
-        masterLimiterEnvelope = juce::jlimit (0.0f, 1.0f, masterLimiterEnvelope);
-
-        for (int ch = 0; ch < numChannels; ++ch)
-            buffer.getWritePointer (ch)[startSample + i] *= masterLimiterEnvelope;
-    }
+    DspUtils::processPeakLimiter (buffer, startSample, numSamples, sampleRate, masterLimiterEnvelope,
+                                  master.limiterThreshold, master.limiterRelease);
 }

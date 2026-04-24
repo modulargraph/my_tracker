@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <utility>
 #include <vector>
 #include <juce_core/juce_core.h>
 
@@ -35,6 +37,301 @@ struct AutomationPoint
             && curveType == other.curveType;
     }
 };
+
+//==============================================================================
+// Helpers for building and destructively transforming stored automation points.
+//==============================================================================
+
+namespace AutomationCurveTools
+{
+enum class StandardCurve
+{
+    Sine = 0,
+    Triangle,
+    RampUp,
+    Pulse,
+    QuarterGate,
+    OffbeatGate,
+    StairUp,
+    Accent,
+    EaseIn,
+    EaseOut,
+    Dip,
+    Swell
+};
+
+enum class StandardStamp
+{
+    UpOneBar = 0,
+    UpTwoBars,
+    DownOneBar,
+    DownTwoBars
+};
+
+inline float wrapPhase (float phase)
+{
+    return phase - std::floor (phase);
+}
+
+inline float smooth01 (float x)
+{
+    x = juce::jlimit (0.0f, 1.0f, x);
+    return x * x * (3.0f - 2.0f * x);
+}
+
+inline float evaluateStandardCurve (StandardCurve curve, float phase, int row, int patternLength)
+{
+    auto x = juce::jlimit (0.0f, 1.0f, phase);
+    constexpr float twoPi = 6.28318530717958647692f;
+
+    switch (curve)
+    {
+        case StandardCurve::Sine:
+            return juce::jlimit (0.0f, 1.0f, 0.5f + 0.5f * std::sin (twoPi * x));
+
+        case StandardCurve::Triangle:
+        {
+            auto p = wrapPhase (x);
+            return p < 0.5f ? p * 2.0f : (1.0f - p) * 2.0f;
+        }
+
+        case StandardCurve::RampUp:
+            return x;
+
+        case StandardCurve::Pulse:
+            return x < 0.5f ? 1.0f : 0.0f;
+
+        case StandardCurve::QuarterGate:
+        {
+            auto p = wrapPhase (x * 8.0f);
+            return p < 0.48f ? 1.0f : 0.0f;
+        }
+
+        case StandardCurve::OffbeatGate:
+        {
+            auto p = wrapPhase (x * 8.0f);
+            return (p >= 0.45f && p < 0.9f) ? 1.0f : 0.0f;
+        }
+
+        case StandardCurve::StairUp:
+        {
+            constexpr int steps = 8;
+            auto step = juce::jlimit (0, steps - 1, static_cast<int> (std::floor (x * static_cast<float> (steps))));
+            return static_cast<float> (step) / static_cast<float> (steps - 1);
+        }
+
+        case StandardCurve::Accent:
+        {
+            static constexpr float pattern[] = { 1.0f, 0.22f, 0.58f, 0.22f, 0.82f, 0.22f, 0.44f, 0.22f };
+            auto safeLength = juce::jmax (1, patternLength);
+            auto scaled = static_cast<float> (row) / static_cast<float> (safeLength) * 8.0f;
+            auto idx = juce::jlimit (0, 7, static_cast<int> (std::floor (scaled)));
+            return pattern[static_cast<size_t> (idx)];
+        }
+
+        case StandardCurve::EaseIn:
+            return x * x;
+
+        case StandardCurve::EaseOut:
+        {
+            auto inv = 1.0f - x;
+            return 1.0f - inv * inv;
+        }
+
+        case StandardCurve::Dip:
+            return std::abs (2.0f * x - 1.0f);
+
+        case StandardCurve::Swell:
+            return juce::jlimit (0.0f, 1.0f, std::sin (3.14159265358979323846f * x));
+    }
+
+    return x;
+}
+
+inline bool isSteppedStandardCurve (StandardCurve curve)
+{
+    return curve == StandardCurve::Pulse
+        || curve == StandardCurve::QuarterGate
+        || curve == StandardCurve::OffbeatGate
+        || curve == StandardCurve::StairUp
+        || curve == StandardCurve::Accent;
+}
+
+inline bool isRisingStamp (StandardStamp stamp)
+{
+    return stamp == StandardStamp::UpOneBar
+        || stamp == StandardStamp::UpTwoBars;
+}
+
+inline int getStampBars (StandardStamp stamp)
+{
+    return stamp == StandardStamp::UpTwoBars || stamp == StandardStamp::DownTwoBars ? 2 : 1;
+}
+
+inline int getStampLengthRows (StandardStamp stamp, int rowsPerBeat)
+{
+    return juce::jmax (1, rowsPerBeat) * 4 * getStampBars (stamp);
+}
+
+inline std::vector<AutomationPoint> makeStandardCurvePoints (StandardCurve curve, int patternLength)
+{
+    auto rows = juce::jmax (1, patternLength);
+    std::vector<AutomationPoint> result;
+    result.reserve (static_cast<size_t> (rows));
+
+    auto curveType = isSteppedStandardCurve (curve) ? AutomationCurveType::Step
+                                                    : AutomationCurveType::Linear;
+
+    for (int row = 0; row < rows; ++row)
+    {
+        auto phase = rows <= 1 ? 0.0f
+                               : static_cast<float> (row) / static_cast<float> (rows - 1);
+        result.push_back ({ row,
+                            juce::jlimit (0.0f, 1.0f, evaluateStandardCurve (curve, phase, row, rows)),
+                            curveType });
+    }
+
+    return result;
+}
+
+inline void sortAndCoalescePoints (std::vector<AutomationPoint>& points)
+{
+    std::stable_sort (points.begin(), points.end());
+
+    std::vector<AutomationPoint> coalesced;
+    coalesced.reserve (points.size());
+
+    for (auto point : points)
+    {
+        if (! coalesced.empty() && coalesced.back().row == point.row)
+            coalesced.back() = point;
+        else
+            coalesced.push_back (point);
+    }
+
+    points = std::move (coalesced);
+}
+
+inline std::vector<AutomationPoint> makeStampPoints (StandardStamp stamp,
+                                                     int startRow,
+                                                     int rowsPerBeat,
+                                                     int patternLength,
+                                                     float startValue,
+                                                     float endValue)
+{
+    auto rows = juce::jmax (1, patternLength);
+    auto firstRow = juce::jlimit (0, rows - 1, startRow);
+    auto lengthRows = getStampLengthRows (stamp, rowsPerBeat);
+    auto lastRow = juce::jlimit (firstRow, rows - 1, firstRow + lengthRows - 1);
+    auto targetValue = isRisingStamp (stamp) ? 1.0f : 0.0f;
+    auto start = juce::jlimit (0.0f, 1.0f, startValue);
+    auto end = juce::jlimit (0.0f, 1.0f, endValue);
+
+    std::vector<AutomationPoint> result;
+    result.reserve (static_cast<size_t> (lastRow - firstRow + 1));
+
+    for (int row = firstRow; row <= lastRow; ++row)
+    {
+        auto phase = lastRow == firstRow ? 1.0f
+                                         : static_cast<float> (row - firstRow) / static_cast<float> (lastRow - firstRow);
+        constexpr float attackEnd = 0.14f;
+        float value = start;
+
+        if (phase <= attackEnd)
+        {
+            auto t = smooth01 (phase / attackEnd);
+            value = start + (targetValue - start) * t;
+        }
+        else
+        {
+            auto t = (phase - attackEnd) / (1.0f - attackEnd);
+            auto decay = std::pow (1.0f - juce::jlimit (0.0f, 1.0f, t), 2.2f);
+            value = end + (targetValue - end) * decay;
+        }
+
+        result.push_back ({ row, juce::jlimit (0.0f, 1.0f, value), AutomationCurveType::Linear });
+    }
+
+    return result;
+}
+
+inline std::vector<AutomationPoint> replacePointsInRange (const std::vector<AutomationPoint>& source,
+                                                          const std::vector<AutomationPoint>& replacement,
+                                                          int startRow,
+                                                          int endRow)
+{
+    std::vector<AutomationPoint> result;
+    result.reserve (source.size() + replacement.size());
+
+    auto first = juce::jmin (startRow, endRow);
+    auto last = juce::jmax (startRow, endRow);
+
+    for (auto point : source)
+        if (point.row < first || point.row > last)
+            result.push_back (point);
+
+    result.insert (result.end(), replacement.begin(), replacement.end());
+    sortAndCoalescePoints (result);
+    return result;
+}
+
+inline std::vector<AutomationPoint> transformPoints (const std::vector<AutomationPoint>& source,
+                                                     const std::vector<int>& targetIndices,
+                                                     float valueMagnitude,
+                                                     float rowStretch,
+                                                     float valueCentre,
+                                                     int patternLength)
+{
+    if (source.empty())
+        return {};
+
+    auto rows = juce::jmax (1, patternLength);
+    auto points = source;
+    std::vector<bool> targeted (source.size(), targetIndices.empty());
+
+    for (auto idx : targetIndices)
+        if (idx >= 0 && idx < static_cast<int> (targeted.size()))
+            targeted[static_cast<size_t> (idx)] = true;
+
+    int minRow = std::numeric_limits<int>::max();
+    int maxRow = std::numeric_limits<int>::min();
+    bool hasTarget = false;
+
+    for (int i = 0; i < static_cast<int> (source.size()); ++i)
+    {
+        if (! targeted[static_cast<size_t> (i)])
+            continue;
+
+        minRow = juce::jmin (minRow, source[static_cast<size_t> (i)].row);
+        maxRow = juce::jmax (maxRow, source[static_cast<size_t> (i)].row);
+        hasTarget = true;
+    }
+
+    if (! hasTarget)
+        return points;
+
+    auto centreRow = (static_cast<float> (minRow) + static_cast<float> (maxRow)) * 0.5f;
+    auto centreValue = juce::jlimit (0.0f, 1.0f, valueCentre);
+    auto magnitude = juce::jmax (0.0f, valueMagnitude);
+    auto stretch = juce::jmax (0.0f, rowStretch);
+
+    for (int i = 0; i < static_cast<int> (points.size()); ++i)
+    {
+        if (! targeted[static_cast<size_t> (i)])
+            continue;
+
+        auto& point = points[static_cast<size_t> (i)];
+        auto stretchedRow = centreRow + (static_cast<float> (source[static_cast<size_t> (i)].row) - centreRow) * stretch;
+        auto scaledValue = centreValue + (source[static_cast<size_t> (i)].value - centreValue) * magnitude;
+
+        point.row = juce::jlimit (0, rows - 1, juce::roundToInt (stretchedRow));
+        point.value = juce::jlimit (0.0f, 1.0f, scaledValue);
+    }
+
+    sortAndCoalescePoints (points);
+    return points;
+}
+} // namespace AutomationCurveTools
 
 //==============================================================================
 // An automation lane: targets one parameter of one plugin on one track

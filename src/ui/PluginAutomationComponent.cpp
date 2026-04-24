@@ -23,9 +23,160 @@ static constexpr juce::uint32 kLaneColours[] = {
 using PluginAutomationInternal::AutomationCoordinateMapper;
 using PluginAutomationInternal::AutomationPointEditor;
 
+namespace
+{
+struct PresetSlot
+{
+    AutomationCurveTools::StandardCurve curve;
+    const char* name = "";
+};
+
+struct StampSlot
+{
+    AutomationCurveTools::StandardStamp stamp;
+    const char* name = "";
+};
+
+std::array<PresetSlot, PluginAutomationComponent::kPresetButtonCount> getPresetSlotsForCategory (int categoryId)
+{
+    using Curve = AutomationCurveTools::StandardCurve;
+
+    switch (categoryId)
+    {
+        case 2:
+            return { PresetSlot { Curve::QuarterGate, "Gate" },
+                     PresetSlot { Curve::OffbeatGate, "Offbeat" },
+                     PresetSlot { Curve::StairUp, "Stair" },
+                     PresetSlot { Curve::Accent, "Accent" } };
+
+        case 3:
+            return { PresetSlot { Curve::EaseIn, "Ease In" },
+                     PresetSlot { Curve::EaseOut, "Ease Out" },
+                     PresetSlot { Curve::Dip, "Dip" },
+                     PresetSlot { Curve::Swell, "Swell" } };
+
+        default:
+            return { PresetSlot { Curve::Sine, "Sine" },
+                     PresetSlot { Curve::Triangle, "Tri" },
+                     PresetSlot { Curve::RampUp, "Ramp" },
+                     PresetSlot { Curve::Pulse, "Pulse" } };
+    }
+}
+
+std::array<StampSlot, PluginAutomationComponent::kPresetButtonCount> getStampSlots()
+{
+    using Stamp = AutomationCurveTools::StandardStamp;
+
+    return { StampSlot { Stamp::UpOneBar, "Up 1B" },
+             StampSlot { Stamp::UpTwoBars, "Up 2B" },
+             StampSlot { Stamp::DownOneBar, "Down 1B" },
+             StampSlot { Stamp::DownTwoBars, "Down 2B" } };
+}
+}
+
 juce::Colour PluginAutomationComponent::getLaneColour (int index)
 {
     return juce::Colour (kLaneColours[static_cast<size_t> (index) % 8]);
+}
+
+//==============================================================================
+// Curve preset preview button
+//==============================================================================
+
+PluginAutomationComponent::CurvePresetButton::CurvePresetButton()
+    : juce::Button ("curvePreset")
+{
+    setWantsKeyboardFocus (false);
+}
+
+void PluginAutomationComponent::CurvePresetButton::setPreset (AutomationCurveTools::StandardCurve curveToUse,
+                                                               juce::String buttonLabel,
+                                                               std::vector<float> preview,
+                                                               bool steppedPreview)
+{
+    curve = curveToUse;
+    label = std::move (buttonLabel);
+    previewValues = std::move (preview);
+    stepped = steppedPreview;
+    stampSelected = false;
+    repaint();
+}
+
+void PluginAutomationComponent::CurvePresetButton::setStamp (AutomationCurveTools::StandardStamp stampToUse,
+                                                              juce::String buttonLabel,
+                                                              std::vector<float> preview)
+{
+    stamp = stampToUse;
+    label = std::move (buttonLabel);
+    previewValues = std::move (preview);
+    stepped = false;
+    repaint();
+}
+
+void PluginAutomationComponent::CurvePresetButton::setStampSelected (bool shouldBeSelected)
+{
+    stampSelected = shouldBeSelected;
+    repaint();
+}
+
+void PluginAutomationComponent::CurvePresetButton::paintButton (juce::Graphics& g,
+                                                                 bool shouldDrawButtonAsHighlighted,
+                                                                 bool shouldDrawButtonAsDown)
+{
+    auto bounds = getLocalBounds().toFloat().reduced (1.0f);
+    auto fill = juce::Colour (0xff24242a);
+    if (shouldDrawButtonAsHighlighted)
+        fill = fill.brighter (0.08f);
+    if (shouldDrawButtonAsDown || stampSelected)
+        fill = juce::Colour (0xff44aaff).withAlpha (0.35f);
+
+    g.setColour (fill);
+    g.fillRoundedRectangle (bounds, 3.0f);
+    g.setColour (juce::Colour (0x55ffffff));
+    g.drawRoundedRectangle (bounds, 3.0f, 1.0f);
+    if (stampSelected)
+    {
+        g.setColour (juce::Colour (0xff44aaff));
+        g.drawRoundedRectangle (bounds.reduced (1.0f), 2.0f, 1.5f);
+    }
+
+    auto previewArea = bounds.reduced (5.0f, 4.0f);
+    previewArea.removeFromBottom (12.0f);
+
+    if (previewValues.size() >= 2 && previewArea.getHeight() > 4.0f)
+    {
+        juce::Path path;
+        auto pointFor = [&] (int idx)
+        {
+            auto x = previewArea.getX()
+                   + static_cast<float> (idx) / static_cast<float> (previewValues.size() - 1)
+                   * previewArea.getWidth();
+            auto value = juce::jlimit (0.0f, 1.0f, previewValues[static_cast<size_t> (idx)]);
+            auto y = previewArea.getBottom() - value * previewArea.getHeight();
+            return juce::Point<float> { x, y };
+        };
+
+        auto first = pointFor (0);
+        path.startNewSubPath (first);
+
+        for (int i = 1; i < static_cast<int> (previewValues.size()); ++i)
+        {
+            auto next = pointFor (i);
+            if (stepped)
+            {
+                auto previous = pointFor (i - 1);
+                path.lineTo (next.x, previous.y);
+            }
+            path.lineTo (next);
+        }
+
+        g.setColour (juce::Colour (0xff44aaff));
+        g.strokePath (path, juce::PathStrokeType (1.4f));
+    }
+
+    g.setColour (juce::Colour (0xffdddddd));
+    g.setFont (juce::Font (juce::FontOptions (10.0f)));
+    g.drawText (label, getLocalBounds().removeFromBottom (13), juce::Justification::centred);
 }
 
 //==============================================================================
@@ -36,6 +187,7 @@ PluginAutomationComponent::PluginAutomationComponent (TrackerLookAndFeel& lnf)
     : lookAndFeel (lnf)
 {
     setWantsKeyboardFocus (true);
+    auto buttonColour = lnf.findColour (TrackerLookAndFeel::textColourId);
 
     pluginLabel.setText ("Plugin:", juce::dontSendNotification);
     pluginLabel.setColour (juce::Label::textColourId,
@@ -66,8 +218,50 @@ PluginAutomationComponent::PluginAutomationComponent (TrackerLookAndFeel& lnf)
     curveTypeDropdown.onChange = [this] { curveTypeChanged(); };
     addAndMakeVisible (curveTypeDropdown);
 
+    magnitudeLabel.setColour (juce::Label::textColourId, buttonColour);
+    magnitudeLabel.setFont (lnf.getMonoFont (10.0f));
+    addAndMakeVisible (magnitudeLabel);
+
+    stretchLabel.setColour (juce::Label::textColourId, buttonColour);
+    stretchLabel.setFont (lnf.getMonoFont (10.0f));
+    addAndMakeVisible (stretchLabel);
+
+    auto setupTransformSlider = [this] (juce::Slider& slider, double minValue, double maxValue)
+    {
+        slider.setSliderStyle (juce::Slider::LinearHorizontal);
+        slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        slider.setRange (minValue, maxValue, 0.01);
+        slider.setValue (1.0, juce::dontSendNotification);
+        slider.setSkewFactorFromMidPoint (1.0);
+        slider.setDoubleClickReturnValue (true, 1.0);
+        slider.onDragStart = [this] { beginPointTransform(); };
+        slider.onValueChange = [this] { applyPointTransformFromSliders(); };
+        slider.onDragEnd = [this] { endPointTransform(); };
+        addAndMakeVisible (slider);
+    };
+
+    setupTransformSlider (magnitudeSlider, 0.0, 3.0);
+    setupTransformSlider (stretchSlider, 0.1, 4.0);
+    updateTransformSliderLabels();
+
+    presetTypeDropdown.addItem ("Osc", 1);
+    presetTypeDropdown.addItem ("Rhythm", 2);
+    presetTypeDropdown.addItem ("Shapes", 3);
+    presetTypeDropdown.addItem ("Stamps", 4);
+    presetTypeDropdown.setSelectedId (1, juce::dontSendNotification);
+    presetTypeDropdown.onChange = [this] { presetTypeChanged(); };
+    addAndMakeVisible (presetTypeDropdown);
+
+    for (int i = 0; i < kPresetButtonCount; ++i)
+    {
+        presetButtons[static_cast<size_t> (i)] = std::make_unique<CurvePresetButton>();
+        presetButtons[static_cast<size_t> (i)]->onClick = [this, i] { applyPreset (i); };
+        addAndMakeVisible (*presetButtons[static_cast<size_t> (i)]);
+    }
+
+    refreshPresetButtons();
+
     // Toggle buttons
-    auto buttonColour = lnf.findColour (TrackerLookAndFeel::textColourId);
     auto setupButton = [&] (juce::TextButton& btn)
     {
         btn.setColour (juce::TextButton::textColourOffId, buttonColour);
@@ -126,6 +320,7 @@ void PluginAutomationComponent::paint (juce::Graphics& g)
         drawOverlayLanes (g, graphBounds);
 
     drawCurve (g, graphBounds, getCurrentLane(), getLaneColour (0), 0.8f);
+    drawStampPreview (g, graphBounds);
     drawPoints (g, graphBounds);
     drawPlaybackPosition (g, graphBounds);
     drawSelectionRect (g);
@@ -181,6 +376,29 @@ void PluginAutomationComponent::resized()
 
     // Curve type dropdown
     curveTypeDropdown.setBounds (controlArea.removeFromTop (20).reduced (0, 1));
+
+    controlArea.removeFromTop (4);
+    magnitudeLabel.setBounds (controlArea.removeFromTop (12));
+    magnitudeSlider.setBounds (controlArea.removeFromTop (18));
+
+    controlArea.removeFromTop (2);
+    stretchLabel.setBounds (controlArea.removeFromTop (12));
+    stretchSlider.setBounds (controlArea.removeFromTop (18));
+
+    auto presetBounds = getPresetBounds();
+    auto typeBounds = presetBounds.removeFromLeft (86).reduced (0, 10);
+    presetTypeDropdown.setBounds (typeBounds);
+
+    presetBounds.removeFromLeft (4);
+    auto buttonWidth = presetBounds.getWidth() / kPresetButtonCount;
+    for (int i = 0; i < kPresetButtonCount; ++i)
+    {
+        auto buttonBounds = presetBounds.removeFromLeft (i == kPresetButtonCount - 1
+                                                            ? presetBounds.getWidth()
+                                                            : buttonWidth);
+        if (auto* button = presetButtons[static_cast<size_t> (i)].get())
+            button->setBounds (buttonBounds.reduced (2, 1));
+    }
 }
 
 juce::Rectangle<int> PluginAutomationComponent::getGraphBounds() const
@@ -188,8 +406,16 @@ juce::Rectangle<int> PluginAutomationComponent::getGraphBounds() const
     auto bounds = getLocalBounds().withTrimmedTop (kDragHandleHeight).reduced (4);
     bounds.removeFromLeft (kControlsWidth + 4);
     bounds.removeFromTop (2);
-    bounds.removeFromBottom (2);
+    bounds.removeFromBottom (kPresetStripHeight + 4);
     return bounds;
+}
+
+juce::Rectangle<int> PluginAutomationComponent::getPresetBounds() const
+{
+    auto bounds = getLocalBounds().withTrimmedTop (kDragHandleHeight).reduced (4);
+    bounds.removeFromLeft (kControlsWidth + 4);
+    bounds.removeFromTop (2);
+    return bounds.removeFromBottom (kPresetStripHeight);
 }
 
 //==============================================================================
@@ -209,6 +435,13 @@ void PluginAutomationComponent::setPatternLength (int numRows)
 {
     patternLength = juce::jmax (1, numRows);
     clampViewToPattern();
+    repaint();
+}
+
+void PluginAutomationComponent::setRowsPerBeat (int rpb)
+{
+    rowsPerBeat = juce::jlimit (1, 16, rpb);
+    refreshPresetButtons();
     repaint();
 }
 
@@ -480,6 +713,320 @@ AutomationCurveType PluginAutomationComponent::getSelectedCurveType() const
         case 4:  return AutomationCurveType::SCurve;
         default: return AutomationCurveType::Linear;
     }
+}
+
+//==============================================================================
+// Curve transform sliders and preset generation
+//==============================================================================
+
+std::vector<int> PluginAutomationComponent::getTransformTargetIndices() const
+{
+    auto* lane = getCurrentLane();
+    if (lane == nullptr)
+        return {};
+
+    std::vector<int> indices;
+    indices.reserve (selectedPoints.empty() ? lane->points.size() : selectedPoints.size());
+
+    if (selectedPoints.empty())
+    {
+        for (int i = 0; i < static_cast<int> (lane->points.size()); ++i)
+            indices.push_back (i);
+    }
+    else
+    {
+        for (auto idx : selectedPoints)
+            if (idx >= 0 && idx < static_cast<int> (lane->points.size()))
+                indices.push_back (idx);
+    }
+
+    return indices;
+}
+
+void PluginAutomationComponent::beginPointTransform()
+{
+    if (pointTransformSnapshot.active)
+        return;
+
+    auto* lane = getCurrentLane();
+    if (lane == nullptr || lane->points.empty())
+        return;
+
+    pointTransformSnapshot.points = lane->points;
+    pointTransformSnapshot.targetIndices = getTransformTargetIndices();
+    pointTransformSnapshot.undoPushed = false;
+    pointTransformSnapshot.active = true;
+}
+
+void PluginAutomationComponent::applyPointTransformFromSliders()
+{
+    if (suppressTransformSliderCallbacks)
+        return;
+
+    updateTransformSliderLabels();
+
+    auto magnitude = static_cast<float> (magnitudeSlider.getValue());
+    auto stretch = static_cast<float> (stretchSlider.getValue());
+    if (std::abs (magnitude - 1.0f) < 0.001f && std::abs (stretch - 1.0f) < 0.001f)
+        return;
+
+    if (! pointTransformSnapshot.active)
+        beginPointTransform();
+
+    if (! pointTransformSnapshot.active)
+        return;
+
+    auto* lane = getCurrentLane();
+    if (lane == nullptr)
+        return;
+
+    if (! pointTransformSnapshot.undoPushed)
+    {
+        pushUndoState();
+        pointTransformSnapshot.undoPushed = true;
+    }
+
+    lane->points = AutomationCurveTools::transformPoints (pointTransformSnapshot.points,
+                                                          pointTransformSnapshot.targetIndices,
+                                                          magnitude,
+                                                          stretch,
+                                                          baseline,
+                                                          patternLength);
+    notifyAndRepaint();
+}
+
+void PluginAutomationComponent::endPointTransform()
+{
+    if (pointTransformSnapshot.active)
+    {
+        pointTransformSnapshot = {};
+        selectedPoints.clear();
+    }
+
+    juce::ScopedValueSetter<bool> suppressCallbacks (suppressTransformSliderCallbacks, true);
+    magnitudeSlider.setValue (1.0, juce::dontSendNotification);
+    stretchSlider.setValue (1.0, juce::dontSendNotification);
+    updateTransformSliderLabels();
+    repaint();
+}
+
+void PluginAutomationComponent::updateTransformSliderLabels()
+{
+    magnitudeLabel.setText ("Mag " + juce::String (magnitudeSlider.getValue(), 2) + "x",
+                            juce::dontSendNotification);
+    stretchLabel.setText ("Stretch " + juce::String (stretchSlider.getValue(), 2) + "x",
+                          juce::dontSendNotification);
+}
+
+void PluginAutomationComponent::presetTypeChanged()
+{
+    clearStampSelection();
+    refreshPresetButtons();
+}
+
+std::vector<float> PluginAutomationComponent::buildPresetPreview (AutomationCurveTools::StandardCurve curve,
+                                                                   int sampleCount)
+{
+    auto samples = juce::jmax (2, sampleCount);
+    std::vector<float> preview;
+    preview.reserve (static_cast<size_t> (samples));
+
+    for (int i = 0; i < samples; ++i)
+    {
+        auto phase = static_cast<float> (i) / static_cast<float> (samples - 1);
+        preview.push_back (AutomationCurveTools::evaluateStandardCurve (curve, phase, i, samples));
+    }
+
+    return preview;
+}
+
+std::vector<float> PluginAutomationComponent::buildStampPreview (AutomationCurveTools::StandardStamp stamp,
+                                                                  int sampleCount)
+{
+    auto samples = juce::jmax (2, sampleCount);
+    auto points = AutomationCurveTools::makeStampPoints (stamp, 0, juce::jmax (1, samples / 4),
+                                                         samples, 0.5f, 0.5f);
+    std::vector<float> preview;
+    preview.reserve (static_cast<size_t> (samples));
+
+    for (int i = 0; i < samples; ++i)
+    {
+        auto it = std::find_if (points.begin(), points.end(),
+                                [i] (const AutomationPoint& point) { return point.row == i; });
+        preview.push_back (it != points.end() ? it->value : 0.5f);
+    }
+
+    return preview;
+}
+
+bool PluginAutomationComponent::isStampCategorySelected() const
+{
+    return presetTypeDropdown.getSelectedId() == 4;
+}
+
+void PluginAutomationComponent::refreshPresetButtons()
+{
+    if (isStampCategorySelected())
+    {
+        auto slots = getStampSlots();
+
+        for (int i = 0; i < kPresetButtonCount; ++i)
+        {
+            auto& slot = slots[static_cast<size_t> (i)];
+            if (auto* button = presetButtons[static_cast<size_t> (i)].get())
+            {
+                button->setStamp (slot.stamp,
+                                  slot.name,
+                                  buildStampPreview (slot.stamp, 32));
+                button->setStampSelected (stampArmed && selectedStampButtonIndex == i);
+            }
+        }
+
+        return;
+    }
+
+    auto slots = getPresetSlotsForCategory (presetTypeDropdown.getSelectedId());
+
+    for (int i = 0; i < kPresetButtonCount; ++i)
+    {
+        auto& slot = slots[static_cast<size_t> (i)];
+        if (auto* button = presetButtons[static_cast<size_t> (i)].get())
+        {
+            button->setPreset (slot.curve,
+                               slot.name,
+                               buildPresetPreview (slot.curve, 32),
+                               AutomationCurveTools::isSteppedStandardCurve (slot.curve));
+            button->setStampSelected (false);
+        }
+    }
+}
+
+void PluginAutomationComponent::applyPreset (int presetButtonIndex)
+{
+    if (isStampCategorySelected())
+    {
+        selectStamp (presetButtonIndex);
+        return;
+    }
+
+    if (automationData == nullptr
+        || presetButtonIndex < 0
+        || presetButtonIndex >= kPresetButtonCount)
+        return;
+
+    auto pluginId = getSelectedPluginId();
+    int paramIdx = getSelectedParameterIndex();
+    if (pluginId.isEmpty() || paramIdx < 0)
+        return;
+
+    auto* button = presetButtons[static_cast<size_t> (presetButtonIndex)].get();
+    if (button == nullptr)
+        return;
+
+    pushUndoState();
+
+    int ownerTrack = getSelectedPluginOwnerTrack();
+    auto& lane = automationData->getOrCreateLane (pluginId, paramIdx, ownerTrack);
+    lane.points = AutomationCurveTools::makeStandardCurvePoints (button->getPreset(), patternLength);
+    selectedPoints.clear();
+
+    notifyAndRepaint();
+}
+
+void PluginAutomationComponent::selectStamp (int presetButtonIndex)
+{
+    if (presetButtonIndex < 0 || presetButtonIndex >= kPresetButtonCount)
+        return;
+
+    auto* button = presetButtons[static_cast<size_t> (presetButtonIndex)].get();
+    if (button == nullptr)
+        return;
+
+    if (stampArmed && selectedStampButtonIndex == presetButtonIndex)
+    {
+        clearStampSelection();
+        return;
+    }
+
+    selectedStamp = button->getStamp();
+    selectedStampButtonIndex = presetButtonIndex;
+    stampArmed = true;
+    stampPreviewVisible = false;
+    refreshPresetButtons();
+    repaint();
+}
+
+void PluginAutomationComponent::clearStampSelection()
+{
+    stampArmed = false;
+    selectedStampButtonIndex = -1;
+    stampPreviewVisible = false;
+    stampPreviewStartRow = -1;
+    stampPreviewPoints.clear();
+
+    for (auto& button : presetButtons)
+        if (button != nullptr)
+            button->setStampSelected (false);
+}
+
+void PluginAutomationComponent::updateStampPreview (juce::Point<float> screenPos)
+{
+    if (! stampArmed)
+        return;
+
+    auto data = screenToData (screenPos);
+    auto row = snapRow (juce::roundToInt (data.x));
+    auto* lane = getCurrentLane();
+    auto startValue = lane != nullptr ? lane->getValueAtRow (static_cast<float> (row), baseline)
+                                      : baseline;
+    auto lengthRows = AutomationCurveTools::getStampLengthRows (selectedStamp, rowsPerBeat);
+    auto endRow = juce::jlimit (row, patternLength - 1, row + lengthRows - 1);
+    auto endValue = lane != nullptr ? lane->getValueAtRow (static_cast<float> (endRow), baseline)
+                                    : baseline;
+
+    stampPreviewStartRow = row;
+    stampPreviewPoints = AutomationCurveTools::makeStampPoints (selectedStamp,
+                                                                row,
+                                                                rowsPerBeat,
+                                                                patternLength,
+                                                                startValue,
+                                                                endValue);
+    stampPreviewVisible = ! stampPreviewPoints.empty();
+}
+
+void PluginAutomationComponent::applySelectedStampAtRow (int startRow)
+{
+    if (! stampArmed || automationData == nullptr)
+        return;
+
+    auto pluginId = getSelectedPluginId();
+    int paramIdx = getSelectedParameterIndex();
+    if (pluginId.isEmpty() || paramIdx < 0)
+        return;
+
+    pushUndoState();
+
+    int ownerTrack = getSelectedPluginOwnerTrack();
+    auto& lane = automationData->getOrCreateLane (pluginId, paramIdx, ownerTrack);
+    auto row = juce::jlimit (0, patternLength - 1, startRow);
+    auto lengthRows = AutomationCurveTools::getStampLengthRows (selectedStamp, rowsPerBeat);
+    auto endRow = juce::jlimit (row, patternLength - 1, row + lengthRows - 1);
+    auto startValue = lane.getValueAtRow (static_cast<float> (row), baseline);
+    auto endValue = lane.getValueAtRow (static_cast<float> (endRow), baseline);
+    auto stampPoints = AutomationCurveTools::makeStampPoints (selectedStamp,
+                                                              row,
+                                                              rowsPerBeat,
+                                                              patternLength,
+                                                              startValue,
+                                                              endValue);
+
+    lane.points = AutomationCurveTools::replacePointsInRange (lane.points, stampPoints, row, endRow);
+    selectedPoints.clear();
+    stampPreviewPoints = stampPoints;
+    stampPreviewStartRow = row;
+    stampPreviewVisible = true;
+
+    notifyAndRepaint();
 }
 
 //==============================================================================
@@ -867,6 +1414,13 @@ void PluginAutomationComponent::mouseDown (const juce::MouseEvent& e)
     auto* lane = getCurrentLane();
     int nearIdx = lane != nullptr ? findPointNear (screenPos, 10.0f) : -1;
 
+    if (stampArmed)
+    {
+        auto data = screenToData (screenPos);
+        applySelectedStampAtRow (snapRow (juce::roundToInt (data.x)));
+        return;
+    }
+
     // Freehand draw mode
     if (drawMode)
     {
@@ -1102,11 +1656,14 @@ void PluginAutomationComponent::mouseMove (const juce::MouseEvent& e)
     }
     else if (graphBounds.contains (e.getPosition()))
     {
-        setMouseCursor (drawMode ? juce::MouseCursor::CrosshairCursor
-                                 : juce::MouseCursor::NormalCursor);
+        setMouseCursor ((drawMode || stampArmed) ? juce::MouseCursor::CrosshairCursor
+                                                 : juce::MouseCursor::NormalCursor);
 
         // Hover tooltip
         auto screenPos = e.getPosition().toFloat();
+        if (stampArmed)
+            updateStampPreview (screenPos);
+
         int nearIdx = findPointNear (screenPos, 12.0f);
 
         if (nearIdx >= 0)
@@ -1130,6 +1687,12 @@ void PluginAutomationComponent::mouseMove (const juce::MouseEvent& e)
         if (showHoverTooltip)
         {
             showHoverTooltip = false;
+            repaint();
+        }
+        if (stampPreviewVisible)
+        {
+            stampPreviewVisible = false;
+            stampPreviewPoints.clear();
             repaint();
         }
     }
@@ -1200,6 +1763,13 @@ void PluginAutomationComponent::mouseDoubleClick (const juce::MouseEvent& e)
 bool PluginAutomationComponent::keyPressed (const juce::KeyPress& key)
 {
     bool cmd = key.getModifiers().isCommandDown();
+
+    if (key == juce::KeyPress::escapeKey && stampArmed)
+    {
+        clearStampSelection();
+        repaint();
+        return true;
+    }
 
     // Delete selected points
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
@@ -1373,6 +1943,53 @@ void PluginAutomationComponent::drawCurve (juce::Graphics& g, juce::Rectangle<in
 
         g.setColour (colour.withAlpha (alpha * 0.1f));
         g.fillPath (fillPath);
+    }
+}
+
+void PluginAutomationComponent::drawStampPreview (juce::Graphics& g, juce::Rectangle<int> bounds) const
+{
+    if (! stampPreviewVisible || stampPreviewPoints.empty())
+        return;
+
+    auto fb = bounds.toFloat();
+    auto startRow = stampPreviewPoints.front().row;
+    auto endRow = stampPreviewPoints.back().row;
+    auto startX = dataToScreen (static_cast<float> (startRow), 0.0f).x;
+    auto endX = dataToScreen (static_cast<float> (endRow), 0.0f).x;
+    auto highlight = juce::Rectangle<float> (juce::jmin (startX, endX),
+                                             fb.getY(),
+                                             std::abs (endX - startX),
+                                             fb.getHeight()).getIntersection (fb);
+
+    g.setColour (juce::Colour (0xff44aaff).withAlpha (0.12f));
+    g.fillRect (highlight);
+    g.setColour (juce::Colour (0xff44aaff).withAlpha (0.4f));
+    g.drawRect (highlight, 1.0f);
+
+    juce::Path path;
+    bool started = false;
+
+    for (const auto& point : stampPreviewPoints)
+    {
+        auto sp = dataToScreen (static_cast<float> (point.row), point.value);
+        if (sp.x < fb.getX() - 2.0f || sp.x > fb.getRight() + 2.0f)
+            continue;
+
+        if (! started)
+        {
+            path.startNewSubPath (sp);
+            started = true;
+        }
+        else
+        {
+            path.lineTo (sp);
+        }
+    }
+
+    if (started)
+    {
+        g.setColour (juce::Colour (0xffffcc44).withAlpha (0.9f));
+        g.strokePath (path, juce::PathStrokeType (2.0f));
     }
 }
 

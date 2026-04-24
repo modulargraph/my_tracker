@@ -1,4 +1,5 @@
 #include "TrackOutputPlugin.h"
+#include "DspUtils.h"
 
 const char* TrackOutputPlugin::xmlTypeName = "TrackOutput";
 
@@ -65,18 +66,10 @@ void TrackOutputPlugin::deinitialise()
 
 void TrackOutputPlugin::processVolumeAndPan (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
 {
-    float gain;
-    if (localMixState.volume <= -99.0)
-        gain = 0.0f;
-    else
-        gain = juce::Decibels::decibelsToGain (static_cast<float> (localMixState.volume));
+    const auto gains = DspUtils::getEqualPowerPanGains (localMixState.volume, localMixState.pan);
 
-    float panNorm = (static_cast<float> (localMixState.pan) + 50.0f) / 100.0f;
-    float targetLeftGain  = gain * std::cos (panNorm * juce::MathConstants<float>::halfPi);
-    float targetRightGain = gain * std::sin (panNorm * juce::MathConstants<float>::halfPi);
-
-    smoothedGainL.setTargetValue (targetLeftGain);
-    smoothedGainR.setTargetValue (targetRightGain);
+    smoothedGainL.setTargetValue (gains.left);
+    smoothedGainR.setTargetValue (gains.right);
 
     if (buffer.getNumChannels() >= 2)
     {

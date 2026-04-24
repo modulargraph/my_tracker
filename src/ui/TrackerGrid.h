@@ -101,6 +101,8 @@ public:
     std::function<juce::String (int instrumentIndex, int trackIndex)> onValidateNoteEntry;
     // Callback for chord-entry note keys. Return true when the key was handled.
     std::function<bool (int rootNote, int row, int track, int startNoteLane, int instrument)> onChordEntryRequested;
+    // Callback for selection transpose shortcuts. Semitones may be +/-1 or +/-12.
+    std::function<void (int semitones)> onTransposeSelectionRequested;
 
     // Layout constants (public for toolbar/status)
     static constexpr int kRowNumberWidth = 30;

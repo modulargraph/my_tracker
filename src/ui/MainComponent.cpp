@@ -758,6 +758,8 @@ MainComponent::MainComponent()
         int rpb = juce::jlimit (1, 16, trackerEngine.getRowsPerBeat() + delta);
         trackerEngine.setRowsPerBeat (rpb);
         trackerGrid->setRowsPerBeat (rpb);
+        if (automationPanel != nullptr)
+            automationPanel->setRowsPerBeat (rpb);
 
         if (trackerEngine.isPlaying())
             resyncPlaybackForCurrentMode();
@@ -1338,6 +1340,7 @@ MainComponent::MainComponent()
 
     // Create automation panel (bottom panel in tracker tab)
     automationPanel = std::make_unique<PluginAutomationComponent> (trackerLookAndFeel);
+    automationPanel->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     addChildComponent (*automationPanel);
     automationPanel->onAutomationChanged = [this]
     {
@@ -1427,6 +1430,11 @@ MainComponent::MainComponent()
     trackerGrid->onChordEntryRequested = [this] (int rootNote, int row, int track, int startNoteLane, int instrument)
     {
         return enterChordFromKeyboardNote (rootNote, row, track, startNoteLane, instrument);
+    };
+
+    trackerGrid->onTransposeSelectionRequested = [this] (int semitones)
+    {
+        transposeSelectedNotes (semitones);
     };
 
     // Cursor moved callback
@@ -1817,6 +1825,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     auto keyCode = key.getKeyCode();
     bool cmd = key.getModifiers().isCommandDown();
     bool shift = key.getModifiers().isShiftDown();
+    bool ctrl = key.getModifiers().isCtrlDown();
     auto textChar = key.getTextCharacter();
     bool alt = key.getModifiers().isAltDown();
 
@@ -1889,6 +1898,18 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         trackerEngine.togglePlayStop();
         updateStatusBar();
         updateToolbar();
+        return true;
+    }
+
+    // Ctrl+Arrow transposes the active selection when a block is selected.
+    // Without a selection, TrackerGrid keeps handling Ctrl+Arrow for the current note.
+    if (ctrl && ! cmd && ! shift && trackerGrid->hasSelection
+        && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey
+            || keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey))
+    {
+        const bool semitone = (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey);
+        const bool up = (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::rightKey);
+        transposeSelectedNotes (up ? (semitone ? 1 : 12) : (semitone ? -1 : -12));
         return true;
     }
 
@@ -3098,6 +3119,29 @@ void MainComponent::transposeNotesInRange (int startRow, int endRow, int startVi
     }
 }
 
+void MainComponent::transposeSelectedNotes (int semitones)
+{
+    if (trackerGrid == nullptr || ! trackerGrid->hasSelection)
+        return;
+
+    const int trackLaneCount = trackLayout.getTrackLaneCount();
+    if (trackLaneCount <= 0)
+        return;
+
+    int minRow, maxRow, minViTrack, maxViTrack;
+    trackerGrid->getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
+
+    if (minViTrack > trackLaneCount - 1 || maxViTrack < 0)
+    {
+        setTemporaryStatus ("Selection has no note tracks", true, 1800);
+        return;
+    }
+
+    const int startVisual = juce::jlimit (0, trackLaneCount - 1, minViTrack);
+    const int endVisual = juce::jlimit (0, trackLaneCount - 1, maxViTrack);
+    transposeNotesInRange (minRow, maxRow, startVisual, endVisual, semitones);
+}
+
 void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
 {
     const bool isMasterColumn = (track == TrackerGrid::kMasterLaneTrack);
@@ -3521,6 +3565,8 @@ void MainComponent::newProject()
     trackerEngine.setBpm (120.0);
     trackerEngine.setRowsPerBeat (4);
     trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
+    if (automationPanel != nullptr)
+        automationPanel->setRowsPerBeat (trackerEngine.getRowsPerBeat());
     trackerEngine.invalidateTrackInstruments();
     trackerEngine.setInstrumentSlotInfos ({});
     mixerState.reset();
@@ -3583,6 +3629,8 @@ void MainComponent::openProject()
                               trackerEngine.setBpm (bpm);
                               trackerEngine.setRowsPerBeat (rpb);
                               trackerGrid->setRowsPerBeat (trackerEngine.getRowsPerBeat());
+                              if (automationPanel != nullptr)
+                                  automationPanel->setRowsPerBeat (trackerEngine.getRowsPerBeat());
 
                               // Reload samples
                               trackerEngine.getSampler().clearLoadedSamples();
@@ -3775,8 +3823,8 @@ void MainComponent::showHelpOverlay()
                     "Cmd+Shift+Left   Prev pattern",
                     "Cmd+Shift+Right  Next pattern",
                     "Cmd+Opt+Shift+Right Add pattern",
-                    "Ctrl+Up/Down     Semitone note",
-                    "Ctrl+Left/Right  Octave note",
+                    "Ctrl+Up/Down     Semitone note/sel",
+                    "Ctrl+Left/Right  Octave note/sel",
                     "Right-click      Generate / transpose",
                     "Cmd+Down/Up       Instrument +/-",
                     "Cmd+M             Mute track",
@@ -4461,6 +4509,7 @@ void MainComponent::refreshAutomationPanel (bool forcePopulate)
     auto& pat = patternData.getCurrentPattern();
     automationPanel->setAutomationData (&pat.getAutomationData());
     automationPanel->setPatternLength (pat.numRows);
+    automationPanel->setRowsPerBeat (trackerEngine.getRowsPerBeat());
 
     int curTrack = trackerGrid->getCursorTrack();
     automationPanel->setCurrentTrack (curTrack);
@@ -4675,6 +4724,7 @@ void MainComponent::navigateToAutomationParam (const juce::String& pluginId, int
             auto& pat = patternData.getCurrentPattern();
             automationPanel->setAutomationData (&pat.getAutomationData());
             automationPanel->setPatternLength (pat.numRows);
+            automationPanel->setRowsPerBeat (trackerEngine.getRowsPerBeat());
             automationPanel->setCurrentTrack (trackerGrid->getCursorTrack());
 
             // Lightweight population for auto-learn navigation: avoid expensive

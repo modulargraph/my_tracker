@@ -3,6 +3,8 @@
 #include <JuceHeader.h>
 #include "PluginAutomationData.h"
 #include "TrackerLookAndFeel.h"
+#include <array>
+#include <memory>
 #include <set>
 
 //==============================================================================
@@ -33,11 +35,13 @@ struct AutomatablePluginInfo
 class PluginAutomationComponent : public juce::Component
 {
 public:
-    static constexpr int kDefaultPanelHeight = 140;
-    static constexpr int kMinPanelHeight = 80;
+    static constexpr int kDefaultPanelHeight = 180;
+    static constexpr int kMinPanelHeight = 120;
     static constexpr int kMaxPanelHeight = 400;
     static constexpr int kControlsWidth = 180;
     static constexpr int kDragHandleHeight = 5;
+    static constexpr int kPresetStripHeight = 42;
+    static constexpr int kPresetButtonCount = 4;
 
     // Kept for backward compat with MainComponent layout queries
     static constexpr int kPanelHeight = kDefaultPanelHeight;
@@ -60,6 +64,7 @@ public:
 
     void setAutomationData (PatternAutomationData* data);
     void setPatternLength (int numRows);
+    void setRowsPerBeat (int rpb);
     void setCurrentTrack (int trackIndex);
     void setBaseline (float baselineValue);
     void setAvailablePlugins (const std::vector<AutomatablePluginInfo>& plugins);
@@ -142,11 +147,39 @@ public:
     static juce::Colour getLaneColour (int index);
 
 private:
+    class CurvePresetButton : public juce::Button
+    {
+    public:
+        CurvePresetButton();
+
+        void setPreset (AutomationCurveTools::StandardCurve curveToUse,
+                        juce::String buttonLabel,
+                        std::vector<float> preview,
+                        bool steppedPreview);
+        void setStamp (AutomationCurveTools::StandardStamp stampToUse,
+                       juce::String buttonLabel,
+                       std::vector<float> preview);
+        AutomationCurveTools::StandardCurve getPreset() const { return curve; }
+        AutomationCurveTools::StandardStamp getStamp() const { return stamp; }
+        void setStampSelected (bool shouldBeSelected);
+        void paintButton (juce::Graphics& g, bool shouldDrawButtonAsHighlighted,
+                          bool shouldDrawButtonAsDown) override;
+
+    private:
+        AutomationCurveTools::StandardCurve curve = AutomationCurveTools::StandardCurve::Sine;
+        AutomationCurveTools::StandardStamp stamp = AutomationCurveTools::StandardStamp::UpOneBar;
+        juce::String label;
+        std::vector<float> previewValues;
+        bool stepped = false;
+        bool stampSelected = false;
+    };
+
     TrackerLookAndFeel& lookAndFeel;
 
     // Data
     PatternAutomationData* automationData = nullptr;
     int patternLength = 64;
+    int rowsPerBeat = 4;
     int currentTrack = 0;
     float baseline = 0.5f;
 
@@ -160,6 +193,12 @@ private:
     juce::TextButton drawButton { "Draw" };
     juce::TextButton recButton { "Rec" };
     juce::TextButton overlayButton { "Ovl" };
+    juce::Label magnitudeLabel;
+    juce::Label stretchLabel;
+    juce::Slider magnitudeSlider;
+    juce::Slider stretchSlider;
+    juce::ComboBox presetTypeDropdown;
+    std::array<std::unique_ptr<CurvePresetButton>, kPresetButtonCount> presetButtons;
 
     // Available plugins and their parameter lists
     std::vector<AutomatablePluginInfo> availablePlugins;
@@ -173,6 +212,7 @@ private:
 
     // Graph area
     juce::Rectangle<int> getGraphBounds() const;
+    juce::Rectangle<int> getPresetBounds() const;
 
     // Point interaction
     int dragPointIndex = -1;
@@ -192,6 +232,14 @@ private:
 
     // Playback position
     int playbackRow = -1;
+
+    // Stamp mode
+    bool stampArmed = false;
+    int selectedStampButtonIndex = -1;
+    AutomationCurveTools::StandardStamp selectedStamp = AutomationCurveTools::StandardStamp::UpOneBar;
+    bool stampPreviewVisible = false;
+    int stampPreviewStartRow = -1;
+    std::vector<AutomationPoint> stampPreviewPoints;
 
     // Overlay (show all lanes for selected plugin)
     bool overlayEnabled = false;
@@ -226,6 +274,22 @@ private:
     UndoSnapshot captureCurrentState() const;
     void restoreState (const UndoSnapshot& state);
 
+    // Curve transforms
+    struct PointTransformSnapshot
+    {
+        std::vector<AutomationPoint> points;
+        std::vector<int> targetIndices;
+        bool active = false;
+        bool undoPushed = false;
+    };
+    PointTransformSnapshot pointTransformSnapshot;
+    bool suppressTransformSliderCallbacks = false;
+    void beginPointTransform();
+    void applyPointTransformFromSliders();
+    void endPointTransform();
+    void updateTransformSliderLabels();
+    std::vector<int> getTransformTargetIndices() const;
+
     // Recording
     bool recordingEnabled = false;
 
@@ -255,6 +319,16 @@ private:
     void pluginSelectionChanged();
     void parameterSelectionChanged();
     void curveTypeChanged();
+    void presetTypeChanged();
+    void refreshPresetButtons();
+    void applyPreset (int presetButtonIndex);
+    static std::vector<float> buildPresetPreview (AutomationCurveTools::StandardCurve curve, int sampleCount);
+    static std::vector<float> buildStampPreview (AutomationCurveTools::StandardStamp stamp, int sampleCount);
+    bool isStampCategorySelected() const;
+    void selectStamp (int presetButtonIndex);
+    void clearStampSelection();
+    void updateStampPreview (juce::Point<float> screenPos);
+    void applySelectedStampAtRow (int startRow);
     void drawGrid (juce::Graphics& g, juce::Rectangle<int> bounds) const;
     void drawCurve (juce::Graphics& g, juce::Rectangle<int> bounds,
                     const AutomationLane* lane, juce::Colour colour, float alpha) const;
@@ -265,6 +339,7 @@ private:
     void drawHoverTooltip (juce::Graphics& g) const;
     void drawSelectionRect (juce::Graphics& g) const;
     void drawOverlayLanes (juce::Graphics& g, juce::Rectangle<int> bounds) const;
+    void drawStampPreview (juce::Graphics& g, juce::Rectangle<int> bounds) const;
 
     // Default curve type for new points
     AutomationCurveType getSelectedCurveType() const;

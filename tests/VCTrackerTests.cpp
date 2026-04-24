@@ -9,6 +9,7 @@
 
 #include "Arrangement.h"
 #include "ArrangementComponent.h"
+#include "DspUtils.h"
 #include "InstrumentRouting.h"
 #include "InstrumentPlaybackTiming.h"
 #include "FxParamTransport.h"
@@ -53,6 +54,18 @@ bool vectorsClose (const std::vector<double>& a, const std::vector<double>& b, d
     }
 
     return true;
+}
+
+float channelRms (const juce::AudioBuffer<float>& buffer, int channel, int startSample, int numSamples)
+{
+    double sum = 0.0;
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const float sample = buffer.getSample (channel, startSample + i);
+        sum += static_cast<double> (sample) * static_cast<double> (sample);
+    }
+
+    return static_cast<float> (std::sqrt (sum / static_cast<double> (juce::jmax (1, numSamples))));
 }
 
 juce::KeyPress makeTextKey (char ch)
@@ -491,6 +504,189 @@ bool testPanMappingCenterAndExtremes()
     {
         std::cerr << "CC10 pan should be negative below 64 and positive above 64\n";
         return false;
+    }
+
+    return true;
+}
+
+bool testMixerDspPanLawAndVolume()
+{
+    const auto left = DspUtils::getEqualPowerPanGains (0.0, -50);
+    if (! floatsClose (left.left, 1.0f) || ! floatsClose (left.right, 0.0f))
+    {
+        std::cerr << "hard-left pan gains are wrong\n";
+        return false;
+    }
+
+    const auto center = DspUtils::getEqualPowerPanGains (0.0, 0);
+    const float expectedCenter = std::sqrt (0.5f);
+    if (! floatsClose (center.left, expectedCenter, 1.0e-6f)
+        || ! floatsClose (center.right, expectedCenter, 1.0e-6f))
+    {
+        std::cerr << "center pan should use equal-power gains\n";
+        return false;
+    }
+
+    const auto right = DspUtils::getEqualPowerPanGains (0.0, 50);
+    if (! floatsClose (right.left, 0.0f, 1.0e-6f) || ! floatsClose (right.right, 1.0f))
+    {
+        std::cerr << "hard-right pan gains are wrong\n";
+        return false;
+    }
+
+    const auto muted = DspUtils::getEqualPowerPanGains (-100.0, 0);
+    if (! floatsClose (muted.left, 0.0f) || ! floatsClose (muted.right, 0.0f))
+    {
+        std::cerr << "muted mixer volume should produce zero pan gains\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testMixerDspFlatEqPassesThrough()
+{
+    juce::AudioBuffer<float> buffer (2, 64);
+    juce::AudioBuffer<float> original (2, 64);
+
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        for (int i = 0; i < 64; ++i)
+        {
+            const float sample = static_cast<float> ((ch + 1) * 0.01 * (i - 16));
+            buffer.setSample (ch, i, sample);
+            original.setSample (ch, i, sample);
+        }
+    }
+
+    juce::dsp::IIR::Filter<float> lowL, lowR, midL, midR, highL, highR;
+    DspUtils::initFlatEQ (48000.0, lowL, lowR, midL, midR, highL, highR);
+    DspUtils::process3BandEQ (buffer, 0, buffer.getNumSamples(), 48000.0,
+                              0.0, 0.0, 0.0, 1000.0,
+                              lowL, lowR, midL, midR, highL, highR);
+
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        for (int i = 0; i < 64; ++i)
+        {
+            if (! floatsClose (buffer.getSample (ch, i), original.getSample (ch, i)))
+            {
+                std::cerr << "flat EQ changed audio at channel " << ch << ", sample " << i << "\n";
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool testMixerDspEqBoostAffectsTargetBand()
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int numSamples = 4096;
+    juce::AudioBuffer<float> buffer (2, numSamples);
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const float sample = 0.1f * std::sin (2.0f * juce::MathConstants<float>::pi
+                                             * 100.0f * static_cast<float> (i)
+                                             / static_cast<float> (sampleRate));
+        buffer.setSample (0, i, sample);
+        buffer.setSample (1, i, sample);
+    }
+
+    const float before = channelRms (buffer, 0, numSamples / 2, numSamples / 2);
+
+    juce::dsp::IIR::Filter<float> lowL, lowR, midL, midR, highL, highR;
+    DspUtils::initFlatEQ (sampleRate, lowL, lowR, midL, midR, highL, highR);
+    DspUtils::process3BandEQ (buffer, 0, numSamples, sampleRate,
+                              6.0, 0.0, 0.0, 1000.0,
+                              lowL, lowR, midL, midR, highL, highR);
+
+    const float after = channelRms (buffer, 0, numSamples / 2, numSamples / 2);
+    if (after <= before * 1.3f)
+    {
+        std::cerr << "low shelf boost did not raise low-frequency RMS enough\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testMixerDspCompressorReducesHotSignal()
+{
+    juce::AudioBuffer<float> hot (2, 512);
+    hot.clear();
+    for (int ch = 0; ch < hot.getNumChannels(); ++ch)
+        for (int i = 0; i < hot.getNumSamples(); ++i)
+            hot.setSample (ch, i, 1.0f);
+
+    float envelope = 0.0f;
+    DspUtils::processCompressor (hot, 0, hot.getNumSamples(), 48000.0, envelope,
+                                 -12.0, 4.0, 0.1, 50.0);
+
+    if (hot.getSample (0, hot.getNumSamples() - 1) >= 0.6f)
+    {
+        std::cerr << "compressor did not reduce signal above threshold\n";
+        return false;
+    }
+
+    juce::AudioBuffer<float> quiet (2, 128);
+    for (int ch = 0; ch < quiet.getNumChannels(); ++ch)
+        for (int i = 0; i < quiet.getNumSamples(); ++i)
+            quiet.setSample (ch, i, 0.1f);
+
+    envelope = 0.0f;
+    DspUtils::processCompressor (quiet, 0, quiet.getNumSamples(), 48000.0, envelope,
+                                 -12.0, 4.0, 0.1, 50.0);
+
+    if (! floatsClose (quiet.getSample (0, quiet.getNumSamples() - 1), 0.1f, 1.0e-5f))
+    {
+        std::cerr << "compressor changed signal below threshold\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testMixerDspLimiterStartsOpenAndClamps()
+{
+    juce::AudioBuffer<float> belowThreshold (2, 64);
+    for (int ch = 0; ch < belowThreshold.getNumChannels(); ++ch)
+        for (int i = 0; i < belowThreshold.getNumSamples(); ++i)
+            belowThreshold.setSample (ch, i, 0.1f);
+
+    float limiterEnvelope = 0.0f;
+    DspUtils::processPeakLimiter (belowThreshold, 0, belowThreshold.getNumSamples(),
+                                  48000.0, limiterEnvelope, -6.0, 50.0);
+
+    if (! floatsClose (belowThreshold.getSample (0, 0), 0.1f, 1.0e-6f)
+        || ! floatsClose (belowThreshold.getSample (1, belowThreshold.getNumSamples() - 1), 0.1f, 1.0e-6f))
+    {
+        std::cerr << "limiter should start open for signal below threshold\n";
+        return false;
+    }
+
+    juce::AudioBuffer<float> hot (2, 64);
+    for (int ch = 0; ch < hot.getNumChannels(); ++ch)
+        for (int i = 0; i < hot.getNumSamples(); ++i)
+            hot.setSample (ch, i, 2.0f);
+
+    limiterEnvelope = 1.0f;
+    DspUtils::processPeakLimiter (hot, 0, hot.getNumSamples(),
+                                  48000.0, limiterEnvelope, -6.0, 50.0);
+
+    const float threshold = juce::Decibels::decibelsToGain (-6.0f);
+    for (int ch = 0; ch < hot.getNumChannels(); ++ch)
+    {
+        for (int i = 0; i < hot.getNumSamples(); ++i)
+        {
+            if (std::abs (hot.getSample (ch, i)) > threshold + 1.0e-5f)
+            {
+                std::cerr << "limiter let sample exceed threshold\n";
+                return false;
+            }
+        }
     }
 
     return true;
@@ -5103,6 +5299,151 @@ bool testAutomationLaneValueClamping()
     return true;
 }
 
+bool testAutomationCurveTransformMagnitudeAndStretch()
+{
+    std::vector<AutomationPoint> points {
+        { 0, 0.0f, AutomationCurveType::Linear },
+        { 4, 1.0f, AutomationCurveType::Linear },
+        { 8, 0.5f, AutomationCurveType::Linear }
+    };
+
+    auto expanded = AutomationCurveTools::transformPoints (points, {}, 2.0f, 2.0f, 0.5f, 9);
+
+    if (expanded.size() != 3
+        || expanded[0].row != 0
+        || expanded[1].row != 4
+        || expanded[2].row != 8)
+    {
+        std::cerr << "Expanded automation rows should stretch around the curve centre and clip to pattern edges\n";
+        return false;
+    }
+
+    if (std::abs (expanded[0].value - 0.0f) > 1.0e-6f
+        || std::abs (expanded[1].value - 1.0f) > 1.0e-6f
+        || std::abs (expanded[2].value - 0.5f) > 1.0e-6f)
+    {
+        std::cerr << "Expanded automation values should scale around the centre and clip to [0, 1]\n";
+        return false;
+    }
+
+    auto compressed = AutomationCurveTools::transformPoints (points, {}, 0.5f, 0.5f, 0.5f, 9);
+
+    if (compressed.size() != 3
+        || compressed[0].row != 2
+        || compressed[1].row != 4
+        || compressed[2].row != 6)
+    {
+        std::cerr << "Compressed automation rows should move toward the curve centre\n";
+        return false;
+    }
+
+    if (std::abs (compressed[0].value - 0.25f) > 1.0e-6f
+        || std::abs (compressed[1].value - 0.75f) > 1.0e-6f
+        || std::abs (compressed[2].value - 0.5f) > 1.0e-6f)
+    {
+        std::cerr << "Compressed automation values should move toward the value centre\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testAutomationStandardCurveGeneration()
+{
+    auto sine = AutomationCurveTools::makeStandardCurvePoints (AutomationCurveTools::StandardCurve::Sine, 5);
+    if (sine.size() != 5)
+    {
+        std::cerr << "Expected five sine preset points\n";
+        return false;
+    }
+
+    if (sine.front().row != 0 || sine.back().row != 4)
+    {
+        std::cerr << "Sine preset should span the full pattern row range\n";
+        return false;
+    }
+
+    if (sine[0].curveType != AutomationCurveType::Linear
+        || std::abs (sine[0].value - 0.5f) > 1.0e-5f
+        || std::abs (sine[1].value - 1.0f) > 1.0e-5f
+        || std::abs (sine[3].value - 0.0f) > 1.0e-5f)
+    {
+        std::cerr << "Sine preset generated unexpected point data\n";
+        return false;
+    }
+
+    auto pulse = AutomationCurveTools::makeStandardCurvePoints (AutomationCurveTools::StandardCurve::Pulse, 4);
+    if (pulse.size() != 4 || pulse[0].curveType != AutomationCurveType::Step)
+    {
+        std::cerr << "Pulse preset should generate stepped automation points\n";
+        return false;
+    }
+
+    if (std::abs (pulse[0].value - 1.0f) > 1.0e-6f
+        || std::abs (pulse[3].value - 0.0f) > 1.0e-6f)
+    {
+        std::cerr << "Pulse preset generated unexpected values\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testAutomationStampGenerationAndReplacement()
+{
+    auto stamp = AutomationCurveTools::makeStampPoints (AutomationCurveTools::StandardStamp::UpOneBar,
+                                                        4,
+                                                        4,
+                                                        32,
+                                                        0.25f,
+                                                        0.25f);
+    if (stamp.size() != 16 || stamp.front().row != 4 || stamp.back().row != 19)
+    {
+        std::cerr << "One-bar stamp should span 16 rows at 4 rows per beat\n";
+        return false;
+    }
+
+    if (stamp.front().value < 0.24f || stamp.front().value > 0.26f)
+    {
+        std::cerr << "Stamp should begin at the replaced curve value\n";
+        return false;
+    }
+
+    float maxValue = 0.0f;
+    for (const auto& point : stamp)
+        maxValue = juce::jmax (maxValue, point.value);
+
+    if (maxValue < 0.95f)
+    {
+        std::cerr << "Up stamp should attack toward the top of the automation range\n";
+        return false;
+    }
+
+    std::vector<AutomationPoint> existing {
+        { 0, 0.1f, AutomationCurveType::Linear },
+        { 8, 0.9f, AutomationCurveType::Linear },
+        { 24, 0.4f, AutomationCurveType::Linear }
+    };
+
+    auto replaced = AutomationCurveTools::replacePointsInRange (existing, stamp, 4, 19);
+    if (replaced.front().row != 0 || replaced.back().row != 24)
+    {
+        std::cerr << "Stamp replacement should preserve points outside the stamped row range\n";
+        return false;
+    }
+
+    for (const auto& point : replaced)
+    {
+        if (point.row == 8 && std::abs (point.value - 0.9f) < 1.0e-6f)
+        {
+            std::cerr << "Stamp replacement should remove old points inside the stamped range\n";
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool testMultiPatternAutomationRoundTrip()
 {
     // Verify that automation data on multiple patterns survives round-trip
@@ -5938,6 +6279,48 @@ bool testTrackerGridArrowKeysSkipHiddenVelocityCells()
     return true;
 }
 
+bool testTrackerGridCtrlArrowRequestsSelectionTranspose()
+{
+    PatternData patternData;
+    TrackLayout trackLayout;
+    TrackerLookAndFeel lnf;
+    TrackerGrid grid (patternData, lnf, trackLayout);
+
+    grid.hasSelection = true;
+    grid.selStartRow = 1;
+    grid.selEndRow = 3;
+    grid.selStartTrack = 0;
+    grid.selEndTrack = 1;
+
+    int callCount = 0;
+    int lastSemitones = 0;
+    grid.onTransposeSelectionRequested = [&] (int semitones)
+    {
+        ++callCount;
+        lastSemitones = semitones;
+    };
+
+    const juce::KeyPress upKey (juce::KeyPress::upKey,
+                                juce::ModifierKeys::ctrlModifier, 0);
+    if (! grid.keyPressed (upKey) || callCount != 1 || lastSemitones != 1)
+    {
+        std::cerr << "Ctrl+Up should request selection transpose +1, calls="
+                  << callCount << " semitones=" << lastSemitones << "\n";
+        return false;
+    }
+
+    const juce::KeyPress leftKey (juce::KeyPress::leftKey,
+                                  juce::ModifierKeys::ctrlModifier, 0);
+    if (! grid.keyPressed (leftKey) || callCount != 2 || lastSemitones != -12)
+    {
+        std::cerr << "Ctrl+Left should request selection transpose -12, calls="
+                  << callCount << " semitones=" << lastSemitones << "\n";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -5956,6 +6339,11 @@ int main()
         { "SendBuffersStartSampleAlignmentAndConsume", &testSendBuffersStartSampleAlignmentAndConsume },
         { "SendBuffersClipToPreparedCapacity", &testSendBuffersClipToPreparedCapacity },
         { "PanMappingCenterAndExtremes", &testPanMappingCenterAndExtremes },
+        { "MixerDspPanLawAndVolume", &testMixerDspPanLawAndVolume },
+        { "MixerDspFlatEqPassesThrough", &testMixerDspFlatEqPassesThrough },
+        { "MixerDspEqBoostAffectsTargetBand", &testMixerDspEqBoostAffectsTargetBand },
+        { "MixerDspCompressorReducesHotSignal", &testMixerDspCompressorReducesHotSignal },
+        { "MixerDspLimiterStartsOpenAndClamps", &testMixerDspLimiterStartsOpenAndClamps },
         { "MixerNavigationCoercesSendReturnSections", &testMixerNavigationCoercesSendReturnSections },
         { "InstrumentRoutingRoundTripFullRange", &testInstrumentRoutingRoundTripFullRange },
         { "InstrumentRoutingClampsOutOfRange", &testInstrumentRoutingClampsOutOfRange },
@@ -6031,6 +6419,9 @@ int main()
         { "VersionMigrationPreV6LoadsSafely", &testVersionMigrationPreV6LoadsSafely },
         { "AutomationCloneIsDeepCopy", &testAutomationCloneIsDeepCopy },
         { "AutomationLaneValueClamping", &testAutomationLaneValueClamping },
+        { "AutomationCurveTransformMagnitudeAndStretch", &testAutomationCurveTransformMagnitudeAndStretch },
+        { "AutomationStandardCurveGeneration", &testAutomationStandardCurveGeneration },
+        { "AutomationStampGenerationAndReplacement", &testAutomationStampGenerationAndReplacement },
         { "MultiPatternAutomationRoundTrip", &testMultiPatternAutomationRoundTrip },
         { "InsertSlotMaxCapacity", &testInsertSlotMaxCapacity },
         { "AutomationLaneEquality", &testAutomationLaneEquality },
@@ -6046,6 +6437,7 @@ int main()
         { "TrackerGridCanHideVelocityLanes", &testTrackerGridCanHideVelocityLanes },
         { "TrackerGridArrowKeysStepAcrossVisibleCells", &testTrackerGridArrowKeysStepAcrossVisibleCells },
         { "TrackerGridArrowKeysSkipHiddenVelocityCells", &testTrackerGridArrowKeysSkipHiddenVelocityCells },
+        { "TrackerGridCtrlArrowRequestsSelectionTranspose", &testTrackerGridCtrlArrowRequestsSelectionTranspose },
     };
 
     int failures = 0;

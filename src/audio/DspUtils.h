@@ -9,6 +9,31 @@
 namespace DspUtils
 {
 
+struct StereoGains
+{
+    float left = 1.0f;
+    float right = 1.0f;
+};
+
+inline float volumeDbToGain (double volumeDb)
+{
+    if (volumeDb <= -99.0)
+        return 0.0f;
+
+    return juce::Decibels::decibelsToGain (static_cast<float> (juce::jlimit (-100.0, 12.0, volumeDb)));
+}
+
+inline StereoGains getEqualPowerPanGains (double volumeDb, int pan)
+{
+    const float gain = volumeDbToGain (volumeDb);
+    const float panNorm = (static_cast<float> (juce::jlimit (-50, 50, pan)) + 50.0f) / 100.0f;
+
+    return {
+        gain * std::cos (panNorm * juce::MathConstants<float>::halfPi),
+        gain * std::sin (panNorm * juce::MathConstants<float>::halfPi)
+    };
+}
+
 //==============================================================================
 // 3-band EQ: low shelf 200Hz, parametric mid, high shelf 4kHz
 //==============================================================================
@@ -85,13 +110,26 @@ inline void processCompressor (juce::AudioBuffer<float>& buffer, int startSample
                                double compThreshold, double compRatio,
                                double compAttack, double compRelease)
 {
-    if (compThreshold >= 0.0 && compRatio <= 1.0) return;
+    if (sampleRate <= 0.0 || numSamples <= 0)
+        return;
 
-    float thresholdLinear = juce::Decibels::decibelsToGain (static_cast<float> (compThreshold));
-    float ratio = static_cast<float> (juce::jmax (1.0, compRatio));
+    const double thresholdDb = juce::jlimit (-60.0, 0.0, compThreshold);
+    const double ratioValue = juce::jlimit (1.0, 20.0, compRatio);
 
-    float attackCoeff  = std::exp (-1.0f / (static_cast<float> (compAttack) * 0.001f * static_cast<float> (sampleRate)));
-    float releaseCoeff = std::exp (-1.0f / (static_cast<float> (compRelease) * 0.001f * static_cast<float> (sampleRate)));
+    if (thresholdDb >= 0.0 && ratioValue <= 1.0)
+        return;
+
+    if (! std::isfinite (envelope))
+        envelope = 0.0f;
+
+    const float thresholdLinear = juce::Decibels::decibelsToGain (static_cast<float> (thresholdDb));
+    const float ratio = static_cast<float> (ratioValue);
+
+    const float attackMs = static_cast<float> (juce::jlimit (0.1, 100.0, compAttack));
+    const float releaseMs = static_cast<float> (juce::jlimit (10.0, 1000.0, compRelease));
+    const float sr = static_cast<float> (sampleRate);
+    const float attackCoeff  = std::exp (-1.0f / (attackMs * 0.001f * sr));
+    const float releaseCoeff = std::exp (-1.0f / (releaseMs * 0.001f * sr));
 
     int numChannels = buffer.getNumChannels();
 
@@ -116,6 +154,55 @@ inline void processCompressor (juce::AudioBuffer<float>& buffer, int startSample
 
         for (int ch = 0; ch < numChannels; ++ch)
             buffer.getWritePointer (ch)[startSample + i] *= gain;
+    }
+}
+
+//==============================================================================
+// Peak limiter
+//==============================================================================
+
+inline void processPeakLimiter (juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
+                                double sampleRate, float& envelope,
+                                double thresholdDb, double releaseMs)
+{
+    if (thresholdDb >= 0.0)
+    {
+        envelope = 1.0f;
+        return;
+    }
+
+    if (sampleRate <= 0.0 || numSamples <= 0)
+        return;
+
+    if (! std::isfinite (envelope) || envelope <= 0.0f)
+        envelope = 1.0f;
+
+    const float thresholdLinear = juce::Decibels::decibelsToGain (
+        static_cast<float> (juce::jlimit (-24.0, 0.0, thresholdDb)));
+    const float release = static_cast<float> (juce::jlimit (1.0, 500.0, releaseMs));
+    const float releaseCoeff = std::exp (-1.0f / (release * 0.001f * static_cast<float> (sampleRate)));
+
+    const int numChannels = buffer.getNumChannels();
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float peak = 0.0f;
+        for (int ch = 0; ch < numChannels; ++ch)
+            peak = juce::jmax (peak, std::abs (buffer.getSample (ch, startSample + i)));
+
+        float targetGain = 1.0f;
+        if (peak > thresholdLinear && thresholdLinear > 0.0f)
+            targetGain = thresholdLinear / peak;
+
+        if (targetGain < envelope)
+            envelope = targetGain;
+        else
+            envelope = releaseCoeff * envelope + (1.0f - releaseCoeff) * targetGain;
+
+        envelope = juce::jlimit (0.0f, 1.0f, envelope);
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            buffer.getWritePointer (ch)[startSample + i] *= envelope;
     }
 }
 

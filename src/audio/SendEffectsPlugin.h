@@ -175,7 +175,7 @@ private:
     float masterCompEnvelope = 0.0f;
 
     // Master limiter state
-    float masterLimiterEnvelope = 0.0f;
+    float masterLimiterEnvelope = 1.0f;
 
     // Master peak level
     std::atomic<float> masterPeakLevel { 0.0f };

@@ -1840,45 +1840,55 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     if (! velocityLanesVisible && cursorSubColumn == SubColumn::Volume)
         cursorSubColumn = SubColumn::Instrument;
 
-    // Ctrl+Arrow: transpose current note with preview (Up/Down = semitone, Left/Right = octave)
-    if ((ctrl && ! shift && ! cmd
-         && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey
-             || keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey))
-        && cursorSubColumn == SubColumn::Note && ! isMasterTrack (cursorTrack))
+    // Ctrl+Arrow: transpose selection if active, otherwise the current note.
+    if (ctrl && ! shift && ! cmd
+        && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey
+            || keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey))
     {
-        auto& pat = pattern.getCurrentPattern();
-        auto oldCell = pat.getCell (cursorRow, cursorTrack);
-        auto laneSlot = oldCell.getNoteLane (cursorNoteLane);
+        const bool isSemitone = (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey);
+        const bool isUp = (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::rightKey);
+        const int delta = isUp ? (isSemitone ? 1 : 12) : (isSemitone ? -1 : -12);
 
-        if (laneSlot.hasNote() && laneSlot.note <= 127)
+        if (hasSelection)
         {
-            bool isSemitone = (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey);
-            bool isUp = (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::rightKey);
-            int delta = isUp ? (isSemitone ? 1 : 12) : (isSemitone ? -1 : -12);
-            int newNote = juce::jlimit (0, 127, laneSlot.note + delta);
+            if (onTransposeSelectionRequested)
+                onTransposeSelectionRequested (delta);
+            return true;
+        }
 
-            if (newNote != laneSlot.note)
+        if (cursorSubColumn == SubColumn::Note && ! isMasterTrack (cursorTrack))
+        {
+            auto& pat = pattern.getCurrentPattern();
+            auto oldCell = pat.getCell (cursorRow, cursorTrack);
+            auto laneSlot = oldCell.getNoteLane (cursorNoteLane);
+
+            if (laneSlot.hasNote() && laneSlot.note <= 127)
             {
-                auto newCell = oldCell;
-                auto newSlot = laneSlot;
-                newSlot.note = newNote;
-                newCell.setNoteLane (cursorNoteLane, newSlot);
+                int newNote = juce::jlimit (0, 127, laneSlot.note + delta);
 
-                std::vector<MultiCellEditAction::CellRecord> cellRecords;
-                cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
-                bool changed = applyPatternEdit (pattern, undoManager, pattern.getCurrentPatternIndex(),
-                                                 std::move (cellRecords), {});
-
-                if (changed)
+                if (newNote != laneSlot.note)
                 {
-                    if (onNoteEntered)
-                        onNoteEntered (newNote, newSlot.instrument >= 0 ? newSlot.instrument : currentInstrument);
-                    if (onPatternDataChanged) onPatternDataChanged();
-                    repaint();
+                    auto newCell = oldCell;
+                    auto newSlot = laneSlot;
+                    newSlot.note = newNote;
+                    newCell.setNoteLane (cursorNoteLane, newSlot);
+
+                    std::vector<MultiCellEditAction::CellRecord> cellRecords;
+                    cellRecords.push_back ({ cursorRow, cursorTrack, oldCell, newCell });
+                    bool changed = applyPatternEdit (pattern, undoManager, pattern.getCurrentPatternIndex(),
+                                                     std::move (cellRecords), {});
+
+                    if (changed)
+                    {
+                        if (onNoteEntered)
+                            onNoteEntered (newNote, newSlot.instrument >= 0 ? newSlot.instrument : currentInstrument);
+                        if (onPatternDataChanged) onPatternDataChanged();
+                        repaint();
+                    }
                 }
             }
+            return true;
         }
-        return true;
     }
 
     // Navigation

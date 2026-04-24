@@ -175,6 +175,7 @@ private:
     juce::String getChordEntryToolbarLabel() const;
     juce::String getChordEntryStatusText() const;
     void transposeNotesInRange (int startRow, int endRow, int startVisualTrack, int endVisualTrack, int semitones);
+    void transposeSelectedNotes (int semitones);
     void showTrackHeaderMenu (int track, juce::Point<int> screenPos);
     void showRenameTrackDialog (int track);
     void performUndoableTrackLayoutChange (const std::function<void()>& changeFn);
