@@ -86,6 +86,7 @@ private:
     int selectedPluginRouteIndex = -1;
     int pluginParameterScroll = 0;
     double pluginParameterWheelAccumulator = 0.0;
+    juce::TextEditor pluginParameterSearchBox;
     juce::ScrollBar pluginParameterScrollbar { true };
 
     enum class PluginHitKind
@@ -105,6 +106,7 @@ private:
         EnvDecay,
         EnvSustain,
         EnvRelease,
+        ParamSearch,
         ParamAssign,
         RouteSelect,
         RouteEnable,
@@ -121,13 +123,31 @@ private:
         int parameterIndex = -1;
     };
 
+    struct PluginKeyboardTarget
+    {
+        PluginHit hit;
+        juce::Rectangle<int> bounds;
+    };
+
     PluginHit pluginDragHit;
+    PluginHit focusedPluginHit { PluginHitKind::OpenEditor, -1, -1 };
     float pluginDragStartY = 0.0f;
     PluginInstrumentModulation pluginDragStartModulation;
 
     void drawPluginInstrumentPage (juce::Graphics& g, juce::Rectangle<int> area);
     juce::Rectangle<int> getPluginEditorButtonBounds() const;
     PluginHit hitTestPluginPage (juce::Point<int> pos) const;
+    std::vector<PluginKeyboardTarget> getPluginKeyboardTargets() const;
+    juce::Rectangle<int> getPluginKeyboardFocusBounds() const;
+    bool pluginHitsEqual (const PluginHit& a, const PluginHit& b) const;
+    bool pluginHitCanAdjustWithKeyboard (const PluginHit& hit) const;
+    bool handlePluginKeyboard (const juce::KeyPress& key);
+    void ensureFocusedPluginHitValid();
+    void movePluginKeyboardFocus (int direction);
+    void movePluginKeyboardFocusToParameter (int direction);
+    void focusFirstPluginParameter();
+    void activateFocusedPluginHit();
+    void adjustFocusedPluginHit (int direction, bool fine, bool large);
     void handlePluginHit (const PluginHit& hit, const juce::MouseEvent& event);
     void adjustPluginHitValue (const PluginHit& hit, double delta);
     void notifyPluginModulationChanged();
@@ -135,10 +155,15 @@ private:
     void addPluginRouteForParam (int parameterIndex);
     void showPluginRouteSourceMenu (int routeIndex);
     void showPluginRouteParamMenu (int routeIndex);
+    juce::Rectangle<int> getPluginParameterSearchBoxBounds() const;
     juce::Rectangle<int> getPluginParameterListBounds() const;
     juce::Rectangle<int> getPluginParameterListContentBounds() const;
     juce::Rectangle<int> getPluginParameterScrollbarBounds() const;
     int getPluginParameterVisibleRows() const;
+    int getFilteredPluginParameterCount() const;
+    int getPluginParameterInfoIndexAtFilteredRow (int filteredRow) const;
+    bool pluginParameterMatchesSearch (const PluginInstrumentParameterInfo& param) const;
+    void updatePluginParameterSearchBoxBounds();
     int getPluginParameterMaxScroll() const;
     void scrollPluginParameterListBy (int rows);
     void updatePluginParameterScrollbar();

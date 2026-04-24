@@ -35,8 +35,8 @@ struct AutomatablePluginInfo
 class PluginAutomationComponent : public juce::Component
 {
 public:
-    static constexpr int kDefaultPanelHeight = 180;
-    static constexpr int kMinPanelHeight = 120;
+    static constexpr int kDefaultPanelHeight = 220;
+    static constexpr int kMinPanelHeight = 200;
     static constexpr int kMaxPanelHeight = 400;
     static constexpr int kControlsWidth = 180;
     static constexpr int kDragHandleHeight = 5;
@@ -196,6 +196,7 @@ private:
     juce::ComboBox curveTypeDropdown;
     juce::Label pluginLabel;
     juce::Label paramLabel;
+    juce::TextEditor parameterSearchBox;
     juce::TextButton snapButton { "Snap" };
     juce::TextButton drawButton { "Draw" };
     juce::TextButton recButton { "Rec" };
@@ -212,6 +213,7 @@ private:
 
     // Available plugins and their parameter lists
     std::vector<AutomatablePluginInfo> availablePlugins;
+    std::vector<int> filteredParameterIndices;
     bool suppressSelectionCallbacks = false;
 
     // Panel height (resizable)
@@ -348,6 +350,9 @@ private:
 
     void pluginSelectionChanged();
     void parameterSelectionChanged();
+    void parameterFilterChanged();
+    void rebuildParameterDropdown (int preferredParameterIndex, bool selectFirstIfMissing);
+    bool automationParameterMatchesSearch (const AutomatablePluginInfo::ParamInfo& param) const;
     void curveTypeChanged();
     void presetTypeChanged();
     void refreshPresetButtons();

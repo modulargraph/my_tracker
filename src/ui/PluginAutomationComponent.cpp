@@ -39,6 +39,17 @@ struct StampSlot
 
 constexpr float kTrackpadRecordMinValue = 0.02f;
 constexpr float kTrackpadRecordMaxValue = 0.98f;
+constexpr int kControlAreaPadding = 4;
+
+juce::String formatStepHex (int row)
+{
+    return juce::String::formatted ("%02X", juce::jmax (0, row));
+}
+
+juce::String formatStepValue (int row, float value)
+{
+    return "Step " + formatStepHex (row) + " : " + juce::String (value, 3);
+}
 
 std::array<PresetSlot, PluginAutomationComponent::kPresetButtonCount> getPresetSlotsForCategory (int categoryId)
 {
@@ -229,6 +240,21 @@ PluginAutomationComponent::PluginAutomationComponent (TrackerLookAndFeel& lnf)
     paramLabel.setFont (lnf.getMonoFont (11.0f));
     addAndMakeVisible (paramLabel);
 
+    parameterSearchBox.setMultiLine (false);
+    parameterSearchBox.setReturnKeyStartsNewLine (false);
+    parameterSearchBox.setScrollbarsShown (false);
+    parameterSearchBox.setSelectAllWhenFocused (true);
+    parameterSearchBox.setInputRestrictions (64);
+    parameterSearchBox.setFont (lnf.getMonoFont (10.0f));
+    parameterSearchBox.setTextToShowWhenEmpty ("search", lnf.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.35f));
+    parameterSearchBox.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff15151a));
+    parameterSearchBox.setColour (juce::TextEditor::textColourId, lnf.findColour (TrackerLookAndFeel::textColourId));
+    parameterSearchBox.setColour (juce::TextEditor::outlineColourId, juce::Colour (0x55ffffff));
+    parameterSearchBox.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colour (0xff44aaff));
+    parameterSearchBox.setColour (juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
+    parameterSearchBox.onTextChange = [this] { parameterFilterChanged(); };
+    addAndMakeVisible (parameterSearchBox);
+
     pluginDropdown.setTextWhenNothingSelected ("(none)");
     pluginDropdown.onChange = [this] { pluginSelectionChanged(); };
     addAndMakeVisible (pluginDropdown);
@@ -398,13 +424,15 @@ void PluginAutomationComponent::resized()
     auto bounds = getLocalBounds().withTrimmedTop (kDragHandleHeight).reduced (4);
 
     // Controls on the left
-    auto controlArea = bounds.removeFromLeft (kControlsWidth);
+    auto controlArea = bounds.removeFromLeft (kControlsWidth).reduced (kControlAreaPadding, 0);
     controlArea.removeFromTop (2);
 
     pluginLabel.setBounds (controlArea.removeFromTop (14));
     pluginDropdown.setBounds (controlArea.removeFromTop (20).reduced (0, 1));
     controlArea.removeFromTop (2);
-    paramLabel.setBounds (controlArea.removeFromTop (14));
+    auto paramHeader = controlArea.removeFromTop (18);
+    paramLabel.setBounds (paramHeader.removeFromLeft (52));
+    parameterSearchBox.setBounds (paramHeader.reduced (0, 1));
     parameterDropdown.setBounds (controlArea.removeFromTop (20).reduced (0, 1));
     controlArea.removeFromTop (2);
 
@@ -529,6 +557,8 @@ void PluginAutomationComponent::setAvailablePlugins (const std::vector<Automatab
     for (int i = 0; i < static_cast<int> (availablePlugins.size()); ++i)
         pluginDropdown.addItem (availablePlugins[static_cast<size_t> (i)].displayName, i + 1);
 
+    filteredParameterIndices.clear();
+
     // Try to re-select the previous plugin (and parameter)
     if (previousPluginId.isNotEmpty())
     {
@@ -537,39 +567,7 @@ void PluginAutomationComponent::setAvailablePlugins (const std::vector<Automatab
             if (availablePlugins[static_cast<size_t> (i)].pluginId == previousPluginId)
             {
                 pluginDropdown.setSelectedId (i + 1, juce::dontSendNotification);
-
-                // Rebuild parameter dropdown, then restore the previous parameter
-                parameterDropdown.clear (juce::dontSendNotification);
-                auto& params = availablePlugins[static_cast<size_t> (i)].parameters;
-                for (int pi = 0; pi < static_cast<int> (params.size()); ++pi)
-                {
-                    auto& p = params[static_cast<size_t> (pi)];
-                    auto displayName = p.hasAutomation ? ("* " + p.name) : p.name;
-                    parameterDropdown.addItem (displayName, pi + 1);
-                }
-
-                // Restore previous parameter if it still exists
-                bool restored = false;
-                if (previousParamIdx >= 0)
-                {
-                    for (int pi = 0; pi < static_cast<int> (params.size()); ++pi)
-                    {
-                        if (params[static_cast<size_t> (pi)].index == previousParamIdx)
-                        {
-                            parameterDropdown.setSelectedId (pi + 1, juce::dontSendNotification);
-                            parameterSelectionChanged();
-                            restored = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (! restored && ! params.empty())
-                {
-                    parameterDropdown.setSelectedId (1, juce::dontSendNotification);
-                    parameterSelectionChanged();
-                }
-
+                rebuildParameterDropdown (previousParamIdx, true);
                 repaint();
                 return;
             }
@@ -585,6 +583,7 @@ void PluginAutomationComponent::setAvailablePlugins (const std::vector<Automatab
     else
     {
         parameterDropdown.clear (juce::dontSendNotification);
+        filteredParameterIndices.clear();
         repaint();
     }
 }
@@ -603,10 +602,14 @@ int PluginAutomationComponent::getSelectedParameterIndex() const
     if (idx < 0 || idx >= static_cast<int> (availablePlugins.size()))
         return -1;
 
-    int paramIdx = parameterDropdown.getSelectedId() - 1;
     auto& params = availablePlugins[static_cast<size_t> (idx)].parameters;
-    if (paramIdx >= 0 && paramIdx < static_cast<int> (params.size()))
-        return params[static_cast<size_t> (paramIdx)].index;
+    int filteredParamIdx = parameterDropdown.getSelectedId() - 1;
+    if (filteredParamIdx >= 0 && filteredParamIdx < static_cast<int> (filteredParameterIndices.size()))
+    {
+        const int paramIdx = filteredParameterIndices[static_cast<size_t> (filteredParamIdx)];
+        if (paramIdx >= 0 && paramIdx < static_cast<int> (params.size()))
+            return params[static_cast<size_t> (paramIdx)].index;
+    }
 
     return -1;
 }
@@ -701,34 +704,88 @@ void PluginAutomationComponent::pluginSelectionChanged()
 {
     auto pluginId = getSelectedPluginId();
 
-    parameterDropdown.clear (juce::dontSendNotification);
-
     if (! suppressSelectionCallbacks && pluginId.isNotEmpty() && onPluginSelected)
         onPluginSelected (pluginId);
 
-    int idx = pluginDropdown.getSelectedId() - 1;
-    if (idx >= 0 && idx < static_cast<int> (availablePlugins.size()))
-    {
-        auto& params = availablePlugins[static_cast<size_t> (idx)].parameters;
-        for (int i = 0; i < static_cast<int> (params.size()); ++i)
-        {
-            auto& p = params[static_cast<size_t> (i)];
-            // Mark automated params with * prefix so the user can identify them
-            auto displayName = p.hasAutomation ? ("* " + p.name) : p.name;
-            parameterDropdown.addItem (displayName, i + 1);
-        }
-
-        if (! params.empty())
-        {
-            parameterDropdown.setSelectedId (1, juce::dontSendNotification);
-            parameterSelectionChanged();
-        }
-    }
+    rebuildParameterDropdown (-1, true);
 
     selectedPoints.clear();
     undoStack.clear();
     redoStack.clear();
     repaint();
+}
+
+void PluginAutomationComponent::parameterFilterChanged()
+{
+    auto previousParamIdx = getSelectedParameterIndex();
+    rebuildParameterDropdown (previousParamIdx, true);
+
+    selectedPoints.clear();
+    undoStack.clear();
+    redoStack.clear();
+    repaint();
+}
+
+void PluginAutomationComponent::rebuildParameterDropdown (int preferredParameterIndex, bool selectFirstIfMissing)
+{
+    parameterDropdown.clear (juce::dontSendNotification);
+    filteredParameterIndices.clear();
+
+    int idx = pluginDropdown.getSelectedId() - 1;
+    if (idx < 0 || idx >= static_cast<int> (availablePlugins.size()))
+    {
+        parameterDropdown.setTextWhenNothingSelected ("(none)");
+        parameterSelectionChanged();
+        return;
+    }
+
+    auto& params = availablePlugins[static_cast<size_t> (idx)].parameters;
+    for (int i = 0; i < static_cast<int> (params.size()); ++i)
+    {
+        auto& p = params[static_cast<size_t> (i)];
+        if (! automationParameterMatchesSearch (p))
+            continue;
+
+        filteredParameterIndices.push_back (i);
+        auto displayName = p.hasAutomation ? ("* " + p.name) : p.name;
+        parameterDropdown.addItem (displayName, static_cast<int> (filteredParameterIndices.size()));
+    }
+
+    parameterDropdown.setTextWhenNothingSelected (parameterSearchBox.getText().trim().isNotEmpty() ? "(no match)" : "(none)");
+
+    int selectedId = 0;
+    if (preferredParameterIndex >= 0)
+    {
+        for (int i = 0; i < static_cast<int> (filteredParameterIndices.size()); ++i)
+        {
+            const int paramIdx = filteredParameterIndices[static_cast<size_t> (i)];
+            if (paramIdx >= 0
+                && paramIdx < static_cast<int> (params.size())
+                && params[static_cast<size_t> (paramIdx)].index == preferredParameterIndex)
+            {
+                selectedId = i + 1;
+                break;
+            }
+        }
+    }
+
+    if (selectedId == 0 && selectFirstIfMissing && ! filteredParameterIndices.empty())
+        selectedId = 1;
+
+    if (selectedId > 0)
+        parameterDropdown.setSelectedId (selectedId, juce::dontSendNotification);
+
+    parameterSelectionChanged();
+}
+
+bool PluginAutomationComponent::automationParameterMatchesSearch (const AutomatablePluginInfo::ParamInfo& param) const
+{
+    const auto query = parameterSearchBox.getText().trim().toLowerCase();
+    if (query.isEmpty())
+        return true;
+
+    const auto searchable = (param.name + " " + juce::String (param.index)).toLowerCase();
+    return searchable.contains (query);
 }
 
 void PluginAutomationComponent::parameterSelectionChanged()
@@ -1115,6 +1172,8 @@ void PluginAutomationComponent::applySelectedStampAtRow (int startRow)
 
 void PluginAutomationComponent::navigateToParam (const juce::String& pluginId, int paramIndex)
 {
+    parameterSearchBox.setText ({}, false);
+
     // Find and select the plugin
     for (int i = 0; i < static_cast<int> (availablePlugins.size()); ++i)
     {
@@ -1829,6 +1888,10 @@ void PluginAutomationComponent::mouseDown (const juce::MouseEvent& e)
         }
         dragPointIndex = nearIdx;
         isDragging = true;
+        hoverPointIndex = nearIdx;
+        hoverScreenPos = dataToScreen (static_cast<float> (lane->points[static_cast<size_t> (nearIdx)].row),
+                                       lane->points[static_cast<size_t> (nearIdx)].value);
+        showHoverTooltip = true;
         pushUndoState();
     }
     else
@@ -1861,6 +1924,9 @@ void PluginAutomationComponent::mouseDown (const juce::MouseEvent& e)
                 dragPointIndex = insertedIdx;
                 isDragging = true;
                 selectedPoints.insert (insertedIdx);
+                hoverPointIndex = insertedIdx;
+                hoverScreenPos = dataToScreen (static_cast<float> (row), value);
+                showHoverTooltip = true;
             }
 
             notifyAndRepaint();
@@ -1947,6 +2013,9 @@ void PluginAutomationComponent::mouseDrag (const juce::MouseEvent& e)
 
         lane->sortPoints();
         moveSelectionAnchor = screenPos;
+        hoverPointIndex = -1;
+        hoverScreenPos = screenPos;
+        showHoverTooltip = true;
 
         // Re-discover selected point indices after sort
         // (This is a simplification; in practice we'd track by identity)
@@ -1984,6 +2053,9 @@ void PluginAutomationComponent::mouseDrag (const juce::MouseEvent& e)
         dragPointIndex = movedPointIndex;
         selectedPoints.clear();
         selectedPoints.insert (movedPointIndex);
+        hoverPointIndex = movedPointIndex;
+        hoverScreenPos = dataToScreen (static_cast<float> (targetRow), targetVal);
+        showHoverTooltip = true;
     }
 
     notifyAndRepaint();
@@ -2230,20 +2302,66 @@ void PluginAutomationComponent::drawGrid (juce::Graphics& g, juce::Rectangle<int
         g.drawHorizontalLine (static_cast<int> (y), fb.getX(), fb.getRight());
     }
 
-    // Vertical grid lines with zoom awareness
-    int step = patternLength <= 32 ? 4 : 8;
-    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId).withAlpha (0.15f));
+    // Vertical step grid. Automation rows line up with tracker steps; labels use
+    // the same hexadecimal row numbering as the tracker grid.
     float visibleRange = static_cast<float> (patternLength) / zoomLevel;
-    int startRow = juce::jmax (0, static_cast<int> (viewStartRow) - 1);
-    int endRow = juce::jmin (patternLength, static_cast<int> (viewStartRow + visibleRange) + 1);
+    const float pixelsPerRow = fb.getWidth() / juce::jmax (1.0f, visibleRange);
+    int startRow = juce::jmax (0, static_cast<int> (std::floor (viewStartRow)) - 1);
+    int endRow = juce::jmin (patternLength - 1,
+                             static_cast<int> (std::ceil (viewStartRow + visibleRange)) + 1);
+    const int beatRows = juce::jmax (1, rowsPerBeat);
+    const int barRows = beatRows * 4;
 
-    for (int row = (startRow / step) * step; row <= endRow; row += step)
+    if (pixelsPerRow >= 6.0f)
+    {
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId).withAlpha (0.07f));
+        for (int row = startRow; row <= endRow; ++row)
+        {
+            if (row <= 0 || row % beatRows == 0)
+                continue;
+
+            auto sp = dataToScreen (static_cast<float> (row), 0.0f);
+            if (sp.x >= fb.getX() && sp.x <= fb.getRight())
+                g.drawVerticalLine (static_cast<int> (sp.x), fb.getY(), fb.getBottom());
+        }
+    }
+
+    for (int row = (startRow / beatRows) * beatRows; row <= endRow; row += beatRows)
     {
         if (row <= 0)
             continue;
+
+        const bool isBar = (row % barRows) == 0;
+        g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId)
+                         .withAlpha (isBar ? 0.28f : 0.16f));
+
         auto sp = dataToScreen (static_cast<float> (row), 0.0f);
         if (sp.x >= fb.getX() && sp.x <= fb.getRight())
             g.drawVerticalLine (static_cast<int> (sp.x), fb.getY(), fb.getBottom());
+    }
+
+    int labelStep = 1;
+    while (static_cast<float> (labelStep) * pixelsPerRow < 32.0f)
+        labelStep *= 2;
+
+    g.setFont (lookAndFeel.getMonoFont (9.0f));
+    g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.42f));
+    for (int row = (startRow / labelStep) * labelStep; row <= endRow; row += labelStep)
+    {
+        auto sp = dataToScreen (static_cast<float> (row), 0.0f);
+        if (sp.x < fb.getX() || sp.x > fb.getRight())
+            continue;
+
+        const int labelWidth = 34;
+        auto labelX = juce::jlimit (bounds.getX(),
+                                    bounds.getRight() - labelWidth,
+                                    static_cast<int> (sp.x) - labelWidth / 2);
+        g.drawText (formatStepHex (row),
+                    labelX,
+                    bounds.getBottom() - 13,
+                    labelWidth,
+                    11,
+                    juce::Justification::centred);
     }
 }
 
@@ -2501,12 +2619,13 @@ void PluginAutomationComponent::drawHoverTooltip (juce::Graphics& g) const
         if (lane != nullptr && hoverPointIndex < static_cast<int> (lane->points.size()))
         {
             auto& p = lane->points[static_cast<size_t> (hoverPointIndex)];
-            text = "Row " + juce::String (p.row) + " : " + juce::String (p.value, 3);
+            text = formatStepValue (p.row, p.value);
         }
     }
     else
     {
-        text = "Row " + juce::String (juce::roundToInt (data.x)) + " : " + juce::String (data.y, 3);
+        const int row = juce::jlimit (0, patternLength - 1, juce::roundToInt (data.x));
+        text = formatStepValue (row, data.y);
     }
 
     if (text.isEmpty())
