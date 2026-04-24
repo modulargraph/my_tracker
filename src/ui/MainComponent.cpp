@@ -1022,6 +1022,7 @@ MainComponent::MainComponent()
     previewVolumeLabel.setJustificationType (juce::Justification::centredRight);
     previewVolumeLabel.setColour (juce::Label::textColourId,
                                   trackerLookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.7f));
+    previewVolumeLabel.setFont (trackerLookAndFeel.getMonoFont (12.0f));
     addAndMakeVisible (previewVolumeLabel);
 
     previewVolumeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
@@ -1806,29 +1807,32 @@ void MainComponent::resized()
 
     // Toolbar below tab bar
     toolbar->setBounds (r.removeFromTop (ToolbarComponent::kToolbarHeight));
-    auto toolbarBounds = toolbar->getBounds();
-    constexpr int kPreviewSliderWidth = 96;
-    constexpr int kPreviewLabelWidth = 56;
-    int previewY = toolbarBounds.getY() + 8;
-    int sliderRight = toolbarBounds.getRight() - 44; // keep clear of INS toggle
-    previewVolumeSlider.setBounds (sliderRight - kPreviewSliderWidth, previewY, kPreviewSliderWidth, 20);
-    previewVolumeLabel.setBounds (previewVolumeSlider.getX() - kPreviewLabelWidth - 4, previewY, kPreviewLabelWidth, 20);
 
     // Status bar at bottom
     auto statusBar = r.removeFromBottom (24);
-    statusLabel.setBounds (statusBar.removeFromLeft (statusBar.getWidth() / 2));
 
-    auto rightStatus = statusBar;
+    constexpr int kStatusControlGap = 8;
+    constexpr int kPreviewStatusWidth = 174;
+    constexpr int kPreviewLabelWidth = 62;
     constexpr int kScaleStatusWidth = 180;
-    constexpr int kScaleStatusGap = 8;
     constexpr int kScaleLabelWidth = 44;
-    auto scaleStatus = rightStatus.removeFromRight (juce::jmin (kScaleStatusWidth, rightStatus.getWidth()));
-    scaleStatus.removeFromLeft (juce::jmin (kScaleStatusGap, scaleStatus.getWidth()));
+    constexpr int kTimingStatusWidth = 150;
+
+    auto scaleStatus = statusBar.removeFromRight (juce::jmin (kScaleStatusWidth, statusBar.getWidth()));
+    scaleStatus.removeFromLeft (juce::jmin (kStatusControlGap, scaleStatus.getWidth()));
     uiScaleLabel.setBounds (scaleStatus.removeFromLeft (juce::jmin (kScaleLabelWidth, scaleStatus.getWidth())));
     uiScaleSlider.setBounds (scaleStatus.reduced (0, 2));
 
-    octaveLabel.setBounds (rightStatus.removeFromLeft (rightStatus.getWidth() / 2));
-    bpmLabel.setBounds (rightStatus);
+    auto previewStatus = statusBar.removeFromRight (juce::jmin (kPreviewStatusWidth, statusBar.getWidth()));
+    previewStatus.removeFromLeft (juce::jmin (kStatusControlGap, previewStatus.getWidth()));
+    previewVolumeLabel.setBounds (previewStatus.removeFromLeft (juce::jmin (kPreviewLabelWidth, previewStatus.getWidth())));
+    previewVolumeSlider.setBounds (previewStatus.reduced (0, 2));
+
+    auto timingStatus = statusBar.removeFromRight (juce::jmin (kTimingStatusWidth, statusBar.getWidth()));
+    octaveLabel.setBounds (timingStatus.removeFromLeft (timingStatus.getWidth() / 2));
+    bpmLabel.setBounds (timingStatus);
+
+    statusLabel.setBounds (statusBar);
 
     // Hide everything first
     arrangementComponent->setVisible (false);
