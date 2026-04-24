@@ -129,6 +129,9 @@ constexpr int kMenuTransposeTrackUpSemitone = 44;
 constexpr int kMenuTransposeTrackDownSemitone = 45;
 constexpr int kMenuTransposeTrackUpOctave = 46;
 constexpr int kMenuTransposeTrackDownOctave = 47;
+constexpr int kMenuWiggleTrackVelocitiesLight = 48;
+constexpr int kMenuWiggleTrackVelocitiesMedium = 49;
+constexpr int kMenuWiggleTrackVelocitiesStrong = 50;
 
 std::array<int, 7> getScaleIntervals (int scale)
 {
@@ -3313,6 +3316,35 @@ void MainComponent::transposeSelectedNotes (int semitones)
     transposeNotesInRange (minRow, maxRow, startVisual, endVisual, semitones);
 }
 
+void MainComponent::wiggleTrackVelocities (int track, int amount)
+{
+    if (track < 0 || track >= kNumTracks || amount <= 0)
+        return;
+
+    auto& pat = patternData.getCurrentPattern();
+    auto& random = juce::Random::getSystemRandom();
+    auto records = PatternEditUtils::createVelocityWiggleRecords (
+        pat, track, trackLayout.getTrackNoteLaneCount (track), amount, random);
+
+    const bool applied = PatternEditUtils::applyPatternEdit (patternData, &undoManager,
+                                                             patternData.getCurrentPatternIndex(),
+                                                             std::move (records), {});
+    if (! applied)
+    {
+        setTemporaryStatus ("No notes to wiggle on Track " + juce::String (track + 1),
+                            false, 1800);
+        return;
+    }
+
+    if (trackerGrid->onPatternDataChanged)
+        trackerGrid->onPatternDataChanged();
+    trackerGrid->repaint();
+    commandManager.commandStatusChanged();
+    setTemporaryStatus ("Wiggled velocities on Track " + juce::String (track + 1)
+                            + " (+/-" + juce::String (amount) + ")",
+                        false, 2200);
+}
+
 void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
 {
     const bool isMasterColumn = (track == TrackerGrid::kMasterLaneTrack);
@@ -3429,6 +3461,12 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
     transposeTrackMenu.addItem (kMenuTransposeTrackUpOctave, "Up Octave");
     transposeTrackMenu.addItem (kMenuTransposeTrackDownOctave, "Down Octave");
     menu.addSubMenu ("Transpose Track", transposeTrackMenu);
+
+    juce::PopupMenu velocityWiggleMenu;
+    velocityWiggleMenu.addItem (kMenuWiggleTrackVelocitiesLight, "Light (+/-4)");
+    velocityWiggleMenu.addItem (kMenuWiggleTrackVelocitiesMedium, "Medium (+/-8)");
+    velocityWiggleMenu.addItem (kMenuWiggleTrackVelocitiesStrong, "Strong (+/-16)");
+    menu.addSubMenu ("Wiggle Velocities", velocityWiggleMenu);
     menu.addSeparator();
 
     menu.addItem (10, "Move Track Left", rangeStart > 0);
@@ -3532,6 +3570,18 @@ void MainComponent::showTrackHeaderMenu (int track, juce::Point<int> screenPos)
                             {
                                 auto vi = trackLayout.physicalToVisual (track);
                                 transposeNotesInRange (0, patternData.getCurrentPattern().numRows - 1, vi, vi, -12);
+                            }
+                            else if (result == kMenuWiggleTrackVelocitiesLight)
+                            {
+                                wiggleTrackVelocities (track, 4);
+                            }
+                            else if (result == kMenuWiggleTrackVelocitiesMedium)
+                            {
+                                wiggleTrackVelocities (track, 8);
+                            }
+                            else if (result == kMenuWiggleTrackVelocitiesStrong)
+                            {
+                                wiggleTrackVelocities (track, 16);
                             }
                             else if (result == 10)
                             {
