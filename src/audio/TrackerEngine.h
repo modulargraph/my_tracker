@@ -125,6 +125,7 @@ public:
 
     // Mixer DSP: set a pointer to the MixerState for per-track processing
     void setMixerState (MixerState* state);
+    // Push mixer values into existing DSP plugins without rebuilding insert chains.
     void refreshMixerPlugins();
     void rebuildMixerPluginChains();
 

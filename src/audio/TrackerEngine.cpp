@@ -1653,7 +1653,38 @@ void TrackerEngine::setupMixerPlugins()
 
 void TrackerEngine::refreshMixerPlugins()
 {
-    rebuildMixerPluginChains();
+    if (edit == nullptr || mixerStatePtr == nullptr)
+        return;
+
+    if (sendEffectsPlugin != nullptr)
+        sendEffectsPlugin->refreshMixerStateSnapshot();
+
+    auto tracks = te::getAudioTracks (*edit);
+    const int numTracks = juce::jmin (kNumTracks, tracks.size());
+
+    for (int trackIndex = 0; trackIndex < numTracks; ++trackIndex)
+    {
+        auto* track = tracks[trackIndex];
+        if (track == nullptr)
+            continue;
+
+        const auto& mixState = mixerStatePtr->tracks[static_cast<size_t> (trackIndex)];
+
+        if (auto* strip = track->pluginList.findFirstPluginOfType<ChannelStripPlugin>())
+            strip->setMixState (mixState);
+
+        if (auto* output = track->pluginList.findFirstPluginOfType<TrackOutputPlugin>())
+        {
+            output->setMixState (mixState);
+            output->setSendBuffers (&sampler.getSendBuffers());
+        }
+
+        if (auto* fxPlugin = track->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
+            fxPlugin->setTrackSendGainLinear (getTrackFaderGain (mixState));
+
+        if (auto* legacyMixer = track->pluginList.findFirstPluginOfType<MixerPlugin>())
+            legacyMixer->setMixState (mixState);
+    }
 }
 
 void TrackerEngine::rebuildMixerPluginChains()

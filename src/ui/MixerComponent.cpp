@@ -810,7 +810,13 @@ double MixerComponent::getParamValue (int visualTrack, Section section, int para
 void MixerComponent::setParamValue (int visualTrack, Section section, int param, double value)
 {
     auto info = getStripInfo (visualTrack);
+    const double previousValue = MixerParamModel::getParamValue (mixerState, info.type, info.index, section, param);
+
     MixerParamModel::setParamValue (mixerState, info.type, info.index, section, param, value);
+
+    const double updatedValue = MixerParamModel::getParamValue (mixerState, info.type, info.index, section, param);
+    if (std::abs (updatedValue - previousValue) <= 1.0e-9)
+        return;
 
     if (onMixStateChanged)
         onMixStateChanged();
@@ -1182,7 +1188,7 @@ void MixerComponent::mouseDrag (const juce::MouseEvent& event)
     newValue = juce::jlimit (minVal, maxVal, newValue);
 
     setParamValue (dragTrack, dragSection, dragParam, newValue);
-    repaint();
+    repaint (getStripBounds (dragTrack).expanded (kSeparatorWidth, 0));
 }
 
 void MixerComponent::mouseUp (const juce::MouseEvent&)
