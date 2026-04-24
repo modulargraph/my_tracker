@@ -48,6 +48,13 @@ public:
     static void saveGlobalRecentProjectFiles (const juce::StringArray& paths);
     static juce::StringArray loadGlobalRecentProjectFiles();
 
+    // Autosave recovery state (independent of project files)
+    static juce::File getAutosaveFile();
+    static bool hasAutosavedProject();
+    static void saveAutosaveSourceProjectPath (const juce::String& path);
+    static juce::String loadAutosaveSourceProjectPath();
+    static void clearAutosavedProject();
+
     // Global plugin scan path persistence (independent of project files)
     static void saveGlobalPluginScanPaths (const juce::StringArray& paths);
     static juce::StringArray loadGlobalPluginScanPaths();
