@@ -23,6 +23,7 @@
 #include "SamplePlaybackLayout.h"
 #include "SendBuffers.h"
 #include "SendEffectsParams.h"
+#include "PatternEditUtils.h"
 #include "PluginAutomationComponent.h"
 #include "PanMapping.h"
 #include "TrackLayout.h"
@@ -6048,6 +6049,72 @@ bool testPluginAutomationPreservesParameterSelection()
     return true;
 }
 
+bool testPatternEditUtilsResolvesCursorInstrument()
+{
+    PatternData patternData;
+    auto& pat = patternData.getCurrentPattern();
+
+    Cell instrumentOnly;
+    instrumentOnly.instrument = 9;
+    pat.setCell (1, 3, instrumentOnly);
+
+    Cell noteOff;
+    noteOff.note = 255;
+    noteOff.instrument = 10;
+    pat.setCell (2, 3, noteOff);
+
+    Cell previousNote;
+    previousNote.note = 60;
+    previousNote.instrument = 3;
+    pat.setCell (3, 0, previousNote);
+
+    Cell laterNote;
+    laterNote.note = 64;
+    laterNote.instrument = 5;
+    pat.setCell (5, 0, laterNote);
+
+    constexpr int manualInstrument = 12;
+
+    if (PatternEditUtils::resolveCursorInstrument (pat, 6, 0, 0, manualInstrument, true) != 5)
+    {
+        std::cerr << "Track entry should resume from nearest note instrument above cursor\n";
+        return false;
+    }
+
+    if (PatternEditUtils::resolveCursorInstrument (pat, 6, 0, 0, manualInstrument, false) != manualInstrument)
+    {
+        std::cerr << "Row movement in same empty track area should preserve manual instrument\n";
+        return false;
+    }
+
+    if (PatternEditUtils::resolveCursorInstrument (pat, 5, 0, 0, manualInstrument, false) != 5)
+    {
+        std::cerr << "Cursor cell instrument should still sync directly\n";
+        return false;
+    }
+
+    if (PatternEditUtils::resolveCursorInstrument (pat, 4, 3, 0, manualInstrument, true) != manualInstrument)
+    {
+        std::cerr << "Instrument-only cells and note-off markers should not seed track entry\n";
+        return false;
+    }
+
+    Cell laneCell;
+    NoteSlot lane1;
+    lane1.note = 67;
+    lane1.instrument = 7;
+    laneCell.setNoteLane (1, lane1);
+    pat.setCell (4, 2, laneCell);
+
+    if (PatternEditUtils::resolveCursorInstrument (pat, 6, 2, 1, manualInstrument, true) != 7)
+    {
+        std::cerr << "Track entry should resolve the instrument from the matching note lane\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testPluginAutomationMultiPluginTrack()
 {
     TrackerLookAndFeel lnf;
@@ -6490,6 +6557,7 @@ int main()
         { "InsertAutomationRemapAfterSlotRemoval", &testInsertAutomationRemapAfterSlotRemoval },
         { "PluginAutomationSetAvailablePluginsIsNotReentrant", &testPluginAutomationSetAvailablePluginsIsNotReentrant },
         { "PluginAutomationPreservesParameterSelection", &testPluginAutomationPreservesParameterSelection },
+        { "PatternEditUtilsResolvesCursorInstrument", &testPatternEditUtilsResolvesCursorInstrument },
         { "PluginAutomationMultiPluginTrack", &testPluginAutomationMultiPluginTrack },
         { "TrackerGridClampsCursorNoteLaneOnTrackChange", &testTrackerGridClampsCursorNoteLaneOnTrackChange },
         { "TrackerGridCanHideVelocityLanes", &testTrackerGridCanHideVelocityLanes },

@@ -1591,20 +1591,21 @@ MainComponent::MainComponent()
     };
 
     // Cursor moved callback
-    trackerGrid->onCursorMoved = [this]
+    trackerGrid->onCursorMoved = [this, lastCursorInstrumentTrack = trackerGrid->getCursorTrack()] () mutable
     {
-        // Sync instrument from cell under cursor (standard tracker behaviour)
         auto& pat = patternData.getCurrentPattern();
-        int row = trackerGrid->getCursorRow();
-        int track = trackerGrid->getCursorTrack();
+        const int row = trackerGrid->getCursorRow();
+        const int track = trackerGrid->getCursorTrack();
         if (! trackerGrid->isCursorInMasterLane() && row >= 0 && row < pat.numRows
             && track >= 0 && track < kNumTracks)
         {
-            auto cell = pat.getCell (row, track);
-            auto slot = cell.getNoteLane (trackerGrid->getCursorNoteLane());
-            if (slot.instrument >= 0)
-                trackerGrid->setCurrentInstrument (slot.instrument);
+            const bool enteringTrack = track != lastCursorInstrumentTrack;
+            const int instrument = PatternEditUtils::resolveCursorInstrument (
+                pat, row, track, trackerGrid->getCursorNoteLane(),
+                trackerGrid->getCurrentInstrument(), enteringTrack);
+            trackerGrid->setCurrentInstrument (instrument);
         }
+        lastCursorInstrumentTrack = track;
 
         updateStatusBar();
         updateToolbar();
