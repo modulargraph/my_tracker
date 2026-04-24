@@ -125,7 +125,14 @@ public:
 
     void setRecording (bool recording);
     bool isRecording() const { return recordingEnabled; }
+    bool isTrackpadRecording() const { return trackpadRecordingEnabled; }
+    bool isAutomationRecordingActive() const { return recordingEnabled || trackpadRecordingEnabled; }
     void recordParameterValue (int row, float value);
+    void setTrackpadRecording (bool recording);
+    void recordTrackpadValueAtRow (int row);
+    void recordTrackpadValueAtRow (int row, float value);
+    void commitTrackpadRecording();
+    void cancelTrackpadRecording();
 
     //==============================================================================
     // Navigate to a specific plugin/param (click-to-automate)
@@ -192,9 +199,12 @@ private:
     juce::TextButton snapButton { "Snap" };
     juce::TextButton drawButton { "Draw" };
     juce::TextButton recButton { "Rec" };
+    juce::TextButton trackpadButton { "Pad" };
     juce::TextButton overlayButton { "Ovl" };
+    juce::Label baseLabel;
     juce::Label magnitudeLabel;
     juce::Label stretchLabel;
+    juce::Slider baseSlider;
     juce::Slider magnitudeSlider;
     juce::Slider stretchSlider;
     juce::ComboBox presetTypeDropdown;
@@ -272,6 +282,7 @@ private:
     static constexpr int kMaxUndoSteps = 50;
     void pushUndoState();
     UndoSnapshot captureCurrentState() const;
+    UndoSnapshot captureStateFor (const juce::String& pluginId, int parameterId) const;
     void restoreState (const UndoSnapshot& state);
 
     // Curve transforms
@@ -292,6 +303,25 @@ private:
 
     // Recording
     bool recordingEnabled = false;
+    bool trackpadRecordingEnabled = false;
+    bool trackpadRecordComplete = false;
+    bool trackpadRecordHasValue = false;
+    float trackpadRecordValue = 0.5f;
+    float trackpadRecordLastValue = 0.5f;
+    int trackpadRecordFirstRow = -1;
+    int trackpadRecordLastRow = -1;
+    int trackpadRecordOwnerTrack = -1;
+    int trackpadRecordParameterId = -1;
+    int trackpadRecordedRowCount = 0;
+    juce::String trackpadRecordPluginId;
+    std::vector<bool> trackpadRecordedRows;
+    std::vector<AutomationPoint> trackpadRecordPoints;
+    void beginTrackpadRecording();
+    void resetTrackpadRecordingState();
+    void updateTrackpadRecordButton();
+    void updateTrackpadRecordValueFromLocalPoint (juce::Point<float> localPoint);
+    void addTrackpadRecordPoint (int row, float value, bool allowUpdate);
+    void drawTrackpadRecordPreview (juce::Graphics& g, juce::Rectangle<int> bounds) const;
 
     // Hover
     int hoverPointIndex = -1;

@@ -31,7 +31,8 @@ public:
     void initialise();
 
     // Pattern → Edit conversion
-    // releaseMode: per-track flag; true = note sustains until next note/OFF (release envelope plays)
+    // releaseMode: per-track flag; false = sample kill handoff on new sample notes,
+    // true = note-off handoff. VST/plugin instruments use note-off handoff.
     void syncPatternToEdit (const Pattern& pattern,
                             const std::array<bool, kNumTracks>& releaseMode = {});
 
@@ -99,6 +100,7 @@ public:
 
     // Stop any active preview (file or note)
     void stopPreview();
+    void stopPreviewNote (int instrumentIndex, int midiNote);
     void setPreviewVolume (float gainLinear);
     float getPreviewVolume() const { return previewVolume; }
 
@@ -201,6 +203,9 @@ public:
 
     /** Get the Tracktion plugin instance for a plugin instrument (nullptr if not loaded). */
     te::Plugin* getPluginInstrumentInstance (int instrumentIndex);
+
+    /** Get the hosted JUCE plugin instance for a plugin instrument, loading it if needed. */
+    juce::AudioPluginInstance* getPluginInstrumentAudioPluginInstance (int instrumentIndex);
 
     /** Open the editor window for a plugin instrument. */
     void openPluginInstrumentEditor (int instrumentIndex);

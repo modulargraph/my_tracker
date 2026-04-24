@@ -149,6 +149,7 @@ private:
 
     // Status bar info
     juce::Label statusLabel;
+    juce::TextButton automationPanelButton { "AUTO" };
     juce::Label octaveLabel;
     juce::Label bpmLabel;
     juce::Label previewVolumeLabel;
@@ -224,6 +225,8 @@ private:
     void switchToTab (Tab tab);
     void focusContentForTab (Tab tab);
     void showAudioPluginSettings();
+    void toggleAutomationPanel();
+    void updateAutomationPanelButton();
     void refreshAutomationPanel (bool forcePopulate = true);
     void populateAutomationPlugins();
     void navigateToAutomationParam (const juce::String& pluginId, int paramIndex);

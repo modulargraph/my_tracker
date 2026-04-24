@@ -73,7 +73,12 @@ struct PluginInstrumentModulation
     {
         PluginModulatorSource source;
         source.type = PluginModulatorSource::Type::LFO;
-        source.name = "LFO " + juce::String (static_cast<int> (sources.size()) + 1);
+        const auto existingLfos = std::count_if (sources.begin(), sources.end(),
+                                                 [] (const PluginModulatorSource& existing)
+                                                 {
+                                                     return existing.type == PluginModulatorSource::Type::LFO;
+                                                 });
+        source.name = "LFO " + juce::String (static_cast<int> (existingLfos) + 1);
         sources.push_back (source);
         return static_cast<int> (sources.size()) - 1;
     }
@@ -82,7 +87,12 @@ struct PluginInstrumentModulation
     {
         PluginModulatorSource source;
         source.type = PluginModulatorSource::Type::Envelope;
-        source.name = "Env " + juce::String (static_cast<int> (sources.size()) + 1);
+        const auto existingEnvs = std::count_if (sources.begin(), sources.end(),
+                                                 [] (const PluginModulatorSource& existing)
+                                                 {
+                                                     return existing.type == PluginModulatorSource::Type::Envelope;
+                                                 });
+        source.name = "Env " + juce::String (static_cast<int> (existingEnvs) + 1);
         source.envelopeTriggerMode = PluginModulatorSource::EnvelopeTriggerMode::NoteGate;
         sources.push_back (source);
         return static_cast<int> (sources.size()) - 1;
@@ -111,6 +121,48 @@ struct PluginInstrumentModulation
     {
         if (index >= 0 && index < static_cast<int> (routes.size()))
             routes.erase (routes.begin() + index);
+    }
+
+    void ensureDefaultSources()
+    {
+        if (! sources.empty())
+            return;
+
+        PluginModulatorSource lfo1;
+        lfo1.type = PluginModulatorSource::Type::LFO;
+        lfo1.name = "LFO 1";
+        lfo1.lfoShape = PluginModulatorSource::LfoShape::Triangle;
+        lfo1.lfoRateMode = PluginModulatorSource::LfoRateMode::Steps;
+        lfo1.lfoRateSteps = 16.0;
+        sources.push_back (lfo1);
+
+        PluginModulatorSource lfo2;
+        lfo2.type = PluginModulatorSource::Type::LFO;
+        lfo2.name = "LFO 2";
+        lfo2.lfoShape = PluginModulatorSource::LfoShape::Sine;
+        lfo2.lfoRateMode = PluginModulatorSource::LfoRateMode::Steps;
+        lfo2.lfoRateSteps = 4.0;
+        sources.push_back (lfo2);
+
+        PluginModulatorSource env1;
+        env1.type = PluginModulatorSource::Type::Envelope;
+        env1.name = "Env 1";
+        env1.envelopeTriggerMode = PluginModulatorSource::EnvelopeTriggerMode::NoteGate;
+        env1.attackS = 0.010;
+        env1.decayS = 0.180;
+        env1.sustain = 0.650;
+        env1.releaseS = 0.220;
+        sources.push_back (env1);
+
+        PluginModulatorSource env2;
+        env2.type = PluginModulatorSource::Type::Envelope;
+        env2.name = "Env 2";
+        env2.envelopeTriggerMode = PluginModulatorSource::EnvelopeTriggerMode::StepFxOnly;
+        env2.attackS = 0.000;
+        env2.decayS = 0.090;
+        env2.sustain = 0.000;
+        env2.releaseS = 0.120;
+        sources.push_back (env2);
     }
 };
 

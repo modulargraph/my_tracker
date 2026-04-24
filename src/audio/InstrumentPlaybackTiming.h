@@ -15,38 +15,23 @@ namespace InstrumentPlaybackTiming
         return std::max (0.0, baseTimeSeconds + static_cast<double> (offsetMs) * 0.001);
     }
 
-    inline double getKillModeEndBeat (double startBeat, double rowLengthBeats, double segmentEndBeat)
-    {
-        return std::min (startBeat + rowLengthBeats, segmentEndBeat);
-    }
-
-    inline double chooseNoteEndBeat (bool killMode,
-                                     double startBeat,
-                                     double rowLengthBeats,
+    inline double chooseNoteEndBeat (bool /*killMode*/,
+                                     double /*startBeat*/,
+                                     double /*rowLengthBeats*/,
                                      double releaseModeEndBeat,
                                      double segmentEndBeat)
     {
-        if (killMode)
-            return getKillModeEndBeat (startBeat, rowLengthBeats, segmentEndBeat);
-
+        // Tracker kill/release does not change note duration. Notes sustain
+        // until the next trigger or segment end; kill mode only changes how
+        // sample tracks are cut at that handoff.
         return std::min (releaseModeEndBeat, segmentEndBeat);
     }
 
-    inline double chooseNoteEndSeconds (bool killMode,
-                                        double rowEndSeconds,
+    inline double chooseNoteEndSeconds (bool /*killMode*/,
+                                        double /*rowEndSeconds*/,
                                         double nextTriggerSeconds,
                                         double segmentEndSeconds)
     {
-        const double segmentClampedRowEnd = std::min (rowEndSeconds, segmentEndSeconds);
-
-        if (killMode)
-        {
-            if (nextTriggerSeconds >= 0.0)
-                return std::min (segmentClampedRowEnd, nextTriggerSeconds);
-
-            return segmentClampedRowEnd;
-        }
-
         if (nextTriggerSeconds >= 0.0)
             return std::min (nextTriggerSeconds, segmentEndSeconds);
 
@@ -63,13 +48,20 @@ namespace InstrumentPlaybackTiming
         return std::min (segmentEndSeconds, noteStartSeconds + 0.001);
     }
 
-    inline bool shouldSendHardCutAtEnd (bool killMode, bool pluginInstrumentTrack)
+    inline bool shouldSendHardCutAtNoteHandoff (bool killMode,
+                                                bool pluginInstrumentTrack,
+                                                bool nextTriggerIsNormalNote)
     {
-        return killMode && ! pluginInstrumentTrack;
+        return killMode && ! pluginInstrumentTrack && nextTriggerIsNormalNote;
+    }
+
+    inline double getHandoffEventTime (double noteEndSeconds)
+    {
+        return std::max (0.0, noteEndSeconds - 0.00002);
     }
 
     inline double getHardCutEventTime (double noteEndSeconds)
     {
-        return std::max (0.0, noteEndSeconds - 0.00002);
+        return getHandoffEventTime (noteEndSeconds);
     }
 }

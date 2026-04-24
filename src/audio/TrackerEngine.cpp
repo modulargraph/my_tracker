@@ -29,6 +29,7 @@ constexpr int kCcSamplerPosition = 38;
 constexpr int kCcFxNoteReset = 39;
 constexpr int kCcFxVolume = 40;
 constexpr int kCcSamplerSlice = 41;
+constexpr int kCcSamplerHardCut = 86;
 
 char getSlotCommandLetter (const FxSlot& slot)
 {
@@ -446,8 +447,6 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
 
         const bool isPluginInstrumentTrack = getTrackContentMode (trackIdx) == TrackContentMode::PluginInstrument;
         const bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
-        const bool sendHardCutAtEnd =
-            InstrumentPlaybackTiming::shouldSendHardCutAtEnd (isKill, isPluginInstrumentTrack);
 
         // Determine how many note lanes this track has
         int numNoteLanes = 1;
@@ -514,6 +513,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
         // Per-lane note generation
         for (int laneIdx = 0; laneIdx < numNoteLanes; ++laneIdx)
         {
+            const int noteChannel = isPluginInstrumentTrack ? 1 : juce::jlimit (1, 16, laneIdx + 1);
             int lastPlayingNote = -1;
             int currentInst = -1;
             int activePortaSteps = 0;
@@ -547,10 +547,11 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 // OFF (255)
                 if (noteSlot.note == 255)
                 {
+                    const double offTime = InstrumentPlaybackTiming::getHandoffEventTime (noteEventSeconds);
                     if (lastPlayingNote >= 0)
-                        midiSeq.addEvent (juce::MidiMessage::noteOff (1, lastPlayingNote), noteEventSeconds);
+                        midiSeq.addEvent (juce::MidiMessage::noteOff (noteChannel, lastPlayingNote), offTime);
                     else
-                        midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), noteEventSeconds);
+                        midiSeq.addEvent (juce::MidiMessage::allNotesOff (noteChannel), offTime);
                     lastPlayingNote = -1;
                     activePortaSteps = 0;
                     continue;
@@ -559,7 +560,20 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 // KILL (254)
                 if (noteSlot.note == 254)
                 {
-                    midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), noteEventSeconds);
+                    const double killTime = InstrumentPlaybackTiming::getHandoffEventTime (noteEventSeconds);
+                    if (isPluginInstrumentTrack)
+                    {
+                        midiSeq.addEvent (juce::MidiMessage::allSoundOff (noteChannel), killTime);
+                    }
+                    else
+                    {
+                        midiSeq.addEvent (juce::MidiMessage::controllerEvent (noteChannel, kCcSamplerHardCut, 0),
+                                          killTime);
+                        midiSeq.addEvent (lastPlayingNote >= 0
+                                              ? juce::MidiMessage::noteOff (noteChannel, lastPlayingNote)
+                                              : juce::MidiMessage::allNotesOff (noteChannel),
+                                          killTime);
+                    }
                     lastPlayingNote = -1;
                     activePortaSteps = 0;
                     continue;
@@ -568,10 +582,10 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 // Portamento
                 if (rowHasPorta && lastPlayingNote >= 0)
                 {
-                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 28, noteSlot.note & 0x7F),
+                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (noteChannel, 28, noteSlot.note & 0x7F),
                                       noteEventSeconds);
                     if (noteSlot.volume >= 0)
-                        midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, noteSlot.volume),
+                        midiSeq.addEvent (juce::MidiMessage::controllerEvent (noteChannel, 7, noteSlot.volume),
                                           juce::jmax (0.0, noteEventSeconds - 0.00003));
                     activePortaSteps = 0;
                     continue;
@@ -585,15 +599,16 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                     currentInst = InstrumentRouting::clampInstrumentIndex (noteSlot.instrument);
                     const double bankTime = juce::jmax (0.0, noteEventSeconds - 0.00012);
                     const double progTime = juce::jmax (0.0, noteEventSeconds - 0.0001);
-                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 0,
+                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (noteChannel, 0,
                                       InstrumentRouting::getBankMsbForInstrument (currentInst)), bankTime);
-                    midiSeq.addEvent (juce::MidiMessage::programChange (1,
+                    midiSeq.addEvent (juce::MidiMessage::programChange (noteChannel,
                                       InstrumentRouting::getProgramForInstrument (currentInst)), progTime);
                 }
 
-                // Calculate note end: Kill ends at the next row; Release sustains
-                // until the next note in this lane or the pattern end.
+                // Notes sustain until the next trigger in this lane or the
+                // pattern end. Kill/release only changes sample handoff style.
                 double nextTriggerSeconds = -1.0;
+                bool nextTriggerIsNormalNote = false;
                 for (int nextRow = row + 1; nextRow < pattern.numRows; ++nextRow)
                 {
                     const auto& nextCell = pattern.getCell (nextRow, trackIdx);
@@ -617,6 +632,7 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                             .toTime (te::BeatPosition::fromBeats (nextBeat)).inSeconds();
                         nextTriggerSeconds = InstrumentPlaybackTiming::applyTimingOffsetSeconds (
                             nextRowSeconds, getTimingOffsetMs (nextCell));
+                        nextTriggerIsNormalNote = nextSlot.note < 128;
                         break;
                     }
                 }
@@ -636,15 +652,20 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
 
                 int velocity = noteSlot.volume >= 0 ? noteSlot.volume : 127;
 
-                midiSeq.addEvent (juce::MidiMessage::noteOn (1, noteSlot.note, static_cast<juce::uint8> (velocity)),
+                midiSeq.addEvent (juce::MidiMessage::noteOn (noteChannel, noteSlot.note, static_cast<juce::uint8> (velocity)),
                                   noteEventSeconds);
 
-                if (sendHardCutAtEnd)
-                    midiSeq.addEvent (juce::MidiMessage::allSoundOff (1),
+                const bool hardCutSampleAtEnd = InstrumentPlaybackTiming::shouldSendHardCutAtNoteHandoff (
+                    isKill, isPluginInstrumentTrack, nextTriggerIsNormalNote);
+                if (hardCutSampleAtEnd)
+                    midiSeq.addEvent (juce::MidiMessage::controllerEvent (noteChannel, kCcSamplerHardCut, 0),
                                       InstrumentPlaybackTiming::getHardCutEventTime (noteEndSeconds));
 
-                midiSeq.addEvent (juce::MidiMessage::noteOff (1, noteSlot.note),
-                                  noteEndSeconds);
+                const double noteOffSeconds = nextTriggerSeconds >= 0.0
+                    ? InstrumentPlaybackTiming::getHandoffEventTime (noteEndSeconds)
+                    : noteEndSeconds;
+                midiSeq.addEvent (juce::MidiMessage::noteOff (noteChannel, noteSlot.note),
+                                  noteOffSeconds);
 
                 lastPlayingNote = noteSlot.note;
                 activePortaSteps = 0;
@@ -724,8 +745,6 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
         juce::MidiMessageSequence midiSeq;
         const bool isPluginInstrumentTrack = getTrackContentMode (trackIdx) == TrackContentMode::PluginInstrument;
         const bool isKill = ! releaseMode[static_cast<size_t> (trackIdx)];
-        const bool sendHardCutAtEnd =
-            InstrumentPlaybackTiming::shouldSendHardCutAtEnd (isKill, isPluginInstrumentTrack);
 
         // Determine how many note lanes this track has across all patterns
         int numNoteLanes = 1;
@@ -799,6 +818,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
         // Per-lane note generation (mirrors syncPatternToEdit approach)
         for (int laneIdx = 0; laneIdx < numNoteLanes; ++laneIdx)
         {
+            const int noteChannel = isPluginInstrumentTrack ? 1 : juce::jlimit (1, 16, laneIdx + 1);
             int lastPlayingNote = -1;
             int currentInst = -1;
             int activePortaSteps = 0;
@@ -839,10 +859,11 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         // OFF (255)
                         if (noteSlot.note == 255)
                         {
+                            const double offTime = InstrumentPlaybackTiming::getHandoffEventTime (noteEventSeconds);
                             if (lastPlayingNote >= 0)
-                                midiSeq.addEvent (juce::MidiMessage::noteOff (1, lastPlayingNote), noteEventSeconds);
+                                midiSeq.addEvent (juce::MidiMessage::noteOff (noteChannel, lastPlayingNote), offTime);
                             else
-                                midiSeq.addEvent (juce::MidiMessage::allNotesOff (1), noteEventSeconds);
+                                midiSeq.addEvent (juce::MidiMessage::allNotesOff (noteChannel), offTime);
                             lastPlayingNote = -1;
                             activePortaSteps = 0;
                             continue;
@@ -851,7 +872,20 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         // KILL (254)
                         if (noteSlot.note == 254)
                         {
-                            midiSeq.addEvent (juce::MidiMessage::allSoundOff (1), noteEventSeconds);
+                            const double killTime = InstrumentPlaybackTiming::getHandoffEventTime (noteEventSeconds);
+                            if (isPluginInstrumentTrack)
+                            {
+                                midiSeq.addEvent (juce::MidiMessage::allSoundOff (noteChannel), killTime);
+                            }
+                            else
+                            {
+                                midiSeq.addEvent (juce::MidiMessage::controllerEvent (noteChannel, kCcSamplerHardCut, 0),
+                                                  killTime);
+                                midiSeq.addEvent (lastPlayingNote >= 0
+                                                      ? juce::MidiMessage::noteOff (noteChannel, lastPlayingNote)
+                                                      : juce::MidiMessage::allNotesOff (noteChannel),
+                                                  killTime);
+                            }
                             lastPlayingNote = -1;
                             activePortaSteps = 0;
                             continue;
@@ -860,10 +894,10 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         // Portamento
                         if (rowHasPorta && lastPlayingNote >= 0)
                         {
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 28, noteSlot.note & 0x7F),
+                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (noteChannel, 28, noteSlot.note & 0x7F),
                                               noteEventSeconds);
                             if (noteSlot.volume >= 0)
-                                midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 7, noteSlot.volume),
+                                midiSeq.addEvent (juce::MidiMessage::controllerEvent (noteChannel, 7, noteSlot.volume),
                                                   juce::jmax (0.0, noteEventSeconds - 0.00003));
                             activePortaSteps = 0;
                             continue;
@@ -876,16 +910,17 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                             currentInst = InstrumentRouting::clampInstrumentIndex (noteSlot.instrument);
                             const double bankTime = juce::jmax (0.0, noteEventSeconds - 0.00012);
                             const double progTime = juce::jmax (0.0, noteEventSeconds - 0.0001);
-                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, 0,
+                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (noteChannel, 0,
                                               InstrumentRouting::getBankMsbForInstrument (currentInst)), bankTime);
-                            midiSeq.addEvent (juce::MidiMessage::programChange (1,
+                            midiSeq.addEvent (juce::MidiMessage::programChange (noteChannel,
                                               InstrumentRouting::getProgramForInstrument (currentInst)), progTime);
                         }
 
-                        // Calculate note end: Kill ends at the next row; Release
-                        // sustains until the next note in this lane or end of repeat.
+                        // Notes sustain until the next trigger in this lane or
+                        // repeat end. Kill/release only changes sample handoff style.
                         double repeatEndBeat = beatOffset + patternLengthBeats;
                         double nextTriggerSeconds = -1.0;
+                        bool nextTriggerIsNormalNote = false;
                         for (int nextRow = row + 1; nextRow < pattern->numRows; ++nextRow)
                         {
                             const auto& nextCell = pattern->getCell (nextRow, trackIdx);
@@ -909,6 +944,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                                     .toTime (te::BeatPosition::fromBeats (nextBeat)).inSeconds();
                                 nextTriggerSeconds = InstrumentPlaybackTiming::applyTimingOffsetSeconds (
                                     nextRowSeconds, getTimingOffsetMs (nextCell));
+                                nextTriggerIsNormalNote = nextSlot.note < 128;
                                 break;
                             }
                         }
@@ -929,15 +965,20 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
 
                         int velocity = noteSlot.volume >= 0 ? noteSlot.volume : 127;
 
-                        midiSeq.addEvent (juce::MidiMessage::noteOn (1, noteSlot.note, static_cast<juce::uint8> (velocity)),
+                        midiSeq.addEvent (juce::MidiMessage::noteOn (noteChannel, noteSlot.note, static_cast<juce::uint8> (velocity)),
                                           noteEventSeconds);
 
-                        if (sendHardCutAtEnd)
-                            midiSeq.addEvent (juce::MidiMessage::allSoundOff (1),
+                        const bool hardCutSampleAtEnd = InstrumentPlaybackTiming::shouldSendHardCutAtNoteHandoff (
+                            isKill, isPluginInstrumentTrack, nextTriggerIsNormalNote);
+                        if (hardCutSampleAtEnd)
+                            midiSeq.addEvent (juce::MidiMessage::controllerEvent (noteChannel, kCcSamplerHardCut, 0),
                                               InstrumentPlaybackTiming::getHardCutEventTime (noteEndSeconds));
 
-                        midiSeq.addEvent (juce::MidiMessage::noteOff (1, noteSlot.note),
-                                          noteEndSeconds);
+                        const double noteOffSeconds = nextTriggerSeconds >= 0.0
+                            ? InstrumentPlaybackTiming::getHandoffEventTime (noteEndSeconds)
+                            : noteEndSeconds;
+                        midiSeq.addEvent (juce::MidiMessage::noteOff (noteChannel, noteSlot.note),
+                                          noteOffSeconds);
 
                         lastPlayingNote = noteSlot.note;
                         activePortaSteps = 0;
@@ -1344,12 +1385,14 @@ void TrackerEngine::previewNotes (int trackIndex, int instrumentIndex, const std
     if (instrumentIndex < 0 || midiNotes.empty())
         return;
 
-    stopPreview();
-
     std::vector<int> notes;
     notes.reserve (midiNotes.size());
     for (int note : midiNotes)
-        notes.push_back (juce::jlimit (0, 127, note));
+    {
+        auto clamped = juce::jlimit (0, 127, note);
+        if (std::find (notes.begin(), notes.end(), clamped) == notes.end())
+            notes.push_back (clamped);
+    }
 
     // Plugin instrument: inject an explicit note-on on the owner track via
     // injectLiveMidiMessage so we have full control over note-off timing.
@@ -1361,26 +1404,66 @@ void TrackerEngine::previewNotes (int trackIndex, int instrumentIndex, const std
         ensurePluginInstrumentLoaded (instrumentIndex);
 
         const auto& slotInfo = getInstrumentSlotInfo (instrumentIndex);
+
+        if (autoStop)
+        {
+            stopPreview();
+        }
+        else
+        {
+            const bool pendingAutoStop = isTimerRunning();
+            stopTimer();
+
+            const bool sentSampleNoteOff = stopSamplePreview();
+            if (activePreviewTrack >= 0)
+            {
+                auto* track = getTrack (activePreviewTrack);
+                if (track != nullptr && ! sentSampleNoteOff)
+                    sampler.stopNote (*track);
+
+                activePreviewTrack = -1;
+            }
+
+            previewBank = nullptr;
+
+            if (pendingAutoStop
+                || previewPluginInstrument != instrumentIndex
+                || previewPluginTrack != slotInfo.ownerTrack)
+                stopPluginPreview();
+        }
+
         auto* ownerTrack = getTrack (slotInfo.ownerTrack);
         if (ownerTrack != nullptr)
         {
             int velocity = juce::jlimit (1, 127, static_cast<int> (previewVolume * 127.0f + 0.5f));
+            bool startedAnyNote = false;
+
             for (int note : notes)
             {
+                if (! autoStop
+                    && std::find (previewPluginNotes.begin(), previewPluginNotes.end(), note) != previewPluginNotes.end())
+                    continue;
+
                 ownerTrack->injectLiveMidiMessage (
                     juce::MidiMessage::noteOn (1, note, static_cast<juce::uint8> (velocity)), 0);
+
+                previewPluginNotes.push_back (note);
+                startedAnyNote = true;
             }
 
-            previewPluginNotes = notes;
             previewPluginInstrument = instrumentIndex;
             previewPluginTrack = slotInfo.ownerTrack;
-            triggerPluginInstrumentNoteModulators (instrumentIndex);
+
+            if (startedAnyNote)
+                triggerPluginInstrumentNoteModulators (instrumentIndex);
         }
 
         if (autoStop)
             startTimer (kPluginPreviewDurationMs);
         return;
     }
+
+    stopPreview();
 
     // Sample instrument: preview through the dedicated preview track.
     auto* track = getTrack (kPreviewTrack);
@@ -1567,6 +1650,54 @@ void TrackerEngine::stopPreview()
     }
 
     previewBank = nullptr;
+}
+
+void TrackerEngine::stopPreviewNote (int instrumentIndex, int midiNote)
+{
+    if (instrumentIndex < 0)
+        return;
+
+    const int note = juce::jlimit (0, 127, midiNote);
+
+    if (isPluginInstrument (instrumentIndex))
+    {
+        const auto& slotInfo = getInstrumentSlotInfo (instrumentIndex);
+        const int trackIndex = slotInfo.ownerTrack >= 0 ? slotInfo.ownerTrack : previewPluginTrack;
+
+        if (auto* track = getTrack (trackIndex))
+            track->injectLiveMidiMessage (juce::MidiMessage::noteOff (1, note), 0);
+
+        auto it = std::find (previewPluginNotes.begin(), previewPluginNotes.end(), note);
+        if (it != previewPluginNotes.end())
+            previewPluginNotes.erase (it);
+
+        if (previewPluginNotes.empty() && previewPluginInstrument == instrumentIndex)
+        {
+            stopTimer();
+            releasePluginInstrumentNoteModulators (instrumentIndex);
+            previewPluginInstrument = -1;
+            previewPluginTrack = -1;
+        }
+
+        return;
+    }
+
+    auto it = std::find (previewSampleNotes.begin(), previewSampleNotes.end(), note);
+    if (it == previewSampleNotes.end())
+        return;
+
+    if (previewSampleTrack >= 0)
+        if (auto* track = getTrack (previewSampleTrack))
+            track->injectLiveMidiMessage (juce::MidiMessage::noteOff (1, note), 0);
+
+    previewSampleNotes.erase (it);
+    if (previewSampleNotes.empty())
+    {
+        stopTimer();
+        if (activePreviewTrack == previewSampleTrack)
+            activePreviewTrack = -1;
+        previewSampleTrack = -1;
+    }
 }
 
 void TrackerEngine::setPreviewVolume (float gainLinear)
@@ -2519,6 +2650,7 @@ bool TrackerEngine::setPluginInstrument (int instrumentIndex, const juce::Plugin
 
     auto& info = instrumentSlotInfos[instrumentIndex];
     info.setPlugin (desc, ownerTrack);
+    info.pluginModulation.ensureDefaultSources();
 
     // Load the new plugin on the owner track
     ensurePluginInstrumentLoaded (instrumentIndex);
@@ -2660,6 +2792,21 @@ te::Plugin* TrackerEngine::getPluginInstrumentInstance (int instrumentIndex)
     auto instanceIt = pluginInstrumentInstances.find (instrumentIndex);
     if (instanceIt != pluginInstrumentInstances.end())
         return instanceIt->second.get();
+    return nullptr;
+}
+
+juce::AudioPluginInstance* TrackerEngine::getPluginInstrumentAudioPluginInstance (int instrumentIndex)
+{
+    auto* plugin = getPluginInstrumentInstance (instrumentIndex);
+    if (plugin == nullptr)
+    {
+        ensurePluginInstrumentLoaded (instrumentIndex);
+        plugin = getPluginInstrumentInstance (instrumentIndex);
+    }
+
+    if (auto* extPlugin = dynamic_cast<te::ExternalPlugin*> (plugin))
+        return extPlugin->getAudioPluginInstance();
+
     return nullptr;
 }
 
@@ -3372,26 +3519,6 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             };
             addAndMakeVisible (autoLearnButton);
 
-            modulationButton.setButtonText ("Mod Matrix");
-            modulationButton.setWantsKeyboardFocus (false);
-            modulationButton.onClick = [this]
-            {
-                auto options = juce::DialogWindow::LaunchOptions {};
-                auto* panel = new PluginModulationComponent (pluginInstance, engine, instrumentIndex);
-                options.content.setOwned (panel);
-                options.dialogTitle = "Inst " + juce::String::formatted ("%02X", instrumentIndex) + " Mod Matrix";
-                options.dialogBackgroundColour = juce::Colour (0xff202020);
-                options.escapeKeyTriggersCloseButton = true;
-                options.useNativeTitleBar = true;
-                options.resizable = true;
-                if (auto* window = options.launchAsync())
-                {
-                    window->centreWithSize (panel->getWidth(), panel->getHeight());
-                    window->toFront (true);
-                }
-            };
-            addAndMakeVisible (modulationButton);
-
             octaveLabel.setText ("Oct: " + juce::String (currentOctave), juce::dontSendNotification);
             octaveLabel.setWantsKeyboardFocus (false);
             octaveLabel.setJustificationType (juce::Justification::centred);
@@ -3425,7 +3552,6 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
             previewKbButton.setBounds (toolbar.removeFromLeft (100).reduced (4));
             octaveLabel.setBounds (toolbar.removeFromLeft (60).reduced (4));
             autoLearnButton.setBounds (toolbar.removeFromLeft (100).reduced (4));
-            modulationButton.setBounds (toolbar.removeFromLeft (110).reduced (4));
         }
 
         bool keyPressed (const juce::KeyPress& key, juce::Component*) override
@@ -3471,7 +3597,7 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
                 bool stillDown = juce::KeyPress::isKeyCurrentlyDown (it->first);
                 if (! stillDown)
                 {
-                    engine.stopPreview();
+                    engine.stopPreviewNote (instrumentIndex, it->second);
                     it = heldNotesByKeyCode.erase (it);
                     handled = true;
                 }
@@ -3517,7 +3643,6 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 
         juce::TextButton previewKbButton;
         juce::TextButton autoLearnButton;
-        juce::TextButton modulationButton;
         juce::Label octaveLabel;
 
         bool autoLearnEnabled = false;
@@ -3683,8 +3808,8 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
 
         void releaseHeldPreviewNotes()
         {
-            if (! heldNotesByKeyCode.empty())
-                engine.stopPreview();
+            for (const auto& held : heldNotesByKeyCode)
+                engine.stopPreviewNote (instrumentIndex, held.second);
 
             heldNotesByKeyCode.clear();
         }
@@ -3759,7 +3884,7 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
                 }
                 else if (! down && it != heldNotesByKeyCode.end())
                 {
-                    engine.stopPreview();
+                    engine.stopPreviewNote (instrumentIndex, it->second);
                     heldNotesByKeyCode.erase (it);
                 }
             }
@@ -3807,6 +3932,8 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
     window->centreWithSize (window->getWidth(), window->getHeight());
     window->setVisible (true);
     window->setAlwaysOnTop (true);
+    window->toFront (true);
+    content->grabKeyboardFocus();
 
     // Keep a window-level hook as a fallback for editor implementations that
     // don't route key events through child JUCE components.

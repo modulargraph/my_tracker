@@ -52,6 +52,8 @@ public:
     {
         instrumentIndex = juce::jlimit (0, 255, index);
         currentBankMsb = (instrumentIndex >> 7) & 0x7F;
+        channelInstruments.fill (instrumentIndex);
+        channelBankMsbs.fill (currentBankMsb);
     }
     void setPitchOffset (float semitones) { pitchOffset.store (semitones, std::memory_order_relaxed); }
     void setGranularPositionOffset (float regionOffset)
@@ -85,7 +87,8 @@ public:
     float getPlaybackPosition() const { return playbackPosNorm.load (std::memory_order_relaxed); }
 
 private:
-    // Monophonic voice for tracker-style playback
+    // Playback voice for tracker rows. MIDI channel is used internally to keep
+    // note lanes independent for sample-track polyphony.
     struct Voice
     {
         enum class State { Idle, Playing, FadingOut };
@@ -96,6 +99,8 @@ private:
 
         double playbackPos = 0.0;
         int midiNote = 60;
+        int midiChannel = 1;
+        int instrumentIndex = -1;
         float velocity = 1.0f;
 
         int fadeOutRemaining = 0;
@@ -121,6 +126,8 @@ private:
             params = {};
             playbackPos = 0.0;
             midiNote = 60;
+            midiChannel = 1;
+            instrumentIndex = -1;
             velocity = 1.0f;
             fadeOutRemaining = 0;
             playingForward = true;
@@ -131,8 +138,9 @@ private:
         }
     };
 
-    Voice voice;
-    Voice fadeOutVoice;
+    static constexpr int kMaxPlaybackVoices = 32;
+    std::array<Voice, kMaxPlaybackVoices> voices {};
+    std::array<Voice, kMaxPlaybackVoices> fadeOutVoices {};
     static constexpr int kMaxPreviewVoices = 8;
     std::array<Voice, kMaxPreviewVoices> previewVoices {};
     std::array<Voice, kMaxPreviewVoices> previewFadeOutVoices {};
@@ -161,6 +169,8 @@ private:
     // Sample offset from 9xx effect (set via CC#9, consumed on next note-on)
     int pendingSampleOffset = -1;
     std::array<int, 128> pendingParamHighBits {};
+    std::array<int, 16> channelInstruments {};
+    std::array<int, 16> channelBankMsbs {};
     int legacyPendingParamHighBit = -1;
     int currentBankMsb = 0;
     int directionOverride = -1; // -1 = instrument default, 0 = backward, 1 = forward

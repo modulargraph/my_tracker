@@ -5,6 +5,19 @@
 namespace NoteUtils
 {
 
+inline constexpr int kMappedKeyCodes[] =
+{
+    'Z', 'S', 'X', 'D', 'C', 'V', 'G', 'B', 'H', 'N', 'J', 'M',
+    'Q', '2', 'W', '3', 'E', 'R', '5', 'T', '6', 'Y', '7', 'U'
+};
+
+inline int normaliseAlphaKeyCode (int keyCode)
+{
+    if (keyCode >= 'a' && keyCode <= 'z')
+        return keyCode - ('a' - 'A');
+    return keyCode;
+}
+
 inline juce::String noteToString (int note)
 {
     if (note < 0)
@@ -62,6 +75,45 @@ inline int keyToNote (const juce::KeyPress& key, int currentOctave)
         case 'y': return upperBase + 9;   // A
         case '7': return upperBase + 10;  // A#
         case 'u': return upperBase + 11;  // B
+        default: break;
+    }
+
+    return -1;
+}
+
+inline int keyCodeToNote (int keyCode, int currentOctave)
+{
+    keyCode = normaliseAlphaKeyCode (keyCode);
+
+    int baseNote = currentOctave * 12;
+    int upperBase = (currentOctave + 1) * 12;
+
+    switch (keyCode)
+    {
+        case 'Z': return baseNote + 0;
+        case 'S': return baseNote + 1;
+        case 'X': return baseNote + 2;
+        case 'D': return baseNote + 3;
+        case 'C': return baseNote + 4;
+        case 'V': return baseNote + 5;
+        case 'G': return baseNote + 6;
+        case 'B': return baseNote + 7;
+        case 'H': return baseNote + 8;
+        case 'N': return baseNote + 9;
+        case 'J': return baseNote + 10;
+        case 'M': return baseNote + 11;
+        case 'Q': return upperBase + 0;
+        case '2': return upperBase + 1;
+        case 'W': return upperBase + 2;
+        case '3': return upperBase + 3;
+        case 'E': return upperBase + 4;
+        case 'R': return upperBase + 5;
+        case '5': return upperBase + 6;
+        case 'T': return upperBase + 7;
+        case '6': return upperBase + 8;
+        case 'Y': return upperBase + 9;
+        case '7': return upperBase + 10;
+        case 'U': return upperBase + 11;
         default: break;
     }
 

@@ -3008,14 +3008,14 @@ bool testGranularStepLengthUsesHalfStepMultiples()
     return true;
 }
 
-bool testKillModeEndsAtCurrentRowEnd()
+bool testKillModeSustainsUntilNextTrigger()
 {
     const double endBeat = InstrumentPlaybackTiming::chooseNoteEndBeat (
         true, 2.0, 0.25, 8.0, 16.0);
 
-    if (! doublesClose (endBeat, 2.25))
+    if (! doublesClose (endBeat, 8.0))
     {
-        std::cerr << "Kill mode should end at current row end; got " << endBeat << "\n";
+        std::cerr << "Kill mode should sustain until the next trigger; got " << endBeat << "\n";
         return false;
     }
 
@@ -3090,6 +3090,21 @@ bool testKillModeClampsAtSegmentEnd()
     return true;
 }
 
+bool testKillModeDoesNotUseRowEndWhenNoNextTrigger()
+{
+    const double endSeconds = InstrumentPlaybackTiming::chooseNoteEndSeconds (
+        true, 1.0, -1.0, 4.0);
+
+    if (! doublesClose (endSeconds, 4.0))
+    {
+        std::cerr << "Kill mode should not stop at row end when no later trigger exists; got "
+                  << endSeconds << "\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testTimingOffsetUsesSignedMilliseconds()
 {
     if (InstrumentPlaybackTiming::decodeSignedTimingOffsetMs (0x05) != 5
@@ -3128,39 +3143,65 @@ bool testNegativeTimingOffsetCutsPreviousNoteEarly()
     return true;
 }
 
-bool testPositiveTimingOffsetKeepsKillGapAndReleaseSustain()
+bool testPositiveTimingOffsetKeepsKillAndReleaseSustain()
 {
     const double killEnd = InstrumentPlaybackTiming::chooseNoteEndSeconds (
         true, 1.0, 1.012, 4.0);
     const double releaseEnd = InstrumentPlaybackTiming::chooseNoteEndSeconds (
         false, 4.0, 1.012, 4.0);
 
-    if (! doublesClose (killEnd, 1.0) || ! doublesClose (releaseEnd, 1.012))
+    if (! doublesClose (killEnd, 1.012) || ! doublesClose (releaseEnd, 1.012))
     {
-        std::cerr << "positive note timing offset should preserve kill gaps and release sustain\n";
+        std::cerr << "positive note timing offset should sustain until the delayed next trigger\n";
         return false;
     }
 
     return true;
 }
 
-bool testHardCutIsSampleOnly()
+bool testHardCutOnlyForSampleKillHandoff()
 {
-    if (! InstrumentPlaybackTiming::shouldSendHardCutAtEnd (true, false))
+    if (! InstrumentPlaybackTiming::shouldSendHardCutAtNoteHandoff (true, false, true))
     {
-        std::cerr << "Sample kill mode should send hard cut\n";
+        std::cerr << "Sample kill mode should hard-cut on a normal note handoff\n";
         return false;
     }
 
-    if (InstrumentPlaybackTiming::shouldSendHardCutAtEnd (true, true))
+    if (InstrumentPlaybackTiming::shouldSendHardCutAtNoteHandoff (true, false, false))
+    {
+        std::cerr << "Sample kill mode should not hard-cut at segment end or OFF/KILL markers\n";
+        return false;
+    }
+
+    if (InstrumentPlaybackTiming::shouldSendHardCutAtNoteHandoff (true, true, true))
     {
         std::cerr << "Plugin kill mode should use note-off timing without allSoundOff\n";
         return false;
     }
 
-    if (InstrumentPlaybackTiming::shouldSendHardCutAtEnd (false, false))
+    if (InstrumentPlaybackTiming::shouldSendHardCutAtNoteHandoff (false, false, true))
     {
         std::cerr << "Release mode should not send hard cut\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testHandoffEventsPrecedeNextNote()
+{
+    const double handoffTime = 1.0;
+    const double eventTime = InstrumentPlaybackTiming::getHandoffEventTime (handoffTime);
+
+    if (! (eventTime < handoffTime && eventTime >= 0.0))
+    {
+        std::cerr << "handoff note-offs should precede same-row note-ons to avoid MIDI note collisions\n";
+        return false;
+    }
+
+    if (! doublesClose (InstrumentPlaybackTiming::getHandoffEventTime (0.0), 0.0))
+    {
+        std::cerr << "handoff event time should clamp at zero\n";
         return false;
     }
 
@@ -5714,6 +5755,25 @@ bool testAutomationCurveTransformMagnitudeAndStretch()
         return false;
     }
 
+    auto shifted = AutomationCurveTools::transformPoints (points, {}, 1.0f, 1.0f, 0.5f, 9, 0.25f);
+
+    if (shifted.size() != 3
+        || shifted[0].row != 0
+        || shifted[1].row != 4
+        || shifted[2].row != 8)
+    {
+        std::cerr << "Automation base shift should preserve rows when stretch is neutral\n";
+        return false;
+    }
+
+    if (std::abs (shifted[0].value - 0.25f) > 1.0e-6f
+        || std::abs (shifted[1].value - 1.0f) > 1.0e-6f
+        || std::abs (shifted[2].value - 0.75f) > 1.0e-6f)
+    {
+        std::cerr << "Automation base shift should offset values and clip to [0, 1]\n";
+        return false;
+    }
+
     return true;
 }
 
@@ -6362,6 +6422,61 @@ bool testPluginAutomationPreservesParameterSelection()
     return true;
 }
 
+bool testPluginAutomationTrackpadRecordingBuffersOneLoop()
+{
+    TrackerLookAndFeel lnf;
+    PluginAutomationComponent automationComponent (lnf);
+    PatternAutomationData automationData;
+
+    AutomatablePluginInfo pluginInfo;
+    pluginInfo.pluginId = "inst:1";
+    pluginInfo.displayName = "Synth (Inst 1)";
+    pluginInfo.owningTrack = 0;
+    pluginInfo.parameters.push_back ({ 0, "Cutoff" });
+
+    automationComponent.setAvailablePlugins ({ pluginInfo });
+    automationComponent.setAutomationData (&automationData);
+    automationComponent.setPatternLength (4);
+
+    auto& originalLane = automationData.getOrCreateLane ("inst:1", 0, 0);
+    originalLane.setPoint (1, 0.77f);
+
+    automationComponent.setTrackpadRecording (true);
+    automationComponent.recordTrackpadValueAtRow (0, 1.0f);
+    automationComponent.recordTrackpadValueAtRow (1, 0.0f);
+    automationComponent.recordTrackpadValueAtRow (2, 0.50f);
+    automationComponent.recordTrackpadValueAtRow (3, 0.75f);
+
+    // The first repeated row marks the pass complete and must not overwrite
+    // row 0 with looped playback data.
+    automationComponent.recordTrackpadValueAtRow (0, 0.25f);
+    automationComponent.commitTrackpadRecording();
+
+    auto* lane = automationData.findLane ("inst:1", 0);
+    if (lane == nullptr || lane->points.size() != 4)
+    {
+        std::cerr << "Trackpad recording should commit one dense four-row pass\n";
+        return false;
+    }
+
+    if (! floatsClose (lane->points[0].value, 0.98f)
+        || ! floatsClose (lane->points[1].value, 0.02f)
+        || ! floatsClose (lane->points[2].value, 0.50f)
+        || ! floatsClose (lane->points[3].value, 0.75f))
+    {
+        std::cerr << "Trackpad recording should clamp to 2%-98% and ignore loop overwrite\n";
+        return false;
+    }
+
+    if (automationComponent.isTrackpadRecording())
+    {
+        std::cerr << "Trackpad recording should disarm after commit\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testPatternEditUtilsResolvesCursorInstrument()
 {
     PatternData patternData;
@@ -6880,13 +6995,15 @@ int main()
         { "GranularStepLengthUsesHalfStepMultiples", &testGranularStepLengthUsesHalfStepMultiples },
         { "GranularStepLengthTracksPitch", &testGranularStepLengthTracksPitch },
         { "GranularMsLengthIgnoresPitch", &testGranularMsLengthIgnoresPitch },
-        { "KillModeEndsAtCurrentRowEnd", &testKillModeEndsAtCurrentRowEnd },
+        { "KillModeSustainsUntilNextTrigger", &testKillModeSustainsUntilNextTrigger },
         { "ReleaseModeEndsAtNextNote", &testReleaseModeEndsAtNextNote },
         { "KillModeClampsAtSegmentEnd", &testKillModeClampsAtSegmentEnd },
+        { "KillModeDoesNotUseRowEndWhenNoNextTrigger", &testKillModeDoesNotUseRowEndWhenNoNextTrigger },
         { "TimingOffsetUsesSignedMilliseconds", &testTimingOffsetUsesSignedMilliseconds },
         { "NegativeTimingOffsetCutsPreviousNoteEarly", &testNegativeTimingOffsetCutsPreviousNoteEarly },
-        { "PositiveTimingOffsetKeepsKillGapAndReleaseSustain", &testPositiveTimingOffsetKeepsKillGapAndReleaseSustain },
-        { "HardCutIsSampleOnly", &testHardCutIsSampleOnly },
+        { "PositiveTimingOffsetKeepsKillAndReleaseSustain", &testPositiveTimingOffsetKeepsKillAndReleaseSustain },
+        { "HardCutOnlyForSampleKillHandoff", &testHardCutOnlyForSampleKillHandoff },
+        { "HandoffEventsPrecedeNextNote", &testHandoffEventsPrecedeNextNote },
         { "LoopRegionUsesAbsolutePositions", &testLoopRegionUsesAbsolutePositions },
         { "LoopRegionDefaultsClampToPlaybackRegion", &testLoopRegionDefaultsClampToPlaybackRegion },
         { "SliceBoundariesUseAbsolutePositions", &testSliceBoundariesUseAbsolutePositions },
@@ -6931,6 +7048,7 @@ int main()
         { "InsertAutomationRemapAfterSlotRemoval", &testInsertAutomationRemapAfterSlotRemoval },
         { "PluginAutomationSetAvailablePluginsIsNotReentrant", &testPluginAutomationSetAvailablePluginsIsNotReentrant },
         { "PluginAutomationPreservesParameterSelection", &testPluginAutomationPreservesParameterSelection },
+        { "PluginAutomationTrackpadRecordingBuffersOneLoop", &testPluginAutomationTrackpadRecordingBuffersOneLoop },
         { "PatternEditUtilsResolvesCursorInstrument", &testPatternEditUtilsResolvesCursorInstrument },
         { "PluginAutomationMultiPluginTrack", &testPluginAutomationMultiPluginTrack },
         { "TrackerGridClampsCursorNoteLaneOnTrackChange", &testTrackerGridClampsCursorNoteLaneOnTrackChange },

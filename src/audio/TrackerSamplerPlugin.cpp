@@ -7,10 +7,17 @@
 
 const char* TrackerSamplerPlugin::xmlTypeName = "TrackerSampler";
 
+namespace
+{
+constexpr int kCcSamplerHardCut = 86;
+}
+
 TrackerSamplerPlugin::TrackerSamplerPlugin (te::PluginCreationInfo info)
     : te::Plugin (info)
 {
     clearPendingParamHighBits();
+    channelInstruments.fill (-1);
+    channelBankMsbs.fill (0);
     for (auto& note : pendingPreviewNotes)
         note.store (-1, std::memory_order_relaxed);
 }
@@ -27,12 +34,16 @@ void TrackerSamplerPlugin::initialise (const te::PluginInitialisationInfo& info)
 
 void TrackerSamplerPlugin::deinitialise()
 {
-    voice.reset();
-    fadeOutVoice.reset();
+    for (auto& v : voices)
+        v.reset();
+    for (auto& v : fadeOutVoices)
+        v.reset();
     for (auto& v : previewVoices)
         v.reset();
     for (auto& v : previewFadeOutVoices)
         v.reset();
+    channelInstruments.fill (-1);
+    channelBankMsbs.fill (0);
     pendingSampleOffset = -1;
     clearPendingParamHighBits();
     directionOverride = -1;
@@ -708,11 +719,71 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     // Clear output region (synth, additive rendering)
     buffer.clear (startSample, numSamples);
 
-    auto getCurrentInstrumentParams = [this]()
+    auto getInstrumentParams = [this] (int voiceInstrumentIndex)
     {
-        if (samplerSource != nullptr && instrumentIndex >= 0)
-            return samplerSource->getParams (instrumentIndex);
+        if (samplerSource != nullptr && voiceInstrumentIndex >= 0)
+            return samplerSource->getParams (voiceInstrumentIndex);
         return InstrumentParams {};
+    };
+
+    auto getChannelIndex = [] (const juce::MidiMessage& message)
+    {
+        return juce::jlimit (0, 15, message.getChannel() - 1);
+    };
+
+    auto getInstrumentForChannel = [&] (int channelIndex)
+    {
+        if (channelIndex >= 0 && channelIndex < static_cast<int> (channelInstruments.size())
+            && channelInstruments[static_cast<size_t> (channelIndex)] >= 0)
+            return channelInstruments[static_cast<size_t> (channelIndex)];
+
+        return instrumentIndex;
+    };
+
+    auto getBankForInstrument = [&] (int voiceInstrumentIndex)
+    {
+        const juce::SpinLock::ScopedTryLockType lock (bankLock);
+        if (lock.isLocked() && voiceInstrumentIndex >= 0)
+        {
+            auto it = preloadedBanks.find (voiceInstrumentIndex);
+            if (it != preloadedBanks.end() && it->second != nullptr)
+                return it->second;
+        }
+
+        return currentBank;
+    };
+
+    auto stopVoices = [&] (int channelIndex, int noteNumber, bool hardCut)
+    {
+        for (size_t i = 0; i < voices.size(); ++i)
+        {
+            auto& v = voices[i];
+            if (v.state != Voice::State::Playing)
+                continue;
+            if (channelIndex >= 0 && v.midiChannel != channelIndex + 1)
+                continue;
+            if (noteNumber >= 0 && v.midiNote != noteNumber)
+                continue;
+
+            if (hardCut)
+            {
+                v.state = Voice::State::Idle;
+                fadeOutVoices[i].state = Voice::State::Idle;
+            }
+            else
+            {
+                startFadeOut (v, fadeOutVoices[i]);
+            }
+        }
+    };
+
+    auto findVoiceForTrigger = [&]() -> Voice*
+    {
+        for (auto& v : voices)
+            if (v.state == Voice::State::Idle)
+                return &v;
+
+        return &voices.front();
     };
 
     auto decodeControllerByte = [this] (int valueController, int controllerValue)
@@ -741,7 +812,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
         if (currentBank != nullptr && currentBank->totalSamples > 0)
         {
-            auto params = getCurrentInstrumentParams();
+            auto params = getInstrumentParams (instrumentIndex);
             for (int i = 0; i < previewCount; ++i)
             {
                 const int note = pendingPreviewNotes[static_cast<size_t> (i)].load (std::memory_order_relaxed);
@@ -757,23 +828,23 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         if (fc.bufferForMidiMessages->isAllNotesOff)
         {
             // Graceful fade (same as noteOff)
-            startFadeOut (voice, fadeOutVoice);
+            stopVoices (-1, -1, false);
         }
 
         for (auto& m : *fc.bufferForMidiMessages)
         {
             if (m.isProgramChange())
             {
+                const int channelIndex = getChannelIndex (m);
                 // Switch to a preloaded bank for multi-instrument support
                 int progNum = m.getProgramChangeNumber();
-                const int instrument = InstrumentRouting::decodeInstrumentFromBankAndProgram (currentBankMsb, progNum);
+                const int bankMsb = channelBankMsbs[static_cast<size_t> (channelIndex)];
+                const int instrument = InstrumentRouting::decodeInstrumentFromBankAndProgram (bankMsb, progNum);
                 const juce::SpinLock::ScopedLockType lock (bankLock);
                 auto it = preloadedBanks.find (instrument);
                 if (it != preloadedBanks.end() && it->second != nullptr)
                 {
-                    sharedBank = it->second;
-                    currentBank = sharedBank;
-                    instrumentIndex = instrument;
+                    channelInstruments[static_cast<size_t> (channelIndex)] = instrument;
                 }
                 else
                 {
@@ -781,9 +852,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     auto legacyIt = preloadedBanks.find (progNum);
                     if (legacyIt != preloadedBanks.end() && legacyIt->second != nullptr)
                     {
-                        sharedBank = legacyIt->second;
-                        currentBank = sharedBank;
-                        instrumentIndex = progNum;
+                        channelInstruments[static_cast<size_t> (channelIndex)] = progNum;
                     }
                 }
             }
@@ -791,7 +860,15 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             {
                 if (m.getControllerNumber() == 0) // Bank Select MSB
                 {
-                    currentBankMsb = m.getControllerValue() & 0x7F;
+                    const int channelIndex = getChannelIndex (m);
+                    const int msb = m.getControllerValue() & 0x7F;
+                    channelBankMsbs[static_cast<size_t> (channelIndex)] = msb;
+                    if (channelIndex == 0)
+                        currentBankMsb = msb;
+                }
+                else if (m.getControllerNumber() == kCcSamplerHardCut)
+                {
+                    stopVoices (getChannelIndex (m), -1, true);
                 }
                 else if (auto valueController = FxParamTransport::getValueControllerForHighBitController (m.getControllerNumber());
                          valueController >= 0)
@@ -803,7 +880,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     legacyPendingParamHighBit = m.getControllerValue() & 0x1;
                 }
                 // B (direction) and P (position) modify independent voice state:
-                // B sets voice.playingForward, P sets voice.playbackPos via
+                // B sets active voice directions, P sets active voice positions via
                 // applyPositionCommandToVoice() which computes an absolute position
                 // (regionStart + frac * regionLen) without referencing direction.
                 // This means slot order does not affect the final result when both
@@ -814,14 +891,20 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 {
                     const int value = decodeControllerByte (m.getControllerNumber(), m.getControllerValue());
                     directionOverride = (value == 0) ? 0 : 1;
-                    if (voice.state == Voice::State::Playing)
-                        voice.playingForward = (directionOverride == 1);
+                    const int channelIndex = getChannelIndex (m);
+                    for (auto& v : voices)
+                        if (v.state == Voice::State::Playing
+                            && (channelIndex == 0 || v.midiChannel == channelIndex + 1))
+                            v.playingForward = (directionOverride == 1);
                 }
                 else if (m.getControllerNumber() == 38) // Pxx
                 {
                     pendingSampleOffset = decodeControllerByte (m.getControllerNumber(), m.getControllerValue());
-                    if (voice.state == Voice::State::Playing)
-                        applyPositionCommandToVoice (voice, pendingSampleOffset);
+                    const int channelIndex = getChannelIndex (m);
+                    for (auto& v : voices)
+                        if (v.state == Voice::State::Playing
+                            && (channelIndex == 0 || v.midiChannel == channelIndex + 1))
+                            applyPositionCommandToVoice (v, pendingSampleOffset);
                 }
                 else if (m.getControllerNumber() == 39) // note-row reset
                 {
@@ -830,12 +913,15 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     sliceOverride = -1;
                     clearPendingParamHighBits();
                     pitchOffset.store (0.0f, std::memory_order_relaxed);
-                    if (voice.state == Voice::State::Playing)
+                    for (auto& v : voices)
                     {
-                        voice.playingForward =
-                            voice.params.playMode == InstrumentParams::PlayMode::BackwardLoop
+                        if (v.state != Voice::State::Playing)
+                            continue;
+
+                        v.playingForward =
+                            v.params.playMode == InstrumentParams::PlayMode::BackwardLoop
                                 ? false
-                                : ! voice.params.reversed;
+                                : ! v.params.reversed;
                     }
                 }
                 else if (m.getControllerNumber() == 31) // Txx tune
@@ -847,43 +933,54 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 else if (m.getControllerNumber() == 41) // Lxx slice select
                 {
                     sliceOverride = decodeControllerByte (m.getControllerNumber(), m.getControllerValue());
-                    if (voice.state == Voice::State::Playing)
-                        applySliceCommandToVoice (voice, sliceOverride);
+                    const int channelIndex = getChannelIndex (m);
+                    for (auto& v : voices)
+                        if (v.state == Voice::State::Playing
+                            && (channelIndex == 0 || v.midiChannel == channelIndex + 1))
+                            applySliceCommandToVoice (v, sliceOverride);
                 }
             }
             else if (m.isNoteOn())
             {
-                startFadeOut (voice, fadeOutVoice);
+                const int channelIndex = getChannelIndex (m);
+                const int voiceInstrument = getInstrumentForChannel (channelIndex);
+                auto voiceBank = getBankForInstrument (voiceInstrument);
 
-                if (currentBank != nullptr && currentBank->totalSamples > 0)
+                if (voiceBank != nullptr && voiceBank->totalSamples > 0)
                 {
-                    auto params = getCurrentInstrumentParams();
+                    auto params = getInstrumentParams (voiceInstrument);
+                    auto* targetVoice = findVoiceForTrigger();
+                    if (targetVoice->state == Voice::State::Playing)
+                    {
+                        const auto voiceIndex = static_cast<size_t> (targetVoice - voices.data());
+                        startFadeOut (*targetVoice, fadeOutVoices[voiceIndex]);
+                    }
 
-                    triggerNote (voice, m.getNoteNumber(),
-                                 m.getVelocity() / 127.0f, currentBank, params);
+                    triggerNote (*targetVoice, m.getNoteNumber(),
+                                 m.getVelocity() / 127.0f, voiceBank, params);
+                    targetVoice->midiChannel = channelIndex + 1;
+                    targetVoice->instrumentIndex = voiceInstrument;
 
                     if (pendingSampleOffset >= 0)
                     {
-                        applyPositionCommandToVoice (voice, pendingSampleOffset);
-                        pendingSampleOffset = -1;
+                        applyPositionCommandToVoice (*targetVoice, pendingSampleOffset);
                     }
                 }
             }
             else if (m.isNoteOff())
             {
                 // Graceful fade-out with crossfade
-                startFadeOut (voice, fadeOutVoice);
+                stopVoices (getChannelIndex (m), m.getNoteNumber(), false);
             }
             else if (m.isAllNotesOff())
             {
                 // Graceful fade (OFF) — same as noteOff
-                startFadeOut (voice, fadeOutVoice);
+                stopVoices (getChannelIndex (m), -1, false);
             }
             else if (m.isAllSoundOff())
             {
                 // Hard cut (KILL) — immediate silence
-                voice.state = Voice::State::Idle;
-                fadeOutVoice.state = Voice::State::Idle;
+                stopVoices (getChannelIndex (m), -1, true);
             }
         }
     }
@@ -931,21 +1028,26 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     };
 
     // --- Render fade-out voices ---
-    renderFadeOut (fadeOutVoice);
+    for (auto& fadingVoice : fadeOutVoices)
+        renderFadeOut (fadingVoice);
     for (auto& fadingPreviewVoice : previewFadeOutVoices)
         renderFadeOut (fadingPreviewVoice);
 
-    // --- Render main voice ---
-    renderVoice (voice, buffer, startSample, numSamples);
+    // --- Render main voices ---
+    for (auto& v : voices)
+        renderVoice (v, buffer, startSample, numSamples);
     for (auto& previewVoice : previewVoices)
         renderVoice (previewVoice, buffer, startSample, numSamples);
 
     // Publish playback position for UI cursor
-    if (voice.state == Voice::State::Playing && voice.bank != nullptr && voice.bank->totalSamples > 0)
+    for (auto& v : voices)
     {
-        playbackPosNorm.store (static_cast<float> (voice.playbackPos / static_cast<double> (voice.bank->totalSamples)),
-                               std::memory_order_relaxed);
-        return;
+        if (v.state == Voice::State::Playing && v.bank != nullptr && v.bank->totalSamples > 0)
+        {
+            playbackPosNorm.store (static_cast<float> (v.playbackPos / static_cast<double> (v.bank->totalSamples)),
+                                   std::memory_order_relaxed);
+            return;
+        }
     }
 
     for (auto& previewVoice : previewVoices)

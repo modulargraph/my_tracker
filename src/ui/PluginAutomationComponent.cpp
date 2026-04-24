@@ -37,6 +37,9 @@ struct StampSlot
     const char* name = "";
 };
 
+constexpr float kTrackpadRecordMinValue = 0.02f;
+constexpr float kTrackpadRecordMaxValue = 0.98f;
+
 std::array<PresetSlot, PluginAutomationComponent::kPresetButtonCount> getPresetSlotsForCategory (int categoryId)
 {
     using Curve = AutomationCurveTools::StandardCurve;
@@ -71,6 +74,31 @@ std::array<StampSlot, PluginAutomationComponent::kPresetButtonCount> getStampSlo
              StampSlot { Stamp::UpTwoBars, "Up 2B" },
              StampSlot { Stamp::DownOneBar, "Down 1B" },
              StampSlot { Stamp::DownTwoBars, "Down 2B" } };
+}
+
+std::vector<std::pair<int, int>> getRecordedRowRanges (const std::vector<bool>& recordedRows)
+{
+    std::vector<std::pair<int, int>> ranges;
+    int rangeStart = -1;
+
+    for (int row = 0; row < static_cast<int> (recordedRows.size()); ++row)
+    {
+        if (recordedRows[static_cast<size_t> (row)])
+        {
+            if (rangeStart < 0)
+                rangeStart = row;
+        }
+        else if (rangeStart >= 0)
+        {
+            ranges.emplace_back (rangeStart, row - 1);
+            rangeStart = -1;
+        }
+    }
+
+    if (rangeStart >= 0)
+        ranges.emplace_back (rangeStart, static_cast<int> (recordedRows.size()) - 1);
+
+    return ranges;
 }
 }
 
@@ -218,6 +246,10 @@ PluginAutomationComponent::PluginAutomationComponent (TrackerLookAndFeel& lnf)
     curveTypeDropdown.onChange = [this] { curveTypeChanged(); };
     addAndMakeVisible (curveTypeDropdown);
 
+    baseLabel.setColour (juce::Label::textColourId, buttonColour);
+    baseLabel.setFont (lnf.getMonoFont (10.0f));
+    addAndMakeVisible (baseLabel);
+
     magnitudeLabel.setColour (juce::Label::textColourId, buttonColour);
     magnitudeLabel.setFont (lnf.getMonoFont (10.0f));
     addAndMakeVisible (magnitudeLabel);
@@ -226,22 +258,23 @@ PluginAutomationComponent::PluginAutomationComponent (TrackerLookAndFeel& lnf)
     stretchLabel.setFont (lnf.getMonoFont (10.0f));
     addAndMakeVisible (stretchLabel);
 
-    auto setupTransformSlider = [this] (juce::Slider& slider, double minValue, double maxValue)
+    auto setupTransformSlider = [this] (juce::Slider& slider, double minValue, double maxValue, double defaultValue)
     {
         slider.setSliderStyle (juce::Slider::LinearHorizontal);
         slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         slider.setRange (minValue, maxValue, 0.01);
-        slider.setValue (1.0, juce::dontSendNotification);
-        slider.setSkewFactorFromMidPoint (1.0);
-        slider.setDoubleClickReturnValue (true, 1.0);
+        slider.setValue (defaultValue, juce::dontSendNotification);
+        slider.setSkewFactorFromMidPoint (defaultValue);
+        slider.setDoubleClickReturnValue (true, defaultValue);
         slider.onDragStart = [this] { beginPointTransform(); };
         slider.onValueChange = [this] { applyPointTransformFromSliders(); };
         slider.onDragEnd = [this] { endPointTransform(); };
         addAndMakeVisible (slider);
     };
 
-    setupTransformSlider (magnitudeSlider, 0.0, 3.0);
-    setupTransformSlider (stretchSlider, 0.1, 4.0);
+    setupTransformSlider (baseSlider, -0.5, 0.5, 0.0);
+    setupTransformSlider (magnitudeSlider, 0.0, 3.0, 1.0);
+    setupTransformSlider (stretchSlider, 0.1, 4.0, 1.0);
     updateTransformSliderLabels();
 
     presetTypeDropdown.addItem ("Osc", 1);
@@ -281,9 +314,22 @@ PluginAutomationComponent::PluginAutomationComponent (TrackerLookAndFeel& lnf)
     recButton.setClickingTogglesState (true);
     addAndMakeVisible (recButton);
 
+    trackpadButton.setColour (juce::TextButton::textColourOffId, buttonColour);
+    trackpadButton.setColour (juce::TextButton::textColourOnId, juce::Colour (0xff1e1e2e));
+    trackpadButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffffcc44));
+    trackpadButton.setClickingTogglesState (false);
+    addAndMakeVisible (trackpadButton);
+
     snapButton.onClick = [this] { snapToGrid = snapButton.getToggleState(); repaint(); };
     drawButton.onClick = [this] { drawMode = drawButton.getToggleState(); repaint(); };
-    recButton.onClick = [this] { recordingEnabled = recButton.getToggleState(); repaint(); };
+    recButton.onClick = [this] { setRecording (recButton.getToggleState()); };
+    trackpadButton.onClick = [this]
+    {
+        if (trackpadRecordingEnabled)
+            commitTrackpadRecording();
+        else
+            beginTrackpadRecording();
+    };
     overlayButton.onClick = [this] { overlayEnabled = overlayButton.getToggleState(); repaint(); };
 }
 
@@ -321,6 +367,7 @@ void PluginAutomationComponent::paint (juce::Graphics& g)
 
     drawCurve (g, graphBounds, getCurrentLane(), getLaneColour (0), 0.8f);
     drawStampPreview (g, graphBounds);
+    drawTrackpadRecordPreview (g, graphBounds);
     drawPoints (g, graphBounds);
     drawPlaybackPosition (g, graphBounds);
     drawSelectionRect (g);
@@ -363,12 +410,14 @@ void PluginAutomationComponent::resized()
 
     // Toggle buttons row
     auto buttonRow = controlArea.removeFromTop (20);
-    int btnW = (buttonRow.getWidth() - 6) / 4;
+    int btnW = (buttonRow.getWidth() - 8) / 5;
     snapButton.setBounds (buttonRow.removeFromLeft (btnW));
     buttonRow.removeFromLeft (2);
     drawButton.setBounds (buttonRow.removeFromLeft (btnW));
     buttonRow.removeFromLeft (2);
     recButton.setBounds (buttonRow.removeFromLeft (btnW));
+    buttonRow.removeFromLeft (2);
+    trackpadButton.setBounds (buttonRow.removeFromLeft (btnW));
     buttonRow.removeFromLeft (2);
     overlayButton.setBounds (buttonRow);
 
@@ -377,13 +426,17 @@ void PluginAutomationComponent::resized()
     // Curve type dropdown
     curveTypeDropdown.setBounds (controlArea.removeFromTop (20).reduced (0, 1));
 
-    controlArea.removeFromTop (4);
-    magnitudeLabel.setBounds (controlArea.removeFromTop (12));
-    magnitudeSlider.setBounds (controlArea.removeFromTop (18));
+    auto setTransformBounds = [&controlArea] (juce::Label& label, juce::Slider& slider)
+    {
+        auto row = controlArea.removeFromTop (20);
+        label.setBounds (row.removeFromLeft (78));
+        slider.setBounds (row.reduced (0, 1));
+    };
 
-    controlArea.removeFromTop (2);
-    stretchLabel.setBounds (controlArea.removeFromTop (12));
-    stretchSlider.setBounds (controlArea.removeFromTop (18));
+    controlArea.removeFromTop (4);
+    setTransformBounds (baseLabel, baseSlider);
+    setTransformBounds (magnitudeLabel, magnitudeSlider);
+    setTransformBounds (stretchLabel, stretchSlider);
 
     auto presetBounds = getPresetBounds();
     auto typeBounds = presetBounds.removeFromLeft (86).reduced (0, 10);
@@ -424,6 +477,9 @@ juce::Rectangle<int> PluginAutomationComponent::getPresetBounds() const
 
 void PluginAutomationComponent::setAutomationData (PatternAutomationData* data)
 {
+    if (automationData != data)
+        cancelTrackpadRecording();
+
     automationData = data;
     undoStack.clear();
     redoStack.clear();
@@ -433,7 +489,11 @@ void PluginAutomationComponent::setAutomationData (PatternAutomationData* data)
 
 void PluginAutomationComponent::setPatternLength (int numRows)
 {
-    patternLength = juce::jmax (1, numRows);
+    auto newLength = juce::jmax (1, numRows);
+    if (newLength != patternLength)
+        cancelTrackpadRecording();
+
+    patternLength = newLength;
     clampViewToPattern();
     repaint();
 }
@@ -765,9 +825,14 @@ void PluginAutomationComponent::applyPointTransformFromSliders()
 
     updateTransformSliderLabels();
 
+    auto baseOffset = static_cast<float> (baseSlider.getValue());
     auto magnitude = static_cast<float> (magnitudeSlider.getValue());
     auto stretch = static_cast<float> (stretchSlider.getValue());
-    if (std::abs (magnitude - 1.0f) < 0.001f && std::abs (stretch - 1.0f) < 0.001f)
+    auto isNeutral = std::abs (baseOffset) < 0.001f
+                  && std::abs (magnitude - 1.0f) < 0.001f
+                  && std::abs (stretch - 1.0f) < 0.001f;
+
+    if (isNeutral && ! pointTransformSnapshot.active)
         return;
 
     if (! pointTransformSnapshot.active)
@@ -780,6 +845,13 @@ void PluginAutomationComponent::applyPointTransformFromSliders()
     if (lane == nullptr)
         return;
 
+    if (isNeutral)
+    {
+        lane->points = pointTransformSnapshot.points;
+        notifyAndRepaint();
+        return;
+    }
+
     if (! pointTransformSnapshot.undoPushed)
     {
         pushUndoState();
@@ -791,7 +863,8 @@ void PluginAutomationComponent::applyPointTransformFromSliders()
                                                           magnitude,
                                                           stretch,
                                                           baseline,
-                                                          patternLength);
+                                                          patternLength,
+                                                          baseOffset);
     notifyAndRepaint();
 }
 
@@ -804,6 +877,7 @@ void PluginAutomationComponent::endPointTransform()
     }
 
     juce::ScopedValueSetter<bool> suppressCallbacks (suppressTransformSliderCallbacks, true);
+    baseSlider.setValue (0.0, juce::dontSendNotification);
     magnitudeSlider.setValue (1.0, juce::dontSendNotification);
     stretchSlider.setValue (1.0, juce::dontSendNotification);
     updateTransformSliderLabels();
@@ -812,6 +886,12 @@ void PluginAutomationComponent::endPointTransform()
 
 void PluginAutomationComponent::updateTransformSliderLabels()
 {
+    auto baseText = juce::String (baseSlider.getValue(), 2);
+    if (baseSlider.getValue() > 0.0)
+        baseText = "+" + baseText;
+
+    baseLabel.setText ("Base " + baseText,
+                       juce::dontSendNotification);
     magnitudeLabel.setText ("Mag " + juce::String (magnitudeSlider.getValue(), 2) + "x",
                             juce::dontSendNotification);
     stretchLabel.setText ("Stretch " + juce::String (stretchSlider.getValue(), 2) + "x",
@@ -1174,11 +1254,18 @@ void PluginAutomationComponent::updateSelectionFromRect()
 
 PluginAutomationComponent::UndoSnapshot PluginAutomationComponent::captureCurrentState() const
 {
-    UndoSnapshot snap;
-    snap.pluginId = getSelectedPluginId();
-    snap.parameterId = getSelectedParameterIndex();
+    return captureStateFor (getSelectedPluginId(), getSelectedParameterIndex());
+}
 
-    auto* lane = getCurrentLane();
+PluginAutomationComponent::UndoSnapshot PluginAutomationComponent::captureStateFor (const juce::String& pluginId,
+                                                                                    int parameterId) const
+{
+    UndoSnapshot snap;
+    snap.pluginId = pluginId;
+    snap.parameterId = parameterId;
+
+    const auto* lane = automationData != nullptr ? automationData->findLane (pluginId, parameterId)
+                                                 : nullptr;
     if (lane != nullptr)
         snap.points = lane->points;
 
@@ -1338,8 +1425,12 @@ void PluginAutomationComponent::pasteFromClipboard()
 
 void PluginAutomationComponent::setRecording (bool recording)
 {
+    if (recording)
+        cancelTrackpadRecording();
+
     recordingEnabled = recording;
     recButton.setToggleState (recording, juce::dontSendNotification);
+    repaint();
 }
 
 void PluginAutomationComponent::recordParameterValue (int row, float value)
@@ -1357,6 +1448,265 @@ void PluginAutomationComponent::recordParameterValue (int row, float value)
     lane.setPoint (juce::jlimit (0, patternLength - 1, row), value, getSelectedCurveType());
 
     notifyAndRepaint();
+}
+
+void PluginAutomationComponent::setTrackpadRecording (bool recording)
+{
+    if (recording)
+        beginTrackpadRecording();
+    else
+        cancelTrackpadRecording();
+}
+
+void PluginAutomationComponent::beginTrackpadRecording()
+{
+    if (automationData == nullptr)
+        return;
+
+    auto pluginId = getSelectedPluginId();
+    int paramIdx = getSelectedParameterIndex();
+    if (pluginId.isEmpty() || paramIdx < 0)
+        return;
+
+    recordingEnabled = false;
+    recButton.setToggleState (false, juce::dontSendNotification);
+    drawMode = false;
+    drawButton.setToggleState (false, juce::dontSendNotification);
+    clearStampSelection();
+
+    trackpadRecordPluginId = pluginId;
+    trackpadRecordParameterId = paramIdx;
+    trackpadRecordOwnerTrack = getSelectedPluginOwnerTrack();
+    trackpadRecordingEnabled = true;
+    trackpadRecordComplete = false;
+    trackpadRecordHasValue = false;
+    trackpadRecordValue = baseline;
+    trackpadRecordLastValue = baseline;
+    trackpadRecordFirstRow = -1;
+    trackpadRecordLastRow = -1;
+    trackpadRecordedRowCount = 0;
+    trackpadRecordedRows.assign (static_cast<size_t> (patternLength), false);
+    trackpadRecordPoints.clear();
+    selectedPoints.clear();
+
+    auto screenPos = juce::Desktop::getInstance().getMainMouseSource().getScreenPosition();
+    updateTrackpadRecordValueFromLocalPoint (getLocalPoint (nullptr, screenPos));
+    updateTrackpadRecordButton();
+    repaint();
+}
+
+void PluginAutomationComponent::resetTrackpadRecordingState()
+{
+    trackpadRecordingEnabled = false;
+    trackpadRecordComplete = false;
+    trackpadRecordHasValue = false;
+    trackpadRecordValue = baseline;
+    trackpadRecordLastValue = baseline;
+    trackpadRecordFirstRow = -1;
+    trackpadRecordLastRow = -1;
+    trackpadRecordOwnerTrack = -1;
+    trackpadRecordParameterId = -1;
+    trackpadRecordedRowCount = 0;
+    trackpadRecordPluginId = {};
+    trackpadRecordedRows.clear();
+    trackpadRecordPoints.clear();
+    updateTrackpadRecordButton();
+}
+
+void PluginAutomationComponent::updateTrackpadRecordButton()
+{
+    trackpadButton.setButtonText (trackpadRecordingEnabled ? "Save" : "Pad");
+    trackpadButton.setToggleState (trackpadRecordingEnabled, juce::dontSendNotification);
+    trackpadButton.repaint();
+}
+
+void PluginAutomationComponent::updateTrackpadRecordValueFromLocalPoint (juce::Point<float> localPoint)
+{
+    auto graphBounds = getGraphBounds().toFloat();
+    if (graphBounds.isEmpty())
+        return;
+
+    auto normalised = 1.0f - (localPoint.y - graphBounds.getY())
+        / juce::jmax (1.0f, graphBounds.getHeight());
+    normalised = juce::jlimit (0.0f, 1.0f, normalised);
+    trackpadRecordValue = kTrackpadRecordMinValue
+        + normalised * (kTrackpadRecordMaxValue - kTrackpadRecordMinValue);
+    trackpadRecordHasValue = true;
+}
+
+void PluginAutomationComponent::addTrackpadRecordPoint (int row, float value, bool allowUpdate)
+{
+    if (patternLength <= 0)
+        return;
+
+    if (trackpadRecordedRows.size() != static_cast<size_t> (patternLength))
+    {
+        trackpadRecordedRows.assign (static_cast<size_t> (patternLength), false);
+        trackpadRecordPoints.clear();
+        trackpadRecordedRowCount = 0;
+        trackpadRecordFirstRow = -1;
+        trackpadRecordLastRow = -1;
+    }
+
+    row = juce::jlimit (0, patternLength - 1, row);
+    value = juce::jlimit (kTrackpadRecordMinValue, kTrackpadRecordMaxValue, value);
+
+    if (trackpadRecordedRows[static_cast<size_t> (row)])
+    {
+        if (allowUpdate)
+        {
+            for (auto& point : trackpadRecordPoints)
+            {
+                if (point.row == row)
+                {
+                    point.value = value;
+                    point.curveType = AutomationCurveType::Linear;
+                    break;
+                }
+            }
+        }
+        return;
+    }
+
+    trackpadRecordPoints.push_back ({ row, value, AutomationCurveType::Linear });
+    trackpadRecordedRows[static_cast<size_t> (row)] = true;
+    ++trackpadRecordedRowCount;
+
+    if (trackpadRecordFirstRow < 0)
+        trackpadRecordFirstRow = row;
+}
+
+void PluginAutomationComponent::recordTrackpadValueAtRow (int row)
+{
+    if (! trackpadRecordingEnabled)
+        return;
+
+    auto screenPos = juce::Desktop::getInstance().getMainMouseSource().getScreenPosition();
+    updateTrackpadRecordValueFromLocalPoint (getLocalPoint (nullptr, screenPos));
+    recordTrackpadValueAtRow (row, trackpadRecordHasValue ? trackpadRecordValue : baseline);
+}
+
+void PluginAutomationComponent::recordTrackpadValueAtRow (int row, float value)
+{
+    if (! trackpadRecordingEnabled || trackpadRecordComplete || patternLength <= 0)
+        return;
+
+    if (trackpadRecordPluginId.isEmpty() || trackpadRecordParameterId < 0)
+        return;
+
+    row = juce::jlimit (0, patternLength - 1, row);
+    value = juce::jlimit (kTrackpadRecordMinValue, kTrackpadRecordMaxValue, value);
+
+    if (trackpadRecordLastRow < 0)
+    {
+        addTrackpadRecordPoint (row, value, false);
+        trackpadRecordLastRow = row;
+        trackpadRecordLastValue = value;
+        repaint();
+        return;
+    }
+
+    if (row == trackpadRecordLastRow)
+    {
+        addTrackpadRecordPoint (row, value, true);
+        trackpadRecordLastValue = value;
+        repaint();
+        return;
+    }
+
+    std::vector<int> rowsToAdd;
+    if (row > trackpadRecordLastRow)
+    {
+        for (int r = trackpadRecordLastRow + 1; r <= row; ++r)
+            rowsToAdd.push_back (r);
+    }
+    else
+    {
+        for (int r = trackpadRecordLastRow + 1; r < patternLength; ++r)
+            rowsToAdd.push_back (r);
+        for (int r = 0; r <= row; ++r)
+            rowsToAdd.push_back (r);
+    }
+
+    const int stepCount = static_cast<int> (rowsToAdd.size());
+    for (int i = 0; i < stepCount; ++i)
+    {
+        auto targetRow = rowsToAdd[static_cast<size_t> (i)];
+        if (targetRow >= 0
+            && targetRow < static_cast<int> (trackpadRecordedRows.size())
+            && trackpadRecordedRows[static_cast<size_t> (targetRow)])
+        {
+            trackpadRecordComplete = true;
+            repaint();
+            return;
+        }
+
+        auto t = static_cast<float> (i + 1) / static_cast<float> (juce::jmax (1, stepCount));
+        auto interpValue = trackpadRecordLastValue + t * (value - trackpadRecordLastValue);
+        addTrackpadRecordPoint (targetRow, interpValue, false);
+    }
+
+    trackpadRecordLastRow = row;
+    trackpadRecordLastValue = value;
+
+    if (trackpadRecordedRowCount >= patternLength)
+        trackpadRecordComplete = true;
+
+    repaint();
+}
+
+void PluginAutomationComponent::commitTrackpadRecording()
+{
+    if (! trackpadRecordingEnabled)
+        return;
+
+    if (automationData == nullptr
+        || trackpadRecordPluginId.isEmpty()
+        || trackpadRecordParameterId < 0
+        || trackpadRecordPoints.empty())
+    {
+        cancelTrackpadRecording();
+        return;
+    }
+
+    undoStack.push_back (captureStateFor (trackpadRecordPluginId, trackpadRecordParameterId));
+    if (static_cast<int> (undoStack.size()) > kMaxUndoSteps)
+        undoStack.erase (undoStack.begin());
+    redoStack.clear();
+
+    auto points = trackpadRecordPoints;
+    AutomationCurveTools::sortAndCoalescePoints (points);
+
+    auto& lane = automationData->getOrCreateLane (trackpadRecordPluginId,
+                                                  trackpadRecordParameterId,
+                                                  trackpadRecordOwnerTrack);
+
+    for (const auto& range : getRecordedRowRanges (trackpadRecordedRows))
+    {
+        std::vector<AutomationPoint> replacement;
+        for (const auto& point : points)
+            if (point.row >= range.first && point.row <= range.second)
+                replacement.push_back (point);
+
+        if (! replacement.empty())
+            lane.points = AutomationCurveTools::replacePointsInRange (lane.points,
+                                                                      replacement,
+                                                                      range.first,
+                                                                      range.second);
+    }
+
+    selectedPoints.clear();
+    resetTrackpadRecordingState();
+    notifyAndRepaint();
+}
+
+void PluginAutomationComponent::cancelTrackpadRecording()
+{
+    if (! trackpadRecordingEnabled && trackpadRecordPoints.empty())
+        return;
+
+    resetTrackpadRecordingState();
+    repaint();
 }
 
 //==============================================================================
@@ -1383,12 +1733,21 @@ void PluginAutomationComponent::mouseDown (const juce::MouseEvent& e)
     if (! graphBounds.contains (e.getPosition()))
         return;
 
+    auto screenPos = e.getPosition().toFloat();
+
+    if (trackpadRecordingEnabled)
+    {
+        if (e.mods.isRightButtonDown())
+            cancelTrackpadRecording();
+        else
+            commitTrackpadRecording();
+        return;
+    }
+
     auto pluginId = getSelectedPluginId();
     int paramIdx = getSelectedParameterIndex();
     if (pluginId.isEmpty() || paramIdx < 0)
         return;
-
-    auto screenPos = e.getPosition().toFloat();
 
     // Right-click: delete nearest point
     if (e.mods.isRightButtonDown())
@@ -1648,6 +2007,8 @@ void PluginAutomationComponent::mouseUp (const juce::MouseEvent&)
 void PluginAutomationComponent::mouseMove (const juce::MouseEvent& e)
 {
     auto graphBounds = getGraphBounds();
+    if (trackpadRecordingEnabled)
+        updateTrackpadRecordValueFromLocalPoint (e.getPosition().toFloat());
 
     // Change cursor for resize handle
     if (e.getPosition().y < kDragHandleHeight)
@@ -1656,8 +2017,9 @@ void PluginAutomationComponent::mouseMove (const juce::MouseEvent& e)
     }
     else if (graphBounds.contains (e.getPosition()))
     {
-        setMouseCursor ((drawMode || stampArmed) ? juce::MouseCursor::CrosshairCursor
-                                                 : juce::MouseCursor::NormalCursor);
+        setMouseCursor ((drawMode || stampArmed || trackpadRecordingEnabled)
+                            ? juce::MouseCursor::CrosshairCursor
+                            : juce::MouseCursor::NormalCursor);
 
         // Hover tooltip
         auto screenPos = e.getPosition().toFloat();
@@ -1763,6 +2125,12 @@ void PluginAutomationComponent::mouseDoubleClick (const juce::MouseEvent& e)
 bool PluginAutomationComponent::keyPressed (const juce::KeyPress& key)
 {
     bool cmd = key.getModifiers().isCommandDown();
+
+    if (key == juce::KeyPress::escapeKey && trackpadRecordingEnabled)
+    {
+        cancelTrackpadRecording();
+        return true;
+    }
 
     if (key == juce::KeyPress::escapeKey && stampArmed)
     {
@@ -1990,6 +2358,53 @@ void PluginAutomationComponent::drawStampPreview (juce::Graphics& g, juce::Recta
     {
         g.setColour (juce::Colour (0xffffcc44).withAlpha (0.9f));
         g.strokePath (path, juce::PathStrokeType (2.0f));
+    }
+}
+
+void PluginAutomationComponent::drawTrackpadRecordPreview (juce::Graphics& g, juce::Rectangle<int> bounds) const
+{
+    if (! trackpadRecordingEnabled)
+        return;
+
+    auto fb = bounds.toFloat();
+
+    if (! trackpadRecordPoints.empty())
+    {
+        auto points = trackpadRecordPoints;
+        AutomationCurveTools::sortAndCoalescePoints (points);
+
+        juce::Path path;
+        bool started = false;
+
+        for (const auto& point : points)
+        {
+            auto sp = dataToScreen (static_cast<float> (point.row), point.value);
+            if (sp.x < fb.getX() - 2.0f || sp.x > fb.getRight() + 2.0f)
+                continue;
+
+            if (! started)
+            {
+                path.startNewSubPath (sp);
+                started = true;
+            }
+            else
+            {
+                path.lineTo (sp);
+            }
+        }
+
+        if (started)
+        {
+            g.setColour (juce::Colour (0xffffcc44).withAlpha (0.95f));
+            g.strokePath (path, juce::PathStrokeType (2.0f));
+        }
+    }
+
+    if (trackpadRecordHasValue)
+    {
+        auto y = fb.getBottom() - trackpadRecordValue * fb.getHeight();
+        g.setColour (juce::Colour (0xffffcc44).withAlpha (0.35f));
+        g.drawHorizontalLine (static_cast<int> (y), fb.getX(), fb.getRight());
     }
 }
 

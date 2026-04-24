@@ -2,11 +2,19 @@
 
 #include <JuceHeader.h>
 #include "InstrumentParams.h"
+#include "PluginInstrumentModulation.h"
 #include "TrackerLookAndFeel.h"
 #include "WaveformView.h"
 
+struct PluginInstrumentParameterInfo
+{
+    int index = -1;
+    juce::String name;
+};
+
 class SampleEditorComponent : public juce::Component,
-                               private juce::Timer
+                               private juce::Timer,
+                               private juce::ScrollBar::Listener
 {
 public:
     SampleEditorComponent (TrackerLookAndFeel& lnf);
@@ -24,7 +32,11 @@ public:
 
     // Instrument management
     void setInstrument (int instrumentIndex, const juce::File& sampleFile, const InstrumentParams& params);
-    void setPluginInstrument (int instrumentIndex, const juce::String& pluginName, int ownerTrack);
+    void setPluginInstrument (int instrumentIndex,
+                              const juce::String& pluginName,
+                              int ownerTrack,
+                              const PluginInstrumentModulation& modulation,
+                              std::vector<PluginInstrumentParameterInfo> parameterInfos);
     void clearInstrument();
 
     int getInstrument() const { return currentInstrument; }
@@ -42,6 +54,7 @@ public:
     std::function<void()> onPreviewStopped;
     std::function<float()> onGetPreviewPosition;
     std::function<void (int instrument)> onOpenPluginEditorRequested;
+    std::function<void (int instrument, const PluginInstrumentModulation& modulation)> onPluginModulationChanged;
 
     void paint (juce::Graphics& g) override;
     void paintOverChildren (juce::Graphics& g) override;
@@ -67,8 +80,69 @@ private:
     bool showingPlugin = false;
     juce::String pluginInstrumentName;
     int pluginOwnerTrack = -1;
+    PluginInstrumentModulation pluginModulation;
+    std::vector<PluginInstrumentParameterInfo> pluginParameterInfos;
+    int selectedPluginSourceIndex = 0;
+    int selectedPluginRouteIndex = -1;
+    int pluginParameterScroll = 0;
+    double pluginParameterWheelAccumulator = 0.0;
+    juce::ScrollBar pluginParameterScrollbar { true };
+
+    enum class PluginHitKind
+    {
+        None,
+        OpenEditor,
+        AddLfo,
+        AddEnvelope,
+        SourceSelect,
+        SourceEnable,
+        SourceRemove,
+        LfoShape,
+        LfoRateMode,
+        LfoRateValue,
+        EnvTrigger,
+        EnvAttack,
+        EnvDecay,
+        EnvSustain,
+        EnvRelease,
+        ParamAssign,
+        RouteSelect,
+        RouteEnable,
+        RouteRemove,
+        RouteSource,
+        RouteParam,
+        RouteAmount
+    };
+
+    struct PluginHit
+    {
+        PluginHitKind kind = PluginHitKind::None;
+        int index = -1;
+        int parameterIndex = -1;
+    };
+
+    PluginHit pluginDragHit;
+    float pluginDragStartY = 0.0f;
+    PluginInstrumentModulation pluginDragStartModulation;
 
     void drawPluginInstrumentPage (juce::Graphics& g, juce::Rectangle<int> area);
+    juce::Rectangle<int> getPluginEditorButtonBounds() const;
+    PluginHit hitTestPluginPage (juce::Point<int> pos) const;
+    void handlePluginHit (const PluginHit& hit, const juce::MouseEvent& event);
+    void adjustPluginHitValue (const PluginHit& hit, double delta);
+    void notifyPluginModulationChanged();
+    void selectPluginSource (int sourceIndex);
+    void addPluginRouteForParam (int parameterIndex);
+    void showPluginRouteSourceMenu (int routeIndex);
+    void showPluginRouteParamMenu (int routeIndex);
+    juce::Rectangle<int> getPluginParameterListBounds() const;
+    juce::Rectangle<int> getPluginParameterListContentBounds() const;
+    juce::Rectangle<int> getPluginParameterScrollbarBounds() const;
+    int getPluginParameterVisibleRows() const;
+    int getPluginParameterMaxScroll() const;
+    void scrollPluginParameterListBy (int rows);
+    void updatePluginParameterScrollbar();
+    void scrollBarMoved (juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart) override;
 
     // Waveform display (child component, rendering only)
     WaveformView waveformView;
@@ -160,6 +234,12 @@ private:
                          bool focused, juce::Colour colour);
     void drawBarMeter (juce::Graphics& g, juce::Rectangle<int> area,
                        float value01, bool focused, juce::Colour colour);
+    void drawPluginActionButton (juce::Graphics& g, juce::Rectangle<int> bounds,
+                                 const juce::String& text, juce::Colour colour);
+    void drawPluginLfoPreview (juce::Graphics& g, juce::Rectangle<int> bounds,
+                               const PluginModulatorSource& source, juce::Colour colour);
+    void drawPluginEnvelopePreview (juce::Graphics& g, juce::Rectangle<int> bounds,
+                                    const PluginModulatorSource& source, juce::Colour colour);
 
     // Page drawing
     void drawParametersPage (juce::Graphics& g, juce::Rectangle<int> area);

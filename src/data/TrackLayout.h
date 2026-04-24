@@ -178,7 +178,8 @@ public:
         return juce::String::formatted ("T%02d", static_cast<int> (idx) + 1);
     }
 
-    // Per-track note mode (Kill = note-off at end of row, Release = note-off at next note)
+    // Per-track note mode. Notes sustain until the next trigger; Kill hard-cuts
+    // the previous sample on a new sample note, while Release uses note-off.
     NoteMode getTrackNoteMode (int physicalTrack) const
     {
         return trackNoteModes[static_cast<size_t> (juce::jlimit (0, kNumTracks - 1, physicalTrack))];

@@ -119,7 +119,7 @@ bool PluginEditorContent::keyStateChanged (bool isKeyDown, juce::Component*)
         bool stillDown = juce::KeyPress::isKeyCurrentlyDown (it->first);
         if (! stillDown)
         {
-            engine.stopPreview();
+            engine.stopPreviewNote (instrumentIndex, it->second);
             it = heldNotesByKeyCode.erase (it);
             handled = true;
         }
@@ -269,8 +269,8 @@ int PluginEditorContent::getMappedNoteForKeyCode (int keyCode) const
 
 void PluginEditorContent::releaseHeldPreviewNotes()
 {
-    if (! heldNotesByKeyCode.empty())
-        engine.stopPreview();
+    for (const auto& held : heldNotesByKeyCode)
+        engine.stopPreviewNote (instrumentIndex, held.second);
 
     heldNotesByKeyCode.clear();
 }
@@ -339,7 +339,7 @@ void PluginEditorContent::pollMappedNoteKeys()
         }
         else if (! down && it != heldNotesByKeyCode.end())
         {
-            engine.stopPreview();
+            engine.stopPreviewNote (instrumentIndex, it->second);
             heldNotesByKeyCode.erase (it);
         }
     }

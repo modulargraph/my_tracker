@@ -280,7 +280,8 @@ inline std::vector<AutomationPoint> transformPoints (const std::vector<Automatio
                                                      float valueMagnitude,
                                                      float rowStretch,
                                                      float valueCentre,
-                                                     int patternLength)
+                                                     int patternLength,
+                                                     float valueOffset = 0.0f)
 {
     if (source.empty())
         return {};
@@ -322,7 +323,8 @@ inline std::vector<AutomationPoint> transformPoints (const std::vector<Automatio
 
         auto& point = points[static_cast<size_t> (i)];
         auto stretchedRow = centreRow + (static_cast<float> (source[static_cast<size_t> (i)].row) - centreRow) * stretch;
-        auto scaledValue = centreValue + (source[static_cast<size_t> (i)].value - centreValue) * magnitude;
+        auto scaledValue = centreValue + (source[static_cast<size_t> (i)].value - centreValue) * magnitude
+                         + valueOffset;
 
         point.row = juce::jlimit (0, rows - 1, juce::roundToInt (stretchedRow));
         point.value = juce::jlimit (0.0f, 1.0f, scaledValue);

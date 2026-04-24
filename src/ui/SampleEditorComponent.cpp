@@ -16,6 +16,64 @@ const int SampleEditorComponent::kLfoSpeeds[] = {
 
 using namespace FormatUtils;
 
+namespace
+{
+constexpr int kPluginParameterRowHeight = 28;
+constexpr int kPluginParameterScrollbarWidth = 10;
+constexpr int kPluginParameterScrollbarGap = 6;
+constexpr double kPluginParameterWheelRowsPerUnit = 6.0;
+
+juce::String getPluginSourceDisplayName (const PluginModulatorSource& source, int index)
+{
+    if (source.name.isNotEmpty())
+        return source.name;
+
+    return (source.type == PluginModulatorSource::Type::LFO ? "LFO " : "Env ") + juce::String (index + 1);
+}
+
+juce::String getPluginLfoShapeName (PluginModulatorSource::LfoShape shape)
+{
+    switch (shape)
+    {
+        case PluginModulatorSource::LfoShape::Sine:     return "Sine";
+        case PluginModulatorSource::LfoShape::Triangle: return "Tri";
+        case PluginModulatorSource::LfoShape::Saw:      return "Saw";
+        case PluginModulatorSource::LfoShape::Square:   return "Square";
+        case PluginModulatorSource::LfoShape::Random:   return "Random";
+    }
+    return "Tri";
+}
+
+juce::String getPluginEnvTriggerName (PluginModulatorSource::EnvelopeTriggerMode mode)
+{
+    return mode == PluginModulatorSource::EnvelopeTriggerMode::StepFxOnly ? "Step FX" : "Note";
+}
+
+juce::String formatPluginSeconds (double seconds)
+{
+    if (seconds < 1.0)
+        return juce::String (juce::roundToInt (seconds * 1000.0)) + "ms";
+    return juce::String (seconds, 2) + "s";
+}
+
+juce::Colour getPluginSourceColour (int index)
+{
+    static constexpr juce::uint32 colours[] = {
+        0xff7dd3fc, 0xfff0abfc, 0xff86efac, 0xfffacc15,
+        0xfffb7185, 0xffc4b5fd, 0xff5eead4, 0xfffdba74
+    };
+    return juce::Colour (colours[static_cast<size_t> (juce::jlimit (0, 7, index % 8))]);
+}
+
+void fillRoundedRow (juce::Graphics& g, juce::Rectangle<int> row, juce::Colour colour, bool selected)
+{
+    g.setColour (selected ? colour.withAlpha (0.16f) : juce::Colour (0xff171a1f));
+    g.fillRoundedRectangle (row.toFloat(), 6.0f);
+    g.setColour (selected ? colour.withAlpha (0.75f) : juce::Colour (0xff30343b));
+    g.drawRoundedRectangle (row.toFloat().reduced (0.5f), 6.0f, 1.0f);
+}
+}
+
 //==============================================================================
 // Construction / Destruction
 //==============================================================================
@@ -25,10 +83,25 @@ SampleEditorComponent::SampleEditorComponent (TrackerLookAndFeel& lnf)
 {
     setWantsKeyboardFocus (true);
     addChildComponent (waveformView);
+
+    pluginParameterScrollbar.setWantsKeyboardFocus (false);
+    pluginParameterScrollbar.setAutoHide (false);
+    pluginParameterScrollbar.setSingleStepSize (1.0);
+    pluginParameterScrollbar.setColour (juce::ScrollBar::backgroundColourId,
+                                        juce::Colour (0xff0b0d10));
+    pluginParameterScrollbar.setColour (juce::ScrollBar::trackColourId,
+                                        lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId)
+                                            .withAlpha (0.45f));
+    pluginParameterScrollbar.setColour (juce::ScrollBar::thumbColourId,
+                                        lookAndFeel.findColour (TrackerLookAndFeel::fxColourId)
+                                            .withAlpha (0.85f));
+    pluginParameterScrollbar.addListener (this);
+    addChildComponent (pluginParameterScrollbar);
 }
 
 SampleEditorComponent::~SampleEditorComponent()
 {
+    pluginParameterScrollbar.removeListener (this);
     stopTimer();
 }
 
@@ -65,6 +138,12 @@ void SampleEditorComponent::setInstrument (int instrumentIndex, const juce::File
 
     currentInstrument = instrumentIndex;
     showingPlugin = false;
+    pluginModulation = PluginInstrumentModulation();
+    pluginParameterInfos.clear();
+    pluginDragHit = {};
+    pluginParameterScroll = 0;
+    pluginParameterWheelAccumulator = 0.0;
+    pluginParameterScrollbar.setVisible (false);
     currentFile = sampleFile;
     currentParams = params;
 
@@ -85,6 +164,14 @@ void SampleEditorComponent::clearInstrument()
 
     currentInstrument = -1;
     showingPlugin = false;
+    pluginModulation = PluginInstrumentModulation();
+    pluginParameterInfos.clear();
+    selectedPluginSourceIndex = 0;
+    selectedPluginRouteIndex = -1;
+    pluginParameterScroll = 0;
+    pluginParameterWheelAccumulator = 0.0;
+    pluginDragHit = {};
+    pluginParameterScrollbar.setVisible (false);
     currentFile = juce::File();
     currentParams = InstrumentParams();
     lastCommittedParams = InstrumentParams();
@@ -98,7 +185,11 @@ void SampleEditorComponent::clearInstrument()
     repaint();
 }
 
-void SampleEditorComponent::setPluginInstrument (int instrumentIndex, const juce::String& pluginName, int ownerTrack)
+void SampleEditorComponent::setPluginInstrument (int instrumentIndex,
+                                                const juce::String& pluginName,
+                                                int ownerTrack,
+                                                const PluginInstrumentModulation& modulation,
+                                                std::vector<PluginInstrumentParameterInfo> parameterInfos)
 {
     flushPendingParams();
 
@@ -106,6 +197,18 @@ void SampleEditorComponent::setPluginInstrument (int instrumentIndex, const juce
     showingPlugin = true;
     pluginInstrumentName = pluginName;
     pluginOwnerTrack = ownerTrack;
+    pluginModulation = modulation;
+    pluginModulation.ensureDefaultSources();
+    pluginParameterInfos = std::move (parameterInfos);
+    selectedPluginSourceIndex = juce::jlimit (0, juce::jmax (0, static_cast<int> (pluginModulation.sources.size()) - 1),
+                                              selectedPluginSourceIndex);
+    selectedPluginRouteIndex = pluginModulation.routes.empty()
+                                   ? -1
+                                   : juce::jlimit (0, static_cast<int> (pluginModulation.routes.size()) - 1,
+                                                   selectedPluginRouteIndex);
+    pluginParameterScroll = juce::jlimit (0, juce::jmax (0, static_cast<int> (pluginParameterInfos.size()) - 1),
+                                          pluginParameterScroll);
+    pluginParameterWheelAccumulator = 0.0;
 
     currentFile = juce::File();
     currentParams = InstrumentParams();
@@ -118,6 +221,7 @@ void SampleEditorComponent::setPluginInstrument (int instrumentIndex, const juce
 
     waveformView.clearSample();
     syncWaveformView();
+    updatePluginParameterScrollbar();
     repaint();
 }
 
@@ -735,6 +839,7 @@ void SampleEditorComponent::paint (juce::Graphics& g)
     if (currentInstrument < 0)
     {
         waveformView.setVisible (false);
+        pluginParameterScrollbar.setVisible (false);
         g.setFont (lookAndFeel.getMonoFont (12.0f));
         g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.25f));
         g.drawText ("No instrument selected", getLocalBounds(), juce::Justification::centred);
@@ -749,12 +854,15 @@ void SampleEditorComponent::paint (juce::Graphics& g)
     if (showingPlugin)
     {
         waveformView.setVisible (false);
+        updatePluginParameterScrollbar();
         drawHeader (g, { 0, 0, getWidth(), kHeaderHeight });
         auto contentArea = juce::Rectangle<int> (0, kHeaderHeight, getWidth(),
                                                   getHeight() - kHeaderHeight);
         drawPluginInstrumentPage (g, contentArea);
         return;
     }
+
+    pluginParameterScrollbar.setVisible (false);
 
     // Header
     drawHeader (g, { 0, 0, getWidth(), kHeaderHeight });
@@ -819,7 +927,10 @@ void SampleEditorComponent::paintOverChildren (juce::Graphics& g)
     drawListColumn (g, listArea, modeItems, modeIdx, modeColFocused, textCol);
 }
 
-void SampleEditorComponent::resized() {}
+void SampleEditorComponent::resized()
+{
+    updatePluginParameterScrollbar();
+}
 
 //==============================================================================
 // Drawing: Sub-tab sidebar
@@ -871,39 +982,964 @@ void SampleEditorComponent::drawSubTabBar (juce::Graphics& g, juce::Rectangle<in
 void SampleEditorComponent::drawPluginInstrumentPage (juce::Graphics& g, juce::Rectangle<int> area)
 {
     auto textCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
-    auto pluginCol = juce::Colour (0xff89b4fa); // Blue tint matching InstrumentPanel
+    auto mutedText = textCol.withAlpha (0.58f);
+    auto gridCol = lookAndFeel.findColour (TrackerLookAndFeel::gridLineColourId);
+    auto accentCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto pluginCol = juce::Colour (0xff89b4fa);
 
-    int centerY = area.getCentreY();
-    int leftX = area.getX() + 30;
+    area = area.reduced (16, 12);
 
-    // Plugin instrument icon/label
+    auto top = area.removeFromTop (48);
+    auto openEditorBounds = getPluginEditorButtonBounds();
+
     g.setFont (lookAndFeel.getMonoFont (16.0f));
     g.setColour (pluginCol);
-    g.drawText ("Plugin Instrument", leftX, centerY - 60, area.getWidth() - 60, 24,
+    g.drawText (pluginInstrumentName.isNotEmpty() ? pluginInstrumentName : "Plugin Instrument",
+                top.removeFromLeft (juce::jmax (180, top.getWidth() - 170)),
                 juce::Justification::centredLeft);
+    drawPluginActionButton (g, openEditorBounds, "OPEN EDITOR", pluginCol);
 
-    // Plugin name
-    g.setFont (lookAndFeel.getMonoFont (13.0f));
+    g.setFont (lookAndFeel.getMonoFont (10.0f));
+    g.setColour (mutedText);
+    g.drawText ("INST " + juce::String::formatted ("%02X", currentInstrument)
+                    + "  TRACK " + (pluginOwnerTrack >= 0 ? juce::String (pluginOwnerTrack + 1) : juce::String ("-")),
+                area.getX(), top.getY() + 24, area.getWidth(), 16, juce::Justification::centredLeft);
+
+    area.removeFromTop (8);
+
+    juce::Rectangle<int> sourceArea;
+    juce::Rectangle<int> routeArea;
+    if (area.getWidth() < 720)
+    {
+        sourceArea = area.removeFromTop (juce::jmin (300, area.getHeight() / 2));
+        area.removeFromTop (12);
+        routeArea = area;
+    }
+    else
+    {
+        const int sourceW = juce::jlimit (430, juce::jmax (430, area.getWidth() - 340),
+                                          static_cast<int> (area.getWidth() * 0.58f));
+        sourceArea = area.removeFromLeft (sourceW);
+        area.removeFromLeft (14);
+        routeArea = area;
+    }
+
+    auto drawSectionTitle = [&] (juce::Rectangle<int> titleArea, const juce::String& title)
+    {
+        g.setFont (lookAndFeel.getMonoFont (11.0f));
+        g.setColour (textCol);
+        g.drawText (title, titleArea, juce::Justification::centredLeft);
+        g.setColour (gridCol);
+        g.drawHorizontalLine (titleArea.getBottom() - 1,
+                              static_cast<float> (titleArea.getX()),
+                              static_cast<float> (titleArea.getRight()));
+    };
+
+    auto sourceTitle = sourceArea.removeFromTop (30);
+    auto addEnvBounds = sourceTitle.removeFromRight (78).reduced (0, 3);
+    sourceTitle.removeFromRight (8);
+    auto addLfoBounds = sourceTitle.removeFromRight (72).reduced (0, 3);
+    drawSectionTitle (sourceTitle, "MODULATORS");
+    drawPluginActionButton (g, addLfoBounds, "+ LFO", getPluginSourceColour (0));
+    drawPluginActionButton (g, addEnvBounds, "+ ENV", getPluginSourceColour (2));
+    sourceArea.removeFromTop (10);
+
+    const int sourceRowH = 52;
+    for (int i = 0; i < static_cast<int> (pluginModulation.sources.size()); ++i)
+    {
+        if (sourceArea.getHeight() < sourceRowH)
+            break;
+
+        const auto& source = pluginModulation.sources[static_cast<size_t> (i)];
+        auto row = sourceArea.removeFromTop (sourceRowH);
+        sourceArea.removeFromTop (8);
+        const auto colour = getPluginSourceColour (i);
+        const bool selected = i == selectedPluginSourceIndex;
+        fillRoundedRow (g, row, colour, selected);
+
+        auto inner = row.reduced (8, 6);
+        auto enableBox = inner.removeFromLeft (20).withSizeKeepingCentre (14, 14);
+        g.setColour (source.enabled ? colour : mutedText.withAlpha (0.35f));
+        g.drawRect (enableBox, 1);
+        if (source.enabled)
+            g.fillRect (enableBox.reduced (3));
+        inner.removeFromLeft (8);
+
+        auto nameArea = inner.removeFromLeft (72);
+        g.setFont (lookAndFeel.getMonoFont (12.0f));
+        g.setColour (source.enabled ? textCol : mutedText);
+        g.drawText (getPluginSourceDisplayName (source, i), nameArea.removeFromTop (20),
+                    juce::Justification::centredLeft);
+        g.setFont (lookAndFeel.getMonoFont (9.0f));
+        g.setColour (colour.withAlpha (0.75f));
+        g.drawText (source.type == PluginModulatorSource::Type::LFO ? "LFO" : "ENV",
+                    nameArea, juce::Justification::centredLeft);
+
+        auto preview = inner.removeFromLeft (94).reduced (2, 2);
+        if (source.type == PluginModulatorSource::Type::LFO)
+            drawPluginLfoPreview (g, preview, source, colour);
+        else
+            drawPluginEnvelopePreview (g, preview, source, colour);
+
+        inner.removeFromLeft (8);
+        auto removeBounds = inner.removeFromRight (20).withSizeKeepingCentre (18, 18);
+
+        auto drawCell = [&] (juce::Rectangle<int> cell, const juce::String& label,
+                             const juce::String& value, juce::Colour cellColour)
+        {
+            g.setColour (cellColour.withAlpha (0.12f));
+            g.fillRect (cell);
+            g.setColour (cellColour.withAlpha (0.42f));
+            g.drawRect (cell, 1);
+            g.setFont (lookAndFeel.getMonoFont (8.0f));
+            g.setColour (mutedText);
+            g.drawText (label, cell.reduced (5, 1).removeFromTop (12), juce::Justification::centredLeft);
+            g.setFont (lookAndFeel.getMonoFont (10.0f));
+            g.setColour (textCol);
+            g.drawText (value, cell.reduced (5, 1).withTrimmedTop (13), juce::Justification::centredLeft);
+        };
+
+        if (source.type == PluginModulatorSource::Type::LFO)
+        {
+            drawCell (inner.removeFromLeft (66), "SHAPE", getPluginLfoShapeName (source.lfoShape), colour);
+            inner.removeFromLeft (6);
+            drawCell (inner.removeFromLeft (58), "RATE", source.lfoRateMode == PluginModulatorSource::LfoRateMode::Hz ? "Hz" : "Step", colour);
+            inner.removeFromLeft (6);
+            drawCell (inner.removeFromLeft (78), "VALUE",
+                      source.lfoRateMode == PluginModulatorSource::LfoRateMode::Hz
+                          ? juce::String (source.lfoRateHz, 2)
+                          : juce::String (juce::roundToInt (source.lfoRateSteps)),
+                      colour);
+        }
+        else
+        {
+            drawCell (inner.removeFromLeft (76), "TRIG", getPluginEnvTriggerName (source.envelopeTriggerMode), colour);
+            inner.removeFromLeft (6);
+            drawCell (inner.removeFromLeft (55), "A", formatPluginSeconds (source.attackS), colour);
+            inner.removeFromLeft (5);
+            drawCell (inner.removeFromLeft (55), "D", formatPluginSeconds (source.decayS), colour);
+            inner.removeFromLeft (5);
+            drawCell (inner.removeFromLeft (50), "S", juce::String (juce::roundToInt (source.sustain * 100.0)) + "%", colour);
+            inner.removeFromLeft (5);
+            drawCell (inner.removeFromLeft (55), "R", formatPluginSeconds (source.releaseS), colour);
+        }
+
+        g.setColour (mutedText);
+        g.setFont (lookAndFeel.getMonoFont (13.0f));
+        g.drawText ("x", removeBounds, juce::Justification::centred);
+    }
+
+    auto routeTitle = routeArea.removeFromTop (30);
+    drawSectionTitle (routeTitle, "ROUTES");
+    routeArea.removeFromTop (10);
+
+    const int routeRowH = 36;
+    const int maxRouteRows = juce::jmax (2, juce::jmin (5, (routeArea.getHeight() - 150) / (routeRowH + 6)));
+    auto routesBlock = routeArea.removeFromTop (juce::jmin (routeArea.getHeight(), maxRouteRows * (routeRowH + 6)));
+
+    for (int i = 0; i < static_cast<int> (pluginModulation.routes.size()) && i < maxRouteRows; ++i)
+    {
+        const auto& route = pluginModulation.routes[static_cast<size_t> (i)];
+        auto row = routesBlock.removeFromTop (routeRowH);
+        routesBlock.removeFromTop (6);
+        const int sourceIndex = juce::jlimit (0, juce::jmax (0, static_cast<int> (pluginModulation.sources.size()) - 1), route.sourceIndex);
+        const auto colour = getPluginSourceColour (sourceIndex);
+        fillRoundedRow (g, row, colour, i == selectedPluginRouteIndex);
+
+        auto inner = row.reduced (7, 5);
+        auto enableBox = inner.removeFromLeft (16).withSizeKeepingCentre (12, 12);
+        g.setColour (route.enabled ? colour : mutedText.withAlpha (0.35f));
+        g.drawRect (enableBox, 1);
+        if (route.enabled)
+            g.fillRect (enableBox.reduced (3));
+        inner.removeFromLeft (6);
+
+        auto src = inner.removeFromLeft (68);
+        g.setFont (lookAndFeel.getMonoFont (9.0f));
+        g.setColour (colour);
+        if (route.sourceIndex >= 0 && route.sourceIndex < static_cast<int> (pluginModulation.sources.size()))
+            g.drawText (getPluginSourceDisplayName (pluginModulation.sources[static_cast<size_t> (route.sourceIndex)], route.sourceIndex),
+                        src, juce::Justification::centredLeft);
+        else
+            g.drawText ("Source", src, juce::Justification::centredLeft);
+
+        auto removeBounds = inner.removeFromRight (18);
+        auto amountBounds = inner.removeFromRight (70).reduced (0, 4);
+        inner.removeFromRight (8);
+        auto paramBounds = inner;
+
+        g.setColour (textCol);
+        g.setFont (lookAndFeel.getMonoFont (10.0f));
+        g.drawFittedText (route.parameterName.isNotEmpty() ? route.parameterName : ("Param " + juce::String (route.parameterIndex)),
+                          paramBounds, juce::Justification::centredLeft, 1);
+
+        g.setColour (juce::Colour (0xff0b0d10));
+        g.fillRect (amountBounds);
+        g.setColour (gridCol);
+        g.drawRect (amountBounds, 1);
+        const int centreX = amountBounds.getCentreX();
+        const int amountPixels = juce::roundToInt (route.amount * static_cast<float> (amountBounds.getWidth()) * 0.5f);
+        auto fill = amountBounds.withX (amountPixels >= 0 ? centreX : centreX + amountPixels)
+                                .withWidth (std::abs (amountPixels));
+        g.setColour ((route.amount >= 0.0f ? colour : juce::Colour (0xffff7a7a)).withAlpha (0.75f));
+        g.fillRect (fill);
+        g.setColour (mutedText);
+        g.setFont (lookAndFeel.getMonoFont (8.0f));
+        g.drawText (juce::String (juce::roundToInt (route.amount * 100.0f)) + "%",
+                    amountBounds, juce::Justification::centred);
+        g.setFont (lookAndFeel.getMonoFont (12.0f));
+        g.drawText ("x", removeBounds, juce::Justification::centred);
+    }
+
+    if (pluginModulation.routes.empty())
+    {
+        g.setColour (mutedText);
+        g.setFont (lookAndFeel.getMonoFont (11.0f));
+        g.drawText ("No routes", routesBlock.withHeight (30), juce::Justification::centredLeft);
+    }
+
+    routeArea.removeFromTop (8);
+    auto paramTitle = routeArea.removeFromTop (24);
+    g.setColour (accentCol);
+    g.setFont (lookAndFeel.getMonoFont (10.0f));
+    const juce::String selectedSourceName = selectedPluginSourceIndex >= 0
+        && selectedPluginSourceIndex < static_cast<int> (pluginModulation.sources.size())
+            ? getPluginSourceDisplayName (pluginModulation.sources[static_cast<size_t> (selectedPluginSourceIndex)],
+                                          selectedPluginSourceIndex)
+            : juce::String ("Source");
+    g.drawText ("ASSIGN " + selectedSourceName + " TO PARAMETER", paramTitle, juce::Justification::centredLeft);
+
+    auto paramList = getPluginParameterListContentBounds();
+    const int visibleParams = getPluginParameterVisibleRows();
+    pluginParameterScroll = juce::jlimit (0, getPluginParameterMaxScroll(), pluginParameterScroll);
+
+    for (int rowIndex = 0; rowIndex < visibleParams; ++rowIndex)
+    {
+        const int paramListIndex = pluginParameterScroll + rowIndex;
+        if (paramListIndex >= static_cast<int> (pluginParameterInfos.size()))
+            break;
+
+        const auto& param = pluginParameterInfos[static_cast<size_t> (paramListIndex)];
+        auto row = paramList.removeFromTop (kPluginParameterRowHeight).reduced (0, 3);
+        bool hasRoute = false;
+        float existingAmount = 0.0f;
+        for (const auto& route : pluginModulation.routes)
+        {
+            if (route.sourceIndex == selectedPluginSourceIndex && route.parameterIndex == param.index)
+            {
+                hasRoute = true;
+                existingAmount = route.amount;
+                break;
+            }
+        }
+
+        g.setColour (hasRoute ? accentCol.withAlpha (0.16f) : juce::Colour (0xff15181d));
+        g.fillRect (row);
+        g.setColour (hasRoute ? accentCol.withAlpha (0.65f) : gridCol);
+        g.drawRect (row, 1);
+        auto plus = row.removeFromLeft (28);
+        g.setFont (lookAndFeel.getMonoFont (13.0f));
+        g.setColour (hasRoute ? accentCol : mutedText);
+        g.drawText (hasRoute ? juce::String (juce::roundToInt (existingAmount * 100.0f)) + "%" : "+",
+                    plus, juce::Justification::centred);
+        g.setColour (textCol);
+        g.setFont (lookAndFeel.getMonoFont (10.0f));
+        g.drawFittedText (param.name, row.reduced (6, 0), juce::Justification::centredLeft, 1);
+    }
+}
+
+juce::Rectangle<int> SampleEditorComponent::getPluginEditorButtonBounds() const
+{
+    auto area = juce::Rectangle<int> (0, kHeaderHeight, getWidth(), getHeight() - kHeaderHeight).reduced (16, 12);
+    return { area.getRight() - 140, area.getY() + 8, 124, 28 };
+}
+
+void SampleEditorComponent::drawPluginActionButton (juce::Graphics& g,
+                                                    juce::Rectangle<int> bounds,
+                                                    const juce::String& text,
+                                                    juce::Colour colour)
+{
+    auto bg = colour.withAlpha (0.18f);
+    auto border = colour.withAlpha (0.75f);
+    auto textCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+
+    g.setColour (bg);
+    g.fillRect (bounds);
+    g.setColour (border);
+    g.drawRect (bounds, 1);
     g.setColour (textCol);
-    g.drawText ("Name:  " + pluginInstrumentName, leftX, centerY - 30, area.getWidth() - 60, 20,
-                juce::Justification::centredLeft);
-
-    // Owner track
-    g.drawText ("Owner Track:  " + (pluginOwnerTrack >= 0
-                    ? juce::String (pluginOwnerTrack + 1)
-                    : juce::String ("(none)")),
-                leftX, centerY - 8, area.getWidth() - 60, 20,
-                juce::Justification::centredLeft);
-
-    // Instructions
-    g.setColour (textCol.withAlpha (0.5f));
     g.setFont (lookAndFeel.getMonoFont (11.0f));
-    g.drawText ("Press Enter or double-click to open plugin editor",
-                leftX, centerY + 20, area.getWidth() - 60, 18,
-                juce::Justification::centredLeft);
-    g.drawText ("Right-click in Instrument Panel to change or clear",
-                leftX, centerY + 38, area.getWidth() - 60, 18,
-                juce::Justification::centredLeft);
+    g.drawText (text, bounds.reduced (8, 0), juce::Justification::centred);
+}
+
+void SampleEditorComponent::drawPluginLfoPreview (juce::Graphics& g,
+                                                  juce::Rectangle<int> bounds,
+                                                  const PluginModulatorSource& source,
+                                                  juce::Colour colour)
+{
+    g.setColour (juce::Colour (0xff0b0d10));
+    g.fillRect (bounds);
+    g.setColour (colour.withAlpha (0.28f));
+    g.drawRect (bounds, 1);
+
+    juce::Path path;
+    const int w = juce::jmax (2, bounds.getWidth());
+    const float midY = static_cast<float> (bounds.getCentreY());
+    const float amp = static_cast<float> (bounds.getHeight()) * 0.36f;
+
+    for (int x = 0; x < w; ++x)
+    {
+        const float phase = static_cast<float> (x) / static_cast<float> (w - 1);
+        float value = 0.0f;
+        switch (source.lfoShape)
+        {
+            case PluginModulatorSource::LfoShape::Sine:     value = std::sin (phase * juce::MathConstants<float>::twoPi); break;
+            case PluginModulatorSource::LfoShape::Triangle: value = 1.0f - 4.0f * std::abs (phase - 0.5f); break;
+            case PluginModulatorSource::LfoShape::Saw:      value = phase * 2.0f - 1.0f; break;
+            case PluginModulatorSource::LfoShape::Square:   value = phase < 0.5f ? 1.0f : -1.0f; break;
+            case PluginModulatorSource::LfoShape::Random:   value = std::sin (phase * 31.0f) > 0.0f ? 0.75f : -0.75f; break;
+        }
+
+        const float y = midY - value * amp;
+        const float px = static_cast<float> (bounds.getX() + x);
+        if (x == 0) path.startNewSubPath (px, y);
+        else        path.lineTo (px, y);
+    }
+
+    g.setColour (colour);
+    g.strokePath (path, juce::PathStrokeType (1.8f));
+}
+
+void SampleEditorComponent::drawPluginEnvelopePreview (juce::Graphics& g,
+                                                       juce::Rectangle<int> bounds,
+                                                       const PluginModulatorSource& source,
+                                                       juce::Colour colour)
+{
+    g.setColour (juce::Colour (0xff0b0d10));
+    g.fillRect (bounds);
+    g.setColour (colour.withAlpha (0.28f));
+    g.drawRect (bounds, 1);
+
+    const float left = static_cast<float> (bounds.getX() + 4);
+    const float right = static_cast<float> (bounds.getRight() - 4);
+    const float bottom = static_cast<float> (bounds.getBottom() - 4);
+    const float top = static_cast<float> (bounds.getY() + 4);
+    const float sustainY = bottom - static_cast<float> (source.sustain) * (bottom - top);
+    const float width = right - left;
+
+    const float a = juce::jlimit (0.08f, 0.34f, static_cast<float> (source.attackS / 2.0));
+    const float d = juce::jlimit (0.08f, 0.34f, static_cast<float> (source.decayS / 2.0));
+    const float r = juce::jlimit (0.10f, 0.36f, static_cast<float> (source.releaseS / 2.0));
+    const float x0 = left;
+    const float x1 = left + width * a;
+    const float x2 = x1 + width * d;
+    const float x3 = right - width * r;
+    const float x4 = right;
+
+    juce::Path path;
+    path.startNewSubPath (x0, bottom);
+    path.lineTo (x1, top);
+    path.lineTo (x2, sustainY);
+    path.lineTo (x3, sustainY);
+    path.lineTo (x4, bottom);
+
+    g.setColour (colour);
+    g.strokePath (path, juce::PathStrokeType (1.8f));
+}
+
+SampleEditorComponent::PluginHit SampleEditorComponent::hitTestPluginPage (juce::Point<int> pos) const
+{
+    if (getPluginEditorButtonBounds().contains (pos))
+        return { PluginHitKind::OpenEditor, -1, -1 };
+
+    auto area = juce::Rectangle<int> (0, kHeaderHeight, getWidth(), getHeight() - kHeaderHeight).reduced (16, 12);
+    area.removeFromTop (48);
+    area.removeFromTop (8);
+
+    juce::Rectangle<int> sourceArea;
+    juce::Rectangle<int> routeArea;
+    if (area.getWidth() < 720)
+    {
+        sourceArea = area.removeFromTop (juce::jmin (300, area.getHeight() / 2));
+        area.removeFromTop (12);
+        routeArea = area;
+    }
+    else
+    {
+        const int sourceW = juce::jlimit (430, juce::jmax (430, area.getWidth() - 340),
+                                          static_cast<int> (area.getWidth() * 0.58f));
+        sourceArea = area.removeFromLeft (sourceW);
+        area.removeFromLeft (14);
+        routeArea = area;
+    }
+
+    auto sourceTitle = sourceArea.removeFromTop (30);
+    auto addEnvBounds = sourceTitle.removeFromRight (78).reduced (0, 3);
+    sourceTitle.removeFromRight (8);
+    auto addLfoBounds = sourceTitle.removeFromRight (72).reduced (0, 3);
+    if (addLfoBounds.contains (pos))
+        return { PluginHitKind::AddLfo, -1, -1 };
+    if (addEnvBounds.contains (pos))
+        return { PluginHitKind::AddEnvelope, -1, -1 };
+
+    sourceArea.removeFromTop (10);
+    const int sourceRowH = 52;
+    for (int i = 0; i < static_cast<int> (pluginModulation.sources.size()); ++i)
+    {
+        if (sourceArea.getHeight() < sourceRowH)
+            break;
+
+        auto row = sourceArea.removeFromTop (sourceRowH);
+        sourceArea.removeFromTop (8);
+        if (! row.contains (pos))
+            continue;
+
+        auto inner = row.reduced (8, 6);
+        auto enableBox = inner.removeFromLeft (20).withSizeKeepingCentre (14, 14);
+        if (enableBox.expanded (4).contains (pos))
+            return { PluginHitKind::SourceEnable, i, -1 };
+
+        inner.removeFromLeft (8);
+        inner.removeFromLeft (72);
+        inner.removeFromLeft (94);
+        inner.removeFromLeft (8);
+        auto removeBounds = inner.removeFromRight (20).withSizeKeepingCentre (18, 18);
+        if (removeBounds.expanded (5).contains (pos))
+            return { PluginHitKind::SourceRemove, i, -1 };
+
+        const auto& source = pluginModulation.sources[static_cast<size_t> (i)];
+        if (source.type == PluginModulatorSource::Type::LFO)
+        {
+            auto shape = inner.removeFromLeft (66);
+            inner.removeFromLeft (6);
+            auto rateMode = inner.removeFromLeft (58);
+            inner.removeFromLeft (6);
+            auto value = inner.removeFromLeft (78);
+            if (shape.contains (pos))    return { PluginHitKind::LfoShape, i, -1 };
+            if (rateMode.contains (pos)) return { PluginHitKind::LfoRateMode, i, -1 };
+            if (value.contains (pos))    return { PluginHitKind::LfoRateValue, i, -1 };
+        }
+        else
+        {
+            auto trigger = inner.removeFromLeft (76);
+            inner.removeFromLeft (6);
+            auto attack = inner.removeFromLeft (55);
+            inner.removeFromLeft (5);
+            auto decay = inner.removeFromLeft (55);
+            inner.removeFromLeft (5);
+            auto sustain = inner.removeFromLeft (50);
+            inner.removeFromLeft (5);
+            auto release = inner.removeFromLeft (55);
+            if (trigger.contains (pos)) return { PluginHitKind::EnvTrigger, i, -1 };
+            if (attack.contains (pos))  return { PluginHitKind::EnvAttack, i, -1 };
+            if (decay.contains (pos))   return { PluginHitKind::EnvDecay, i, -1 };
+            if (sustain.contains (pos)) return { PluginHitKind::EnvSustain, i, -1 };
+            if (release.contains (pos)) return { PluginHitKind::EnvRelease, i, -1 };
+        }
+
+        return { PluginHitKind::SourceSelect, i, -1 };
+    }
+
+    routeArea.removeFromTop (30);
+    routeArea.removeFromTop (10);
+    const int routeRowH = 36;
+    const int maxRouteRows = juce::jmax (2, juce::jmin (5, (routeArea.getHeight() - 150) / (routeRowH + 6)));
+    auto routesBlock = routeArea.removeFromTop (juce::jmin (routeArea.getHeight(), maxRouteRows * (routeRowH + 6)));
+
+    for (int i = 0; i < static_cast<int> (pluginModulation.routes.size()) && i < maxRouteRows; ++i)
+    {
+        auto row = routesBlock.removeFromTop (routeRowH);
+        routesBlock.removeFromTop (6);
+        if (! row.contains (pos))
+            continue;
+
+        auto inner = row.reduced (7, 5);
+        auto enableBox = inner.removeFromLeft (16).withSizeKeepingCentre (12, 12);
+        if (enableBox.expanded (4).contains (pos))
+            return { PluginHitKind::RouteEnable, i, -1 };
+
+        inner.removeFromLeft (6);
+        auto src = inner.removeFromLeft (68);
+        auto removeBounds = inner.removeFromRight (18);
+        auto amountBounds = inner.removeFromRight (70).reduced (0, 4);
+        inner.removeFromRight (8);
+        auto paramBounds = inner;
+
+        if (src.contains (pos))             return { PluginHitKind::RouteSource, i, -1 };
+        if (removeBounds.contains (pos))    return { PluginHitKind::RouteRemove, i, -1 };
+        if (amountBounds.contains (pos))    return { PluginHitKind::RouteAmount, i, -1 };
+        if (paramBounds.contains (pos))     return { PluginHitKind::RouteParam, i, -1 };
+        return { PluginHitKind::RouteSelect, i, -1 };
+    }
+
+    routeArea.removeFromTop (8);
+    routeArea.removeFromTop (24);
+    auto paramList = getPluginParameterListContentBounds();
+    const int visibleParams = getPluginParameterVisibleRows();
+    for (int rowIndex = 0; rowIndex < visibleParams; ++rowIndex)
+    {
+        const int paramListIndex = pluginParameterScroll + rowIndex;
+        if (paramListIndex >= static_cast<int> (pluginParameterInfos.size()))
+            break;
+
+        auto row = paramList.removeFromTop (kPluginParameterRowHeight).reduced (0, 3);
+        if (row.contains (pos))
+            return { PluginHitKind::ParamAssign, paramListIndex, pluginParameterInfos[static_cast<size_t> (paramListIndex)].index };
+    }
+
+    return {};
+}
+
+juce::Rectangle<int> SampleEditorComponent::getPluginParameterListBounds() const
+{
+    auto area = juce::Rectangle<int> (0, kHeaderHeight, getWidth(), getHeight() - kHeaderHeight).reduced (16, 12);
+    area.removeFromTop (48);
+    area.removeFromTop (8);
+
+    juce::Rectangle<int> routeArea;
+    if (area.getWidth() < 720)
+    {
+        area.removeFromTop (juce::jmin (300, area.getHeight() / 2));
+        area.removeFromTop (12);
+        routeArea = area;
+    }
+    else
+    {
+        const int sourceW = juce::jlimit (430, juce::jmax (430, area.getWidth() - 340),
+                                          static_cast<int> (area.getWidth() * 0.58f));
+        area.removeFromLeft (sourceW);
+        area.removeFromLeft (14);
+        routeArea = area;
+    }
+
+    routeArea.removeFromTop (30);
+    routeArea.removeFromTop (10);
+    const int routeRowH = 36;
+    const int maxRouteRows = juce::jmax (2, juce::jmin (5, (routeArea.getHeight() - 150) / (routeRowH + 6)));
+    routeArea.removeFromTop (juce::jmin (routeArea.getHeight(), maxRouteRows * (routeRowH + 6)));
+    routeArea.removeFromTop (8);
+    routeArea.removeFromTop (24);
+    return routeArea;
+}
+
+juce::Rectangle<int> SampleEditorComponent::getPluginParameterListContentBounds() const
+{
+    auto bounds = getPluginParameterListBounds();
+    if (getPluginParameterMaxScroll() > 0)
+        bounds.removeFromRight (juce::jmin (bounds.getWidth(),
+                                            kPluginParameterScrollbarWidth + kPluginParameterScrollbarGap));
+
+    return bounds;
+}
+
+juce::Rectangle<int> SampleEditorComponent::getPluginParameterScrollbarBounds() const
+{
+    auto bounds = getPluginParameterListBounds();
+    if (bounds.getWidth() <= 0 || bounds.getHeight() <= 0)
+        return {};
+
+    return bounds.removeFromRight (juce::jmin (bounds.getWidth(), kPluginParameterScrollbarWidth));
+}
+
+int SampleEditorComponent::getPluginParameterVisibleRows() const
+{
+    const auto bounds = getPluginParameterListBounds();
+    if (bounds.getHeight() <= 0)
+        return 0;
+
+    return juce::jmax (0, bounds.getHeight() / kPluginParameterRowHeight);
+}
+
+int SampleEditorComponent::getPluginParameterMaxScroll() const
+{
+    const int visibleRows = getPluginParameterVisibleRows();
+    if (visibleRows <= 0)
+        return 0;
+
+    return juce::jmax (0, static_cast<int> (pluginParameterInfos.size()) - visibleRows);
+}
+
+void SampleEditorComponent::scrollPluginParameterListBy (int rows)
+{
+    if (rows == 0)
+        return;
+
+    const int maxScroll = getPluginParameterMaxScroll();
+    const int newScroll = juce::jlimit (0, maxScroll, pluginParameterScroll + rows);
+    if (newScroll == pluginParameterScroll)
+        return;
+
+    pluginParameterScroll = newScroll;
+    updatePluginParameterScrollbar();
+    repaint (getPluginParameterListBounds().expanded (2));
+}
+
+void SampleEditorComponent::updatePluginParameterScrollbar()
+{
+    const int visibleRows = getPluginParameterVisibleRows();
+    const int maxScroll = getPluginParameterMaxScroll();
+    pluginParameterScroll = juce::jlimit (0, maxScroll, pluginParameterScroll);
+
+    const auto scrollbarBounds = getPluginParameterScrollbarBounds();
+    const bool shouldShowScrollbar = showingPlugin
+                                     && currentInstrument >= 0
+                                     && visibleRows > 0
+                                     && maxScroll > 0
+                                     && scrollbarBounds.getWidth() > 0
+                                     && scrollbarBounds.getHeight() > 0;
+
+    if (! shouldShowScrollbar)
+    {
+        pluginParameterScrollbar.setVisible (false);
+        return;
+    }
+
+    pluginParameterScrollbar.setBounds (scrollbarBounds);
+    pluginParameterScrollbar.setRangeLimits (0.0, static_cast<double> (pluginParameterInfos.size()));
+    pluginParameterScrollbar.setCurrentRange (static_cast<double> (pluginParameterScroll),
+                                              static_cast<double> (visibleRows),
+                                              juce::dontSendNotification);
+    pluginParameterScrollbar.setVisible (true);
+    pluginParameterScrollbar.toFront (false);
+}
+
+void SampleEditorComponent::scrollBarMoved (juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart)
+{
+    if (scrollBarThatHasMoved != &pluginParameterScrollbar)
+        return;
+
+    const int newScroll = juce::jlimit (0, getPluginParameterMaxScroll(), juce::roundToInt (newRangeStart));
+    if (newScroll == pluginParameterScroll)
+        return;
+
+    pluginParameterScroll = newScroll;
+    pluginParameterWheelAccumulator = 0.0;
+    updatePluginParameterScrollbar();
+    repaint (getPluginParameterListBounds().expanded (2));
+}
+
+void SampleEditorComponent::handlePluginHit (const PluginHit& hit, const juce::MouseEvent& event)
+{
+    auto sourceInRange = [&] (int index)
+    {
+        return index >= 0 && index < static_cast<int> (pluginModulation.sources.size());
+    };
+    auto routeInRange = [&] (int index)
+    {
+        return index >= 0 && index < static_cast<int> (pluginModulation.routes.size());
+    };
+    auto beginDrag = [&]
+    {
+        pluginDragHit = hit;
+        pluginDragStartY = event.position.y;
+        pluginDragStartModulation = pluginModulation;
+    };
+
+    switch (hit.kind)
+    {
+        case PluginHitKind::OpenEditor:
+            if (onOpenPluginEditorRequested)
+                onOpenPluginEditorRequested (currentInstrument);
+            break;
+        case PluginHitKind::AddLfo:
+            selectedPluginSourceIndex = pluginModulation.addLfo();
+            notifyPluginModulationChanged();
+            break;
+        case PluginHitKind::AddEnvelope:
+            selectedPluginSourceIndex = pluginModulation.addEnvelope();
+            notifyPluginModulationChanged();
+            break;
+        case PluginHitKind::SourceSelect:
+            selectPluginSource (hit.index);
+            repaint();
+            break;
+        case PluginHitKind::SourceEnable:
+            if (sourceInRange (hit.index))
+            {
+                auto& source = pluginModulation.sources[static_cast<size_t> (hit.index)];
+                source.enabled = ! source.enabled;
+                selectPluginSource (hit.index);
+                notifyPluginModulationChanged();
+            }
+            break;
+        case PluginHitKind::SourceRemove:
+            if (sourceInRange (hit.index))
+            {
+                pluginModulation.removeSource (hit.index);
+                selectedPluginSourceIndex = juce::jlimit (0, juce::jmax (0, static_cast<int> (pluginModulation.sources.size()) - 1),
+                                                          selectedPluginSourceIndex);
+                selectedPluginRouteIndex = pluginModulation.routes.empty()
+                                               ? -1
+                                               : juce::jlimit (0, static_cast<int> (pluginModulation.routes.size()) - 1,
+                                                               selectedPluginRouteIndex);
+                notifyPluginModulationChanged();
+            }
+            break;
+        case PluginHitKind::LfoShape:
+            if (sourceInRange (hit.index))
+            {
+                auto& source = pluginModulation.sources[static_cast<size_t> (hit.index)];
+                source.lfoShape = static_cast<PluginModulatorSource::LfoShape> (
+                    (static_cast<int> (source.lfoShape) + 1)
+                    % (static_cast<int> (PluginModulatorSource::LfoShape::Random) + 1));
+                selectPluginSource (hit.index);
+                notifyPluginModulationChanged();
+            }
+            break;
+        case PluginHitKind::LfoRateMode:
+            if (sourceInRange (hit.index))
+            {
+                auto& source = pluginModulation.sources[static_cast<size_t> (hit.index)];
+                source.lfoRateMode = source.lfoRateMode == PluginModulatorSource::LfoRateMode::Hz
+                                         ? PluginModulatorSource::LfoRateMode::Steps
+                                         : PluginModulatorSource::LfoRateMode::Hz;
+                selectPluginSource (hit.index);
+                notifyPluginModulationChanged();
+            }
+            break;
+        case PluginHitKind::EnvTrigger:
+            if (sourceInRange (hit.index))
+            {
+                auto& source = pluginModulation.sources[static_cast<size_t> (hit.index)];
+                source.envelopeTriggerMode = source.envelopeTriggerMode == PluginModulatorSource::EnvelopeTriggerMode::StepFxOnly
+                                                 ? PluginModulatorSource::EnvelopeTriggerMode::NoteGate
+                                                 : PluginModulatorSource::EnvelopeTriggerMode::StepFxOnly;
+                selectPluginSource (hit.index);
+                notifyPluginModulationChanged();
+            }
+            break;
+        case PluginHitKind::ParamAssign:
+            addPluginRouteForParam (hit.parameterIndex);
+            break;
+        case PluginHitKind::RouteSelect:
+            if (routeInRange (hit.index))
+            {
+                selectedPluginRouteIndex = hit.index;
+                selectPluginSource (pluginModulation.routes[static_cast<size_t> (hit.index)].sourceIndex);
+                repaint();
+            }
+            break;
+        case PluginHitKind::RouteEnable:
+            if (routeInRange (hit.index))
+            {
+                auto& route = pluginModulation.routes[static_cast<size_t> (hit.index)];
+                route.enabled = ! route.enabled;
+                selectedPluginRouteIndex = hit.index;
+                selectPluginSource (route.sourceIndex);
+                notifyPluginModulationChanged();
+            }
+            break;
+        case PluginHitKind::RouteRemove:
+            if (routeInRange (hit.index))
+            {
+                pluginModulation.removeRoute (hit.index);
+                selectedPluginRouteIndex = pluginModulation.routes.empty()
+                                               ? -1
+                                               : juce::jlimit (0, static_cast<int> (pluginModulation.routes.size()) - 1,
+                                                               selectedPluginRouteIndex);
+                notifyPluginModulationChanged();
+            }
+            break;
+        case PluginHitKind::RouteSource:
+            showPluginRouteSourceMenu (hit.index);
+            break;
+        case PluginHitKind::RouteParam:
+            showPluginRouteParamMenu (hit.index);
+            break;
+        case PluginHitKind::LfoRateValue:
+        case PluginHitKind::EnvAttack:
+        case PluginHitKind::EnvDecay:
+        case PluginHitKind::EnvSustain:
+        case PluginHitKind::EnvRelease:
+        case PluginHitKind::RouteAmount:
+            if (sourceInRange (hit.index) || routeInRange (hit.index))
+                beginDrag();
+            break;
+        case PluginHitKind::None:
+            break;
+    }
+}
+
+void SampleEditorComponent::adjustPluginHitValue (const PluginHit& hit, double delta)
+{
+    auto sourceInRange = [&] (int index)
+    {
+        return index >= 0 && index < static_cast<int> (pluginModulation.sources.size());
+    };
+    auto routeInRange = [&] (int index)
+    {
+        return index >= 0 && index < static_cast<int> (pluginModulation.routes.size());
+    };
+
+    if (sourceInRange (hit.index))
+        selectPluginSource (hit.index);
+
+    switch (hit.kind)
+    {
+        case PluginHitKind::LfoRateValue:
+            if (sourceInRange (hit.index))
+            {
+                auto& source = pluginModulation.sources[static_cast<size_t> (hit.index)];
+                if (source.lfoRateMode == PluginModulatorSource::LfoRateMode::Hz)
+                    source.lfoRateHz = juce::jlimit (0.01, 40.0, source.lfoRateHz + delta * 8.0);
+                else
+                    source.lfoRateSteps = juce::jlimit (1.0, 256.0, source.lfoRateSteps + delta * 64.0);
+            }
+            break;
+        case PluginHitKind::EnvAttack:
+            if (sourceInRange (hit.index))
+                pluginModulation.sources[static_cast<size_t> (hit.index)].attackS =
+                    juce::jlimit (0.0, 30.0, pluginModulation.sources[static_cast<size_t> (hit.index)].attackS + delta * 2.0);
+            break;
+        case PluginHitKind::EnvDecay:
+            if (sourceInRange (hit.index))
+                pluginModulation.sources[static_cast<size_t> (hit.index)].decayS =
+                    juce::jlimit (0.0, 30.0, pluginModulation.sources[static_cast<size_t> (hit.index)].decayS + delta * 2.0);
+            break;
+        case PluginHitKind::EnvSustain:
+            if (sourceInRange (hit.index))
+                pluginModulation.sources[static_cast<size_t> (hit.index)].sustain =
+                    juce::jlimit (0.0, 1.0, pluginModulation.sources[static_cast<size_t> (hit.index)].sustain + delta);
+            break;
+        case PluginHitKind::EnvRelease:
+            if (sourceInRange (hit.index))
+                pluginModulation.sources[static_cast<size_t> (hit.index)].releaseS =
+                    juce::jlimit (0.0, 30.0, pluginModulation.sources[static_cast<size_t> (hit.index)].releaseS + delta * 2.0);
+            break;
+        case PluginHitKind::RouteAmount:
+            if (routeInRange (hit.index))
+            {
+                pluginModulation.routes[static_cast<size_t> (hit.index)].amount =
+                    juce::jlimit (-1.0f, 1.0f,
+                                  pluginModulation.routes[static_cast<size_t> (hit.index)].amount
+                                      + static_cast<float> (delta * 1.5));
+                selectedPluginRouteIndex = hit.index;
+            }
+            break;
+        case PluginHitKind::None:
+        case PluginHitKind::OpenEditor:
+        case PluginHitKind::AddLfo:
+        case PluginHitKind::AddEnvelope:
+        case PluginHitKind::SourceSelect:
+        case PluginHitKind::SourceEnable:
+        case PluginHitKind::SourceRemove:
+        case PluginHitKind::LfoShape:
+        case PluginHitKind::LfoRateMode:
+        case PluginHitKind::EnvTrigger:
+        case PluginHitKind::ParamAssign:
+        case PluginHitKind::RouteSelect:
+        case PluginHitKind::RouteEnable:
+        case PluginHitKind::RouteRemove:
+        case PluginHitKind::RouteSource:
+        case PluginHitKind::RouteParam:
+            return;
+    }
+
+    notifyPluginModulationChanged();
+}
+
+void SampleEditorComponent::notifyPluginModulationChanged()
+{
+    if (onPluginModulationChanged)
+        onPluginModulationChanged (currentInstrument, pluginModulation);
+    updatePluginParameterScrollbar();
+    repaint();
+}
+
+void SampleEditorComponent::selectPluginSource (int sourceIndex)
+{
+    selectedPluginSourceIndex = juce::jlimit (0, juce::jmax (0, static_cast<int> (pluginModulation.sources.size()) - 1),
+                                              sourceIndex);
+}
+
+void SampleEditorComponent::addPluginRouteForParam (int parameterIndex)
+{
+    if (parameterIndex < 0)
+        return;
+
+    if (pluginModulation.sources.empty())
+        selectedPluginSourceIndex = pluginModulation.addLfo();
+
+    selectPluginSource (selectedPluginSourceIndex);
+
+    for (int i = 0; i < static_cast<int> (pluginModulation.routes.size()); ++i)
+    {
+        const auto& route = pluginModulation.routes[static_cast<size_t> (i)];
+        if (route.sourceIndex == selectedPluginSourceIndex && route.parameterIndex == parameterIndex)
+        {
+            selectedPluginRouteIndex = i;
+            repaint();
+            return;
+        }
+    }
+
+    PluginModulationRoute route;
+    route.sourceIndex = selectedPluginSourceIndex;
+    route.parameterIndex = parameterIndex;
+    route.amount = 0.25f;
+
+    for (const auto& param : pluginParameterInfos)
+    {
+        if (param.index == parameterIndex)
+        {
+            route.parameterName = param.name;
+            break;
+        }
+    }
+
+    pluginModulation.routes.push_back (route);
+    selectedPluginRouteIndex = static_cast<int> (pluginModulation.routes.size()) - 1;
+    notifyPluginModulationChanged();
+}
+
+void SampleEditorComponent::showPluginRouteSourceMenu (int routeIndex)
+{
+    if (routeIndex < 0 || routeIndex >= static_cast<int> (pluginModulation.routes.size()))
+        return;
+
+    juce::PopupMenu menu;
+    for (int i = 0; i < static_cast<int> (pluginModulation.sources.size()); ++i)
+        menu.addItem (i + 1, getPluginSourceDisplayName (pluginModulation.sources[static_cast<size_t> (i)], i),
+                      true, i == pluginModulation.routes[static_cast<size_t> (routeIndex)].sourceIndex);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                        [this, routeIndex] (int result)
+                        {
+                            if (result <= 0 || routeIndex >= static_cast<int> (pluginModulation.routes.size()))
+                                return;
+                            pluginModulation.routes[static_cast<size_t> (routeIndex)].sourceIndex = result - 1;
+                            selectPluginSource (result - 1);
+                            selectedPluginRouteIndex = routeIndex;
+                            notifyPluginModulationChanged();
+                        });
+}
+
+void SampleEditorComponent::showPluginRouteParamMenu (int routeIndex)
+{
+    if (routeIndex < 0 || routeIndex >= static_cast<int> (pluginModulation.routes.size()))
+        return;
+
+    juce::PopupMenu menu;
+    for (int i = 0; i < static_cast<int> (pluginParameterInfos.size()); ++i)
+        menu.addItem (i + 1, pluginParameterInfos[static_cast<size_t> (i)].name,
+                      true, pluginParameterInfos[static_cast<size_t> (i)].index
+                                == pluginModulation.routes[static_cast<size_t> (routeIndex)].parameterIndex);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                        [this, routeIndex] (int result)
+                        {
+                            if (result <= 0
+                                || routeIndex >= static_cast<int> (pluginModulation.routes.size())
+                                || result - 1 >= static_cast<int> (pluginParameterInfos.size()))
+                                return;
+
+                            const auto& param = pluginParameterInfos[static_cast<size_t> (result - 1)];
+                            auto& route = pluginModulation.routes[static_cast<size_t> (routeIndex)];
+                            route.parameterIndex = param.index;
+                            route.parameterName = param.name;
+                            selectedPluginRouteIndex = routeIndex;
+                            notifyPluginModulationChanged();
+                        });
 }
 
 //==============================================================================
@@ -924,7 +1960,11 @@ void SampleEditorComponent::drawHeader (juce::Graphics& g, juce::Rectangle<int> 
     g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::textColourId));
 
     juce::String title;
-    if (displayMode == DisplayMode::InstrumentEdit)
+    if (showingPlugin)
+    {
+        title = "Plugin Instrument";
+    }
+    else if (displayMode == DisplayMode::InstrumentEdit)
     {
         if (editSubTab == EditSubTab::Parameters)
             title = "Instrument Parameters";
@@ -2133,7 +3173,7 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
 {
     if (currentInstrument < 0) return false;
 
-    // Plugin instrument mode: only handle Enter to open editor
+    // Plugin instrument mode: Enter opens the native plugin editor. The matrix is inline.
     if (showingPlugin)
     {
         if (key.getKeyCode() == juce::KeyPress::returnKey)
@@ -2537,10 +3577,18 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
 
     if (showingPlugin)
     {
-        if (event.getNumberOfClicks() >= 2 && event.mods.isLeftButtonDown())
+        if (event.mods.isLeftButtonDown())
         {
-            if (onOpenPluginEditorRequested)
-                onOpenPluginEditorRequested (currentInstrument);
+            auto hit = hitTestPluginPage (event.getPosition());
+            if (hit.kind == PluginHitKind::None && event.getNumberOfClicks() >= 2)
+            {
+                if (onOpenPluginEditorRequested)
+                    onOpenPluginEditorRequested (currentInstrument);
+            }
+            else
+            {
+                handlePluginHit (hit, event);
+            }
         }
         return;
     }
@@ -2903,7 +3951,15 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
 void SampleEditorComponent::mouseDrag (const juce::MouseEvent& event)
 {
     if (showingPlugin)
+    {
+        if (pluginDragHit.kind != PluginHitKind::None)
+        {
+            pluginModulation = pluginDragStartModulation;
+            const double delta = static_cast<double> (pluginDragStartY - event.position.y) / 180.0;
+            adjustPluginHitValue (pluginDragHit, delta);
+        }
         return;
+    }
 
     // ── Waveform panning ──
     if (isPanning)
@@ -3002,6 +4058,7 @@ void SampleEditorComponent::mouseUp (const juce::MouseEvent&)
         isPanning = false;
         isWaveformDragging = false;
         isDragging = false;
+        pluginDragHit = {};
         draggingMarker = MarkerType::None;
         draggingSliceIndex = -1;
         return;
@@ -3044,10 +4101,54 @@ void SampleEditorComponent::mouseUp (const juce::MouseEvent&)
 void SampleEditorComponent::mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel)
 {
     if (currentInstrument < 0) return;
-    if (showingPlugin) return;
 
     float delta = wheel.deltaY;
     if (std::abs (delta) < 0.001f) return;
+
+    if (showingPlugin)
+    {
+        auto hit = hitTestPluginPage (event.getPosition());
+        switch (hit.kind)
+        {
+            case PluginHitKind::LfoRateValue:
+            case PluginHitKind::EnvAttack:
+            case PluginHitKind::EnvDecay:
+            case PluginHitKind::EnvSustain:
+            case PluginHitKind::EnvRelease:
+            case PluginHitKind::RouteAmount:
+                adjustPluginHitValue (hit, static_cast<double> (delta) * 0.12);
+                return;
+            case PluginHitKind::None:
+            case PluginHitKind::OpenEditor:
+            case PluginHitKind::AddLfo:
+            case PluginHitKind::AddEnvelope:
+            case PluginHitKind::SourceSelect:
+            case PluginHitKind::SourceEnable:
+            case PluginHitKind::SourceRemove:
+            case PluginHitKind::LfoShape:
+            case PluginHitKind::LfoRateMode:
+            case PluginHitKind::EnvTrigger:
+            case PluginHitKind::ParamAssign:
+            case PluginHitKind::RouteSelect:
+            case PluginHitKind::RouteEnable:
+            case PluginHitKind::RouteRemove:
+            case PluginHitKind::RouteSource:
+            case PluginHitKind::RouteParam:
+                break;
+        }
+
+        if (getPluginParameterListBounds().contains (event.getPosition()))
+        {
+            pluginParameterWheelAccumulator += -static_cast<double> (delta) * kPluginParameterWheelRowsPerUnit;
+            const int rows = static_cast<int> (pluginParameterWheelAccumulator);
+            if (rows != 0)
+            {
+                scrollPluginParameterListBy (rows);
+                pluginParameterWheelAccumulator -= static_cast<double> (rows);
+            }
+        }
+        return;
+    }
 
     // ── Waveform zoom/scroll (InstrumentType page) ──
     if (displayMode == DisplayMode::InstrumentType)

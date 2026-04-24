@@ -123,6 +123,32 @@ bool remapInsertPluginIdAfterSlotRemoved (juce::String& pluginId, int trackIndex
     return false;
 }
 
+int getAutomationParameterPriority (const juce::String& name)
+{
+    auto lo = name.toLowerCase();
+    if (lo.contains ("macro") || lo.contains ("mmod")) return 0;
+    if (lo.contains ("cutoff") || (lo.contains ("filter") && lo.contains ("freq"))) return 1;
+    if (lo.contains ("reson") || lo.contains ("emphasis")) return 2;
+    if (lo.contains ("volume") || lo.contains ("gain") || lo.contains ("level")
+        || lo.contains ("amplitude") || lo.contains ("output")) return 3;
+    if (lo.contains ("mix") || lo.contains ("dry") || lo.contains ("wet")
+        || lo.contains ("blend")) return 4;
+    if (lo.contains ("pan") || lo.contains ("balance") || lo.contains ("width")
+        || lo.contains ("stereo") || lo.contains ("spread")) return 5;
+    if (lo.contains ("lfo") && (lo.contains ("rate") || lo.contains ("speed"))) return 6;
+    if (lo.contains ("attack") || lo.contains ("decay") || lo.contains ("sustain")
+        || lo.contains ("release") || lo.contains ("adsr")) return 7;
+    if (lo.contains ("pitch") || lo.contains ("tune") || lo.contains ("detune")
+        || lo.contains ("semi") || lo.contains ("coarse") || lo.contains ("fine")
+        || lo.contains ("transpose") || lo.contains ("cent")) return 8;
+    if (lo.contains ("drive") || lo.contains ("distort") || lo.contains ("saturat")
+        || lo.contains ("overdrive")) return 9;
+    if (lo.contains ("feedback") || (lo.contains ("delay") && lo.contains ("time"))) return 10;
+    if (lo.contains ("reverb") || lo.contains ("room") || lo.contains ("damping")) return 11;
+    if (lo.contains ("chorus") || lo.contains ("flanger") || lo.contains ("phaser")) return 12;
+    return 99;
+}
+
 constexpr int kMenuGenerateMidi = 30;
 constexpr int kMenuTransposeSelectionUpSemitone = 40;
 constexpr int kMenuTransposeSelectionDownSemitone = 41;
@@ -968,15 +994,6 @@ MainComponent::MainComponent()
         resized();
     };
 
-    toolbar->onToggleAutomation = [this]
-    {
-        automationPanelVisible = ! automationPanelVisible;
-        toolbar->setAutomationPanelVisible (automationPanelVisible);
-        if (automationPanelVisible)
-            refreshAutomationPanel();
-        resized();
-    };
-
     toolbar->onInstrumentDrag = [this] (int delta)
     {
         int inst = juce::jlimit (0, 255, trackerGrid->getCurrentInstrument() + delta);
@@ -1171,6 +1188,8 @@ MainComponent::MainComponent()
                                                         + " (owner track " + juce::String (cursorTrack + 1) + ")",
                                                         false, 3000);
                                 }
+
+                                focusContentForTab (activeTab);
                             });
     };
     instrumentPanel->onClearPluginInstrumentRequested = [this] (int inst)
@@ -1229,6 +1248,12 @@ MainComponent::MainComponent()
     sampleEditor->onOpenPluginEditorRequested = [this] (int inst)
     {
         trackerEngine.openPluginInstrumentEditor (inst);
+    };
+    sampleEditor->onPluginModulationChanged = [this] (int inst, const PluginInstrumentModulation& modulation)
+    {
+        trackerEngine.getPluginInstrumentModulation (inst) = modulation;
+        trackerEngine.notifyPluginInstrumentModulationChanged (inst);
+        markDirty();
     };
 
     // Create mixer component (hidden by default)
@@ -1593,10 +1618,15 @@ MainComponent::MainComponent()
             && track >= 0 && track < kNumTracks)
         {
             const bool enteringTrack = track != lastCursorInstrumentTrack;
-            const int instrument = PatternEditUtils::resolveCursorInstrument (
-                pat, row, track, trackerGrid->getCursorNoteLane(),
-                trackerGrid->getCurrentInstrument(), enteringTrack);
-            trackerGrid->setCurrentInstrument (instrument);
+            // Row-only movement should not steal the manually selected instrument
+            // from notes under the cursor. Sync only when entering another track.
+            if (enteringTrack)
+            {
+                const int instrument = PatternEditUtils::resolveCursorInstrument (
+                    pat, row, track, trackerGrid->getCursorNoteLane(),
+                    trackerGrid->getCurrentInstrument(), true);
+                trackerGrid->setCurrentInstrument (instrument);
+            }
         }
         lastCursorInstrumentTrack = track;
 
@@ -1715,6 +1745,13 @@ MainComponent::MainComponent()
     statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
     statusLabel.setFont (trackerLookAndFeel.getMonoFont (12.0f));
 
+    addAndMakeVisible (automationPanelButton);
+    automationPanelButton.setWantsKeyboardFocus (false);
+    automationPanelButton.setMouseClickGrabsKeyboardFocus (false);
+    automationPanelButton.setTooltip ("Toggle automation panel");
+    automationPanelButton.onClick = [this] { toggleAutomationPanel(); };
+    updateAutomationPanelButton();
+
     addAndMakeVisible (octaveLabel);
     octaveLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcccccc));
     octaveLabel.setFont (trackerLookAndFeel.getMonoFont (12.0f));
@@ -1819,6 +1856,7 @@ void MainComponent::resized()
     constexpr int kScaleStatusWidth = 180;
     constexpr int kScaleLabelWidth = 44;
     constexpr int kTimingStatusWidth = 150;
+    constexpr int kAutomationStatusWidth = 50;
 
     auto scaleStatus = statusBar.removeFromRight (juce::jmin (kScaleStatusWidth, statusBar.getWidth()));
     scaleStatus.removeFromLeft (juce::jmin (kStatusControlGap, scaleStatus.getWidth()));
@@ -1833,6 +1871,9 @@ void MainComponent::resized()
     auto timingStatus = statusBar.removeFromRight (juce::jmin (kTimingStatusWidth, statusBar.getWidth()));
     octaveLabel.setBounds (timingStatus.removeFromLeft (timingStatus.getWidth() / 2));
     bpmLabel.setBounds (timingStatus);
+
+    auto automationStatus = statusBar.removeFromLeft (juce::jmin (kAutomationStatusWidth, statusBar.getWidth()));
+    automationPanelButton.setBounds (automationStatus.reduced (0, 2).withTrimmedRight (8));
 
     statusLabel.setBounds (statusBar);
 
@@ -2212,11 +2253,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     // Cmd+Shift+B: toggle automation panel
     if (cmd && shift && textChar == 'B')
     {
-        automationPanelVisible = ! automationPanelVisible;
-        toolbar->setAutomationPanelVisible (automationPanelVisible);
-        if (automationPanelVisible)
-            refreshAutomationPanel();
-        resized();
+        toggleAutomationPanel();
         return true;
     }
 
@@ -2589,7 +2626,9 @@ void MainComponent::timerCallback()
 
         juce::String recordingPluginId;
         int recordingParamIdx = -1;
-        if (automationPanelVisible && automationPanel != nullptr && automationPanel->isRecording())
+        if (automationPanelVisible
+            && automationPanel != nullptr
+            && automationPanel->isAutomationRecordingActive())
         {
             recordingPluginId = automationPanel->getSelectedPluginId();
             recordingParamIdx = automationPanel->getSelectedParameterIndex();
@@ -2617,6 +2656,9 @@ void MainComponent::timerCallback()
                     automationPanel->recordParameterValue (playRow, currentValue);
                 }
             }
+
+            if (automationPanel->isTrackpadRecording() && playRow >= 0)
+                automationPanel->recordTrackpadValueAtRow (playRow);
         }
 
         // Follow mode
@@ -2758,7 +2800,7 @@ void MainComponent::updateToolbar()
     toolbar->setPlayState (trackerEngine.isPlaying());
     toolbar->setPlaybackMode (songMode);
 
-    toolbar->setAutomationPanelVisible (automationPanelVisible);
+    updateAutomationPanelButton();
     toolbar->setChordEntryState (chordEntryEnabled, getChordEntryToolbarLabel());
 
     // Show sample name for current instrument
@@ -4335,7 +4377,9 @@ void MainComponent::applyAutomationAtPlaybackPosition (int playPatternIndex, int
     const auto& automationData = patternData.getPattern (playPatternIndex).getAutomationData();
     juce::String recordingPluginId;
     int recordingParamIdx = -1;
-    if (automationPanelVisible && automationPanel != nullptr && automationPanel->isRecording())
+    if (automationPanelVisible
+        && automationPanel != nullptr
+        && automationPanel->isAutomationRecordingActive())
     {
         recordingPluginId = automationPanel->getSelectedPluginId();
         recordingParamIdx = automationPanel->getSelectedParameterIndex();
@@ -4816,7 +4860,43 @@ void MainComponent::updateSampleEditorForCurrentInstrument()
     if (trackerEngine.isPluginInstrument (inst))
     {
         auto& info = trackerEngine.getInstrumentSlotInfo (inst);
-        sampleEditor->setPluginInstrument (inst, info.pluginDescription.name, info.ownerTrack);
+        auto& modulation = trackerEngine.getPluginInstrumentModulation (inst);
+        const bool addedDefaultModulators = modulation.sources.empty();
+        modulation.ensureDefaultSources();
+        if (addedDefaultModulators)
+            trackerEngine.notifyPluginInstrumentModulationChanged (inst);
+
+        std::vector<PluginInstrumentParameterInfo> parameterInfos;
+        if (auto* audioPlugin = trackerEngine.getPluginInstrumentAudioPluginInstance (inst))
+        {
+            auto& pluginParams = audioPlugin->getParameters();
+            parameterInfos.reserve (static_cast<size_t> (pluginParams.size()));
+            for (int i = 0; i < pluginParams.size(); ++i)
+            {
+                if (pluginParams[i] == nullptr)
+                    continue;
+
+                PluginInstrumentParameterInfo paramInfo;
+                paramInfo.index = i;
+                paramInfo.name = pluginParams[i]->getName (40);
+                if (paramInfo.name.isEmpty())
+                    paramInfo.name = "Param " + juce::String (i);
+                parameterInfos.push_back (paramInfo);
+            }
+
+            std::stable_sort (parameterInfos.begin(), parameterInfos.end(),
+                              [&] (const PluginInstrumentParameterInfo& a,
+                                   const PluginInstrumentParameterInfo& b)
+                              {
+                                  const int pa = getAutomationParameterPriority (a.name);
+                                  const int pb = getAutomationParameterPriority (b.name);
+                                  if (pa != pb) return pa < pb;
+                                  return a.name.compareIgnoreCase (b.name) < 0;
+                              });
+        }
+
+        sampleEditor->setPluginInstrument (inst, info.pluginDescription.name, info.ownerTrack,
+                                           modulation, std::move (parameterInfos));
         return;
     }
 
@@ -4990,6 +5070,28 @@ void MainComponent::showAudioPluginSettings()
     opts.launchAsync();
 }
 
+void MainComponent::toggleAutomationPanel()
+{
+    automationPanelVisible = ! automationPanelVisible;
+    updateAutomationPanelButton();
+    if (automationPanelVisible)
+        refreshAutomationPanel();
+    resized();
+}
+
+void MainComponent::updateAutomationPanelButton()
+{
+    const auto textCol = trackerLookAndFeel.findColour (TrackerLookAndFeel::textColourId);
+    automationPanelButton.setColour (juce::TextButton::buttonColourId,
+                                     automationPanelVisible ? juce::Colour (0xff5c8abf)
+                                                            : juce::Colour (0xff3a3a3a));
+    automationPanelButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff5c8abf));
+    automationPanelButton.setColour (juce::TextButton::textColourOffId,
+                                     automationPanelVisible ? juce::Colours::white : textCol);
+    automationPanelButton.setColour (juce::TextButton::textColourOnId, juce::Colours::white);
+    automationPanelButton.repaint();
+}
+
 void MainComponent::refreshAutomationPanel (bool forcePopulate)
 {
     if (automationPanel == nullptr)
@@ -5151,35 +5253,6 @@ void MainComponent::populateAutomationPlugins()
         }
     }
 
-    // Sort parameters: already-automated first (marked with *), then by
-    // relevance tier (common automation targets), then alphabetical.
-    // Uses fast containsIgnoreCase instead of regex for speed.
-    auto getParamPriority = [] (const juce::String& name) -> int
-    {
-        auto lo = name.toLowerCase();
-        if (lo.contains ("macro") || lo.contains ("mmod"))                       return 0;
-        if (lo.contains ("cutoff") || (lo.contains ("filter") && lo.contains ("freq"))) return 1;
-        if (lo.contains ("reson") || lo.contains ("emphasis"))                   return 2;
-        if (lo.contains ("volume") || lo.contains ("gain") || lo.contains ("level")
-            || lo.contains ("amplitude") || lo.contains ("output"))              return 3;
-        if (lo.contains ("mix") || lo.contains ("dry") || lo.contains ("wet")
-            || lo.contains ("blend"))                                            return 4;
-        if (lo.contains ("pan") || lo.contains ("balance") || lo.contains ("width")
-            || lo.contains ("stereo") || lo.contains ("spread"))                 return 5;
-        if (lo.contains ("lfo") && (lo.contains ("rate") || lo.contains ("speed"))) return 6;
-        if (lo.contains ("attack") || lo.contains ("decay") || lo.contains ("sustain")
-            || lo.contains ("release") || lo.contains ("adsr"))                  return 7;
-        if (lo.contains ("pitch") || lo.contains ("tune") || lo.contains ("detune")
-            || lo.contains ("semi") || lo.contains ("coarse") || lo.contains ("fine")
-            || lo.contains ("transpose") || lo.contains ("cent"))                return 8;
-        if (lo.contains ("drive") || lo.contains ("distort") || lo.contains ("saturat")
-            || lo.contains ("overdrive"))                                        return 9;
-        if (lo.contains ("feedback") || (lo.contains ("delay") && lo.contains ("time"))) return 10;
-        if (lo.contains ("reverb") || lo.contains ("room") || lo.contains ("damping")) return 11;
-        if (lo.contains ("chorus") || lo.contains ("flanger") || lo.contains ("phaser")) return 12;
-        return 99;
-    };
-
     for (auto& pluginInfo : plugins)
     {
         std::stable_sort (pluginInfo.parameters.begin(), pluginInfo.parameters.end(),
@@ -5189,8 +5262,8 @@ void MainComponent::populateAutomationPlugins()
                               // Already-automated params always come first
                               if (a.hasAutomation != b.hasAutomation)
                                   return a.hasAutomation;
-                              int pa = getParamPriority (a.name);
-                              int pb = getParamPriority (b.name);
+                              int pa = getAutomationParameterPriority (a.name);
+                              int pb = getAutomationParameterPriority (b.name);
                               if (pa != pb) return pa < pb;
                               return a.name.compareIgnoreCase (b.name) < 0;
                           });
@@ -5207,7 +5280,7 @@ void MainComponent::navigateToAutomationParam (const juce::String& pluginId, int
     if (! automationPanelVisible)
     {
         automationPanelVisible = true;
-        toolbar->setAutomationPanelVisible (true);
+        updateAutomationPanelButton();
         if (automationPanel != nullptr)
         {
             auto& pat = patternData.getCurrentPattern();
