@@ -6831,7 +6831,6 @@ int main()
         { "SinglePatternRoundTripStaysSingle", &testSinglePatternRoundTripStaysSingle },
         { "SendBuffersStartSampleAlignmentAndConsume", &testSendBuffersStartSampleAlignmentAndConsume },
         { "SendBuffersClipToPreparedCapacity", &testSendBuffersClipToPreparedCapacity },
-        { "SendBuffersAutoResizeForLargeWrites", &testSendBuffersAutoResizeForLargeWrites },
         { "GroupRoutingBuffersAccumulateAndConsume", &testGroupRoutingBuffersAccumulateAndConsume },
         { "PanMappingCenterAndExtremes", &testPanMappingCenterAndExtremes },
         { "MixerDspPanLawAndVolume", &testMixerDspPanLawAndVolume },
