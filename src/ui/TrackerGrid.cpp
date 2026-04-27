@@ -181,6 +181,7 @@ void TrackerGrid::resized()
 void TrackerGrid::clearSelection()
 {
     hasSelection = false;
+    selectionUsesCellColumns = false;
     repaint();
 }
 
@@ -190,6 +191,234 @@ void TrackerGrid::getSelectionBounds (int& minRow, int& maxRow, int& minTrack, i
     maxRow = juce::jmax (selStartRow, selEndRow);
     minTrack = juce::jmin (selStartTrack, selEndTrack);
     maxTrack = juce::jmax (selStartTrack, selEndTrack);
+}
+
+int TrackerGrid::getCellColumnCountForVisualTrack (int visualIndex) const
+{
+    if (visualIndex < 0 || visualIndex >= getTotalVisualColumns())
+        return 0;
+
+    if (isMasterVisualColumn (visualIndex))
+        return trackLayout.getMasterFxLaneCount();
+
+    const int track = trackLayout.visualToPhysical (visualIndex);
+    return trackLayout.getTrackNoteLaneCount (track) + trackLayout.getTrackFxLaneCount (track);
+}
+
+int TrackerGrid::getTotalCellColumnCount() const
+{
+    int count = 0;
+    for (int vi = 0; vi < getTotalVisualColumns(); ++vi)
+        count += getCellColumnCountForVisualTrack (vi);
+    return count;
+}
+
+int TrackerGrid::getFirstCellColumnForVisualTrack (int visualIndex) const
+{
+    visualIndex = juce::jlimit (0, getTotalVisualColumns() - 1, visualIndex);
+
+    int column = 0;
+    for (int vi = 0; vi < visualIndex; ++vi)
+        column += getCellColumnCountForVisualTrack (vi);
+
+    return column;
+}
+
+int TrackerGrid::getLastCellColumnForVisualTrack (int visualIndex) const
+{
+    const int first = getFirstCellColumnForVisualTrack (visualIndex);
+    return first + juce::jmax (0, getCellColumnCountForVisualTrack (visualIndex) - 1);
+}
+
+int TrackerGrid::getCellColumnForHit (int visualTrack, SubColumn subCol, int fxLane, int noteLane) const
+{
+    const int first = getFirstCellColumnForVisualTrack (visualTrack);
+    if (isMasterVisualColumn (visualTrack))
+        return first + juce::jlimit (0, trackLayout.getMasterFxLaneCount() - 1, fxLane);
+
+    const int track = trackLayout.visualToPhysical (visualTrack);
+    const int noteLanes = trackLayout.getTrackNoteLaneCount (track);
+    if (subCol == SubColumn::FX)
+        return first + noteLanes + juce::jlimit (0, trackLayout.getTrackFxLaneCount (track) - 1, fxLane);
+
+    return first + juce::jlimit (0, noteLanes - 1, noteLane);
+}
+
+int TrackerGrid::getCellColumnForCursor() const
+{
+    const int visualTrack = trackToVisualIndex (cursorTrack);
+    return getCellColumnForHit (visualTrack, cursorSubColumn, cursorFxLane, cursorNoteLane);
+}
+
+int TrackerGrid::cellColumnAtPixel (int pixelX) const
+{
+    const int totalColumns = getTotalCellColumnCount();
+    if (totalColumns <= 0)
+        return 0;
+
+    const int visualTrack = juce::jlimit (0, getTotalVisualColumns() - 1, visualTrackAtPixel (pixelX));
+    const int first = getFirstCellColumnForVisualTrack (visualTrack);
+    const int trackPixel = pixelX - getTrackXOffset (visualTrack) - kCellPadding;
+
+    if (isMasterVisualColumn (visualTrack))
+    {
+        const int lane = trackPixel / (kFxWidth + kSubColSpace);
+        return juce::jlimit (0, totalColumns - 1,
+                             first + juce::jlimit (0, trackLayout.getMasterFxLaneCount() - 1, lane));
+    }
+
+    const int track = trackLayout.visualToPhysical (visualTrack);
+    const int noteLanes = trackLayout.getTrackNoteLaneCount (track);
+    const int noteLaneWidth = getVisibleNoteLaneWidth();
+    const int totalNoteLaneWidth = noteLanes * noteLaneWidth;
+
+    if (trackPixel < totalNoteLaneWidth)
+    {
+        const int lane = trackPixel / noteLaneWidth;
+        return juce::jlimit (0, totalColumns - 1, first + juce::jlimit (0, noteLanes - 1, lane));
+    }
+
+    const int lane = (trackPixel - totalNoteLaneWidth) / (kFxWidth + kSubColSpace);
+    return juce::jlimit (0, totalColumns - 1,
+                         first + noteLanes + juce::jlimit (0, trackLayout.getTrackFxLaneCount (track) - 1, lane));
+}
+
+TrackerGrid::CellColumnRef TrackerGrid::getCellColumnRef (int cellColumn) const
+{
+    CellColumnRef ref;
+    const int totalColumns = getTotalCellColumnCount();
+    cellColumn = juce::jlimit (0, juce::jmax (0, totalColumns - 1), cellColumn);
+
+    int first = 0;
+    for (int vi = 0; vi < getTotalVisualColumns(); ++vi)
+    {
+        const int count = getCellColumnCountForVisualTrack (vi);
+        if (cellColumn >= first + count)
+        {
+            first += count;
+            continue;
+        }
+
+        ref.visualTrack = vi;
+        ref.track = visualToTrackIndex (vi);
+        ref.lane = cellColumn - first;
+
+        if (isMasterVisualColumn (vi))
+        {
+            ref.kind = CellColumnKind::MasterFxLane;
+            return ref;
+        }
+
+        const int noteLanes = trackLayout.getTrackNoteLaneCount (ref.track);
+        if (ref.lane < noteLanes)
+        {
+            ref.kind = CellColumnKind::NoteLane;
+            return ref;
+        }
+
+        ref.kind = CellColumnKind::FxLane;
+        ref.lane -= noteLanes;
+        return ref;
+    }
+
+    ref.visualTrack = getTotalVisualColumns() - 1;
+    ref.track = visualToTrackIndex (ref.visualTrack);
+    ref.kind = isMasterTrack (ref.track) ? CellColumnKind::MasterFxLane : CellColumnKind::FxLane;
+    ref.lane = 0;
+    return ref;
+}
+
+juce::Rectangle<int> TrackerGrid::getCellColumnBounds (int row, int cellColumn) const
+{
+    const auto ref = getCellColumnRef (cellColumn);
+    int x = kRowNumberWidth + getTrackXOffset (ref.visualTrack) + kCellPadding;
+    int width = kFxWidth;
+
+    if (ref.kind == CellColumnKind::NoteLane)
+    {
+        x += ref.lane * getVisibleNoteLaneWidth();
+        width = getVisibleNoteLaneWidth();
+    }
+    else if (ref.kind == CellColumnKind::FxLane)
+    {
+        const int noteLanes = trackLayout.getTrackNoteLaneCount (ref.track);
+        x += noteLanes * getVisibleNoteLaneWidth() + ref.lane * (kFxWidth + kSubColSpace);
+    }
+    else
+    {
+        x += ref.lane * (kFxWidth + kSubColSpace);
+    }
+
+    const int y = getEffectiveHeaderHeight() + (row - scrollOffset) * kRowHeight;
+    return { x, y, width, kRowHeight };
+}
+
+bool TrackerGrid::hitTestGridCell (int x, int y, int& outRow, int& outCellColumn) const
+{
+    int track = 0, fxLane = 0, noteLane = 0;
+    SubColumn subCol = SubColumn::Note;
+    if (! hitTestGrid (x, y, outRow, track, subCol, fxLane, noteLane))
+        return false;
+
+    outCellColumn = getCellColumnForHit (trackToVisualIndex (track), subCol, fxLane, noteLane);
+    return true;
+}
+
+void TrackerGrid::updateSelectionTrackBoundsFromCellColumns()
+{
+    const int totalColumns = getTotalCellColumnCount();
+    if (totalColumns <= 0)
+    {
+        selStartTrack = selEndTrack = 0;
+        return;
+    }
+
+    const int start = juce::jlimit (0, totalColumns - 1, selStartCellColumn);
+    const int end = juce::jlimit (0, totalColumns - 1, selEndCellColumn);
+    selStartTrack = getCellColumnRef (start).visualTrack;
+    selEndTrack = getCellColumnRef (end).visualTrack;
+}
+
+void TrackerGrid::setPreciseSelectionEnd (int row, int cellColumn)
+{
+    selEndRow = row;
+    selEndCellColumn = cellColumn;
+    updateSelectionTrackBoundsFromCellColumns();
+}
+
+void TrackerGrid::getSelectionCellColumnBounds (int& minRow, int& maxRow, int& minCellColumn, int& maxCellColumn) const
+{
+    minRow = juce::jmin (selStartRow, selEndRow);
+    maxRow = juce::jmax (selStartRow, selEndRow);
+
+    if (selectionUsesCellColumns)
+    {
+        minCellColumn = juce::jmin (selStartCellColumn, selEndCellColumn);
+        maxCellColumn = juce::jmax (selStartCellColumn, selEndCellColumn);
+        return;
+    }
+
+    int minTrack, maxTrack;
+    getSelectionBounds (minRow, maxRow, minTrack, maxTrack);
+    minTrack = juce::jlimit (0, getTotalVisualColumns() - 1, minTrack);
+    maxTrack = juce::jlimit (0, getTotalVisualColumns() - 1, maxTrack);
+    minCellColumn = getFirstCellColumnForVisualTrack (minTrack);
+    maxCellColumn = getLastCellColumnForVisualTrack (maxTrack);
+}
+
+bool TrackerGrid::isCellInCurrentSelection (int row, int visualTrack, int cellColumn) const
+{
+    int minRow, maxRow, minTrack, maxTrack;
+    getSelectionBounds (minRow, maxRow, minTrack, maxTrack);
+    if (row < minRow || row > maxRow)
+        return false;
+
+    if (! selectionUsesCellColumns)
+        return visualTrack >= minTrack && visualTrack <= maxTrack;
+
+    int minCellColumn, maxCellColumn;
+    getSelectionCellColumnBounds (minRow, maxRow, minCellColumn, maxCellColumn);
+    return cellColumn >= minCellColumn && cellColumn <= maxCellColumn;
 }
 
 //==============================================================================
@@ -424,9 +653,11 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
                             const std::vector<int>& laneTrailInstruments)
 {
     int noteLaneCount = trackLayout.getTrackNoteLaneCount (track);
+    const bool preciseSelectionActive = hasSelection && selectionUsesCellColumns;
+    const bool wholeCellCursor = isCursor && ! preciseSelectionActive;
 
     auto instrumentTrailColour = getInstrumentTrailColour (laneTrailInstruments);
-    fillCellBackground (g, x, y, width, isCursor, isCurrentRow, isPlaybackRow,
+    fillCellBackground (g, x, y, width, wholeCellCursor, isCurrentRow && ! preciseSelectionActive, isPlaybackRow,
                         instrumentTrailColour, instrumentTrailColour.getAlpha() > 0);
 
     // Draw sub-columns with distinct colors
@@ -446,25 +677,27 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
                                                      : juce::Colours::transparentBlack;
 
         // Note sub-column
+        const bool isNoteCursor = isCursor && cursorSubColumn == SubColumn::Note && cursorNoteLane == nl;
         juce::String noteStr = noteSlot.hasNote() ? noteToString (noteSlot.note) : "---";
-        auto noteColour = isCursor ? juce::Colours::white
-                                   : (noteSlot.hasNote() && hasLaneColour
-                                          ? laneColour
-                                          : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
+        auto noteColour = (wholeCellCursor || isNoteCursor) ? juce::Colours::white
+                                                            : (noteSlot.hasNote() && hasLaneColour
+                                                                   ? laneColour
+                                                                   : lookAndFeel.findColour (TrackerLookAndFeel::noteColourId));
 
-        if (isCursor && cursorSubColumn == SubColumn::Note && cursorNoteLane == nl)
+        if (isNoteCursor)
             drawCursorSubColumnHighlight (g, textX - 1, y, kNoteWidth + 2);
         g.setColour (noteColour);
         g.drawText (noteStr, textX, y, kNoteWidth, kRowHeight, juce::Justification::centredLeft);
         textX += kNoteWidth + kSubColSpace;
 
         // Instrument sub-column
+        const bool isInstrumentCursor = isCursor && cursorSubColumn == SubColumn::Instrument && cursorNoteLane == nl;
         juce::String instStr = noteSlot.instrument >= 0 ? juce::String::formatted ("%02X", noteSlot.instrument) : "..";
-        auto instColour = isCursor ? juce::Colours::white
-                                   : (noteSlot.instrument >= 0 && hasLaneColour
-                                          ? laneColour
-                                          : lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId));
-        if (isCursor && cursorSubColumn == SubColumn::Instrument && cursorNoteLane == nl)
+        auto instColour = (wholeCellCursor || isInstrumentCursor) ? juce::Colours::white
+                                                                  : (noteSlot.instrument >= 0 && hasLaneColour
+                                                                         ? laneColour
+                                                                         : lookAndFeel.findColour (TrackerLookAndFeel::instrumentColourId));
+        if (isInstrumentCursor)
             drawCursorSubColumnHighlight (g, textX - 1, y, kInstWidth + 2);
         g.setColour (instColour);
         g.drawText (instStr, textX, y, kInstWidth, kRowHeight, juce::Justification::centredLeft);
@@ -472,9 +705,11 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
 
         if (velocityLanesVisible)
         {
+            const bool isVolumeCursor = isCursor && cursorSubColumn == SubColumn::Volume && cursorNoteLane == nl;
             juce::String volStr = noteSlot.volume >= 0 ? juce::String::formatted ("%02X", noteSlot.volume) : "..";
-            auto volColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
-            if (isCursor && cursorSubColumn == SubColumn::Volume && cursorNoteLane == nl)
+            auto volColour = (wholeCellCursor || isVolumeCursor) ? juce::Colours::white
+                                                                 : lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
+            if (isVolumeCursor)
                 drawCursorSubColumnHighlight (g, textX - 1, y, kVolWidth + 2);
             g.setColour (volColour);
             g.drawText (volStr, textX, y, kVolWidth, kRowHeight, juce::Justification::centredLeft);
@@ -483,7 +718,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
     }
 
     // FX sub-columns (one or more lanes)
-    auto fxColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto fxColour = wholeCellCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
 
     for (int fxLane = 0; fxLane < fxLaneCount; ++fxLane)
     {
@@ -496,9 +731,10 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
                 fxStr = juce::String::formatted ("%c%02X", letter, slot.fxParam);
         }
 
-        if (isCursor && cursorSubColumn == SubColumn::FX && cursorFxLane == fxLane)
+        const bool isFxCursor = isCursor && cursorSubColumn == SubColumn::FX && cursorFxLane == fxLane;
+        if (isFxCursor)
             drawCursorSubColumnHighlight (g, textX - 1, y, kFxWidth + 2);
-        g.setColour (fxColour);
+        g.setColour (isFxCursor ? juce::Colours::white : fxColour);
         g.drawText (fxStr, textX, y, kFxWidth, kRowHeight, juce::Justification::centredLeft);
         textX += kFxWidth + kSubColSpace;
     }
@@ -507,11 +743,13 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
 void TrackerGrid::drawMasterCell (juce::Graphics& g, const Pattern& pat, int row, int x, int y, int width,
                                   bool isCursor, bool isCurrentRow, bool isPlaybackRow)
 {
-    fillCellBackground (g, x, y, width, isCursor, isCurrentRow, isPlaybackRow,
+    const bool preciseSelectionActive = hasSelection && selectionUsesCellColumns;
+    const bool wholeCellCursor = isCursor && ! preciseSelectionActive;
+    fillCellBackground (g, x, y, width, wholeCellCursor, isCurrentRow && ! preciseSelectionActive, isPlaybackRow,
                         juce::Colours::transparentBlack, false);
 
     g.setFont (lookAndFeel.getMonoFont (12.0f));
-    auto fxColour = isCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto fxColour = wholeCellCursor ? juce::Colours::white : lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
 
     int textX = x + kCellPadding;
     int laneCount = trackLayout.getMasterFxLaneCount();
@@ -526,10 +764,11 @@ void TrackerGrid::drawMasterCell (juce::Graphics& g, const Pattern& pat, int row
                 fxStr = juce::String::formatted ("%c%02X", letter, slot.fxParam);
         }
 
-        if (isCursor && cursorSubColumn == SubColumn::FX && cursorFxLane == lane)
+        const bool isFxCursor = isCursor && cursorSubColumn == SubColumn::FX && cursorFxLane == lane;
+        if (isFxCursor)
             drawCursorSubColumnHighlight (g, textX - 1, y, kFxWidth + 2);
 
-        g.setColour (fxColour);
+        g.setColour (isFxCursor ? juce::Colours::white : fxColour);
         g.drawText (fxStr, textX, y, kFxWidth, kRowHeight, juce::Justification::centredLeft);
         textX += kFxWidth + kSubColSpace;
     }
@@ -659,6 +898,38 @@ void TrackerGrid::drawCursorSubColumnHighlight (juce::Graphics& g, int x, int y,
 void TrackerGrid::drawSelection (juce::Graphics& g)
 {
     if (! hasSelection) return;
+
+    if (selectionUsesCellColumns)
+    {
+        int minRow, maxRow, minCellColumn, maxCellColumn;
+        getSelectionCellColumnBounds (minRow, maxRow, minCellColumn, maxCellColumn);
+
+        const int totalColumns = getTotalCellColumnCount();
+        int visibleTracks = getVisibleTrackCount();
+
+        for (int row = minRow; row <= maxRow; ++row)
+        {
+            if (row < scrollOffset || row >= scrollOffset + getVisibleRowCount())
+                continue;
+
+            for (int column = minCellColumn; column <= maxCellColumn; ++column)
+            {
+                if (column < 0 || column >= totalColumns)
+                    continue;
+
+                const auto ref = getCellColumnRef (column);
+                const int screenVi = ref.visualTrack - horizontalScrollOffset;
+                if (screenVi < 0 || screenVi >= visibleTracks)
+                    continue;
+
+                auto rect = getCellColumnBounds (row, column);
+                g.setColour (lookAndFeel.findColour (TrackerLookAndFeel::selectionColourId));
+                g.fillRect (rect);
+            }
+        }
+
+        return;
+    }
 
     int minRow, maxRow, minViTrack, maxViTrack;
     getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
@@ -986,8 +1257,10 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
     layoutDragSnapshotValid = false;
     dragMoveRow = -1;
     dragMoveTrack = -1;
+    dragMoveCellColumn = -1;
     dragGrabRowOffset = 0;
     dragGrabTrackOffset = 0;
+    dragGrabCellColumnOffset = 0;
 
     int effectiveHeaderH = getEffectiveHeaderHeight();
 
@@ -1018,6 +1291,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
             selStartTrack = visualIndex;
             selEndTrack = visualIndex;
             hasSelection = true;
+            selectionUsesCellColumns = false;
             cursorTrack = physTrack;
             cursorRow = 0;
             cursorSubColumn = SubColumn::FX;
@@ -1116,6 +1390,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
                 selStartTrack = gFirst;
                 selEndTrack = gLast;
                 hasSelection = true;
+                selectionUsesCellColumns = false;
                 cursorTrack = physTrack;
                 cursorRow = 0;
 
@@ -1139,6 +1414,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
             selEndTrack = visualIndex;
             selStartRow = 0;
             selEndRow = pat.numRows - 1;
+            selectionUsesCellColumns = false;
             cursorTrack = physTrack;
             repaint();
             if (onCursorMoved) onCursorMoved();
@@ -1152,6 +1428,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
         selStartTrack = visualIndex;
         selEndTrack = visualIndex;
         hasSelection = true;
+        selectionUsesCellColumns = false;
         cursorTrack = physTrack;
         cursorRow = 0;
 
@@ -1185,6 +1462,7 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
             selStartTrack = 0;
             selEndTrack = getTotalVisualColumns() - 1;
             hasSelection = true;
+            selectionUsesCellColumns = false;
             cursorRow = clickedRow;
             cursorTrack = 0;
             isDraggingSelection = true;
@@ -1208,45 +1486,59 @@ void TrackerGrid::mouseDown (const juce::MouseEvent& event)
             return;
         }
 
-        // Check if clicking inside an existing selection to initiate drag-move
-        // Selection bounds are in visual space
+        const int cellColumn = getCellColumnForHit (viTrack, subCol, fxLane, noteLane);
+
+        // Check if clicking inside an existing selection to initiate drag-move.
         if (hasSelection && ! event.mods.isShiftDown())
         {
-            int minRow, maxRow, minViTrack, maxViTrack;
-            getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
-            if (maxViTrack >= getRegularVisualColumnCount())
-                return;
-            if (row >= minRow && row <= maxRow && viTrack >= minViTrack && viTrack <= maxViTrack)
+            if (isCellInCurrentSelection (row, viTrack, cellColumn))
             {
+                int minRow, maxRow, minViTrack, maxViTrack;
+                getSelectionBounds (minRow, maxRow, minViTrack, maxViTrack);
+                int minCellColumn, maxCellColumn;
+                getSelectionCellColumnBounds (minRow, maxRow, minCellColumn, maxCellColumn);
+
+                if (! selectionUsesCellColumns && maxViTrack >= getRegularVisualColumnCount())
+                    return;
+
                 isDraggingBlock = true;
                 dragMoveRow = row;
                 dragMoveTrack = viTrack;
+                dragMoveCellColumn = cellColumn;
                 dragGrabRowOffset = row - minRow;
                 dragGrabTrackOffset = viTrack - minViTrack;
+                dragGrabCellColumnOffset = cellColumn - minCellColumn;
                 return;
             }
         }
 
         if (event.mods.isShiftDown())
         {
-            // Extend selection (visual space)
+            // Extend selection in lane-cell space for regular grid cells.
             if (! hasSelection)
             {
                 selStartRow = cursorRow;
                 selStartTrack = trackToVisualIndex (cursorTrack);
+                selStartCellColumn = getCellColumnForCursor();
             }
             selEndRow = row;
             selEndTrack = viTrack;
+            selEndCellColumn = cellColumn;
             hasSelection = true;
+            selectionUsesCellColumns = true;
+            updateSelectionTrackBoundsFromCellColumns();
         }
         else
         {
-            // Start a new drag selection (visual space)
+            // Start a new drag selection in lane-cell space.
             clearSelection();
             selStartRow = row;
             selStartTrack = viTrack;
             selEndRow = row;
             selEndTrack = viTrack;
+            selStartCellColumn = cellColumn;
+            selEndCellColumn = cellColumn;
+            selectionUsesCellColumns = true;
             isDraggingSelection = true;
         }
 
@@ -1430,8 +1722,19 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
         int effectiveHeaderH = getEffectiveHeaderHeight();
         int visibleRows = getVisibleRowCount();
         int visibleTracks = getVisibleTrackCount();
+        int cellColumn = 0;
 
-        if (hitTestGrid (event.x, event.y, row, track, subCol))
+        if (selectionUsesCellColumns && hitTestGridCell (event.x, event.y, row, cellColumn))
+        {
+            setPreciseSelectionEnd (row, cellColumn);
+            const auto ref = getCellColumnRef (cellColumn);
+            cursorRow = row;
+            cursorTrack = ref.track;
+            cursorNoteLane = ref.kind == CellColumnKind::NoteLane ? ref.lane : 0;
+            cursorFxLane = ref.kind == CellColumnKind::NoteLane ? 0 : ref.lane;
+            cursorSubColumn = ref.kind == CellColumnKind::NoteLane ? SubColumn::Note : SubColumn::FX;
+        }
+        else if (! selectionUsesCellColumns && hitTestGrid (event.x, event.y, row, track, subCol))
         {
             selEndRow = row;
             selEndTrack = trackToVisualIndex (track);
@@ -1443,16 +1746,28 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
             // Auto-scroll when dragging past edges
             int trackPixel = event.x - kRowNumberWidth;
             int viFromPixel = visualTrackAtPixel (trackPixel);
+            int cellColumnFromPixel = cellColumnAtPixel (trackPixel);
             int rowFromPixel = (event.y - effectiveHeaderH) / kRowHeight + scrollOffset;
 
             // Clamp to valid range
             viFromPixel = juce::jlimit (0, getTotalVisualColumns() - 1, viFromPixel);
+            cellColumnFromPixel = juce::jlimit (0, juce::jmax (0, getTotalCellColumnCount() - 1), cellColumnFromPixel);
             rowFromPixel = juce::jlimit (0, pat.numRows - 1, rowFromPixel);
 
             selEndRow = rowFromPixel;
-            selEndTrack = viFromPixel;
+            if (selectionUsesCellColumns)
+                setPreciseSelectionEnd (rowFromPixel, cellColumnFromPixel);
+            else
+                selEndTrack = viFromPixel;
+            const auto ref = selectionUsesCellColumns ? getCellColumnRef (cellColumnFromPixel) : CellColumnRef {};
             cursorRow = rowFromPixel;
-            cursorTrack = visualToTrackIndex (viFromPixel);
+            cursorTrack = selectionUsesCellColumns ? ref.track : visualToTrackIndex (viFromPixel);
+            if (selectionUsesCellColumns)
+            {
+                cursorNoteLane = ref.kind == CellColumnKind::NoteLane ? ref.lane : 0;
+                cursorFxLane = ref.kind == CellColumnKind::NoteLane ? 0 : ref.lane;
+                cursorSubColumn = ref.kind == CellColumnKind::NoteLane ? SubColumn::Note : SubColumn::FX;
+            }
 
             // Scroll horizontally
             if (event.x > getWidth() - 10 && horizontalScrollOffset + visibleTracks < getTotalVisualColumns())
@@ -1467,20 +1782,235 @@ void TrackerGrid::mouseDrag (const juce::MouseEvent& event)
                 scrollOffset--;
         }
 
-        if (selStartRow != selEndRow || selStartTrack != selEndTrack)
+        if (selStartRow != selEndRow
+            || (! selectionUsesCellColumns && selStartTrack != selEndTrack)
+            || (selectionUsesCellColumns && selStartCellColumn != selEndCellColumn))
             hasSelection = true;
 
         repaint();
     }
     else if (isDraggingBlock)
     {
-        if (hitTestGrid (event.x, event.y, row, track, subCol))
+        int cellColumn = 0;
+        if (selectionUsesCellColumns && hitTestGridCell (event.x, event.y, row, cellColumn))
+        {
+            dragMoveRow = row;
+            dragMoveCellColumn = cellColumn;
+            dragMoveTrack = getCellColumnRef (cellColumn).visualTrack;
+            repaint();
+        }
+        else if (! selectionUsesCellColumns && hitTestGrid (event.x, event.y, row, track, subCol))
         {
             dragMoveRow = row;
             dragMoveTrack = trackToVisualIndex (track);
             repaint();
         }
     }
+}
+
+bool TrackerGrid::movePreciseSelection (int destRow, int destCellColumn)
+{
+    if (! hasSelection || ! selectionUsesCellColumns)
+        return false;
+
+    auto& pat = pattern.getCurrentPattern();
+    const auto& readPat = static_cast<const Pattern&> (pat);
+    int minRow, maxRow, minCellColumn, maxCellColumn;
+    getSelectionCellColumnBounds (minRow, maxRow, minCellColumn, maxCellColumn);
+
+    const int totalColumns = getTotalCellColumnCount();
+    const int rowCount = maxRow - minRow + 1;
+    const int columnCount = maxCellColumn - minCellColumn + 1;
+    if (rowCount <= 0 || columnCount <= 0 || totalColumns <= 0)
+        return false;
+
+    const int rowOffset = destRow - minRow;
+    const int columnOffset = destCellColumn - minCellColumn;
+    if (rowOffset == 0 && columnOffset == 0)
+        return false;
+
+    if (destCellColumn < 0 || destCellColumn + columnCount > totalColumns)
+        return false;
+
+    struct CellValue
+    {
+        CellColumnKind kind = CellColumnKind::NoteLane;
+        NoteSlot noteSlot;
+        FxSlot fxSlot;
+    };
+
+    std::vector<std::vector<CellValue>> buffer (static_cast<size_t> (rowCount),
+                                                std::vector<CellValue> (static_cast<size_t> (columnCount)));
+
+    for (int r = 0; r < rowCount; ++r)
+    {
+        const int sourceRow = minRow + r;
+        for (int c = 0; c < columnCount; ++c)
+        {
+            const auto sourceRef = getCellColumnRef (minCellColumn + c);
+            auto& value = buffer[static_cast<size_t> (r)][static_cast<size_t> (c)];
+            value.kind = sourceRef.kind;
+
+            if (sourceRef.kind == CellColumnKind::NoteLane)
+                value.noteSlot = readPat.getCell (sourceRow, sourceRef.track).getNoteLane (sourceRef.lane);
+            else if (sourceRef.kind == CellColumnKind::FxLane)
+                value.fxSlot = readPat.getCell (sourceRow, sourceRef.track).getFxSlot (sourceRef.lane);
+            else
+                value.fxSlot = readPat.getMasterFxSlot (sourceRow, sourceRef.lane);
+        }
+    }
+
+    auto isFxKind = [] (CellColumnKind kind)
+    {
+        return kind == CellColumnKind::FxLane || kind == CellColumnKind::MasterFxLane;
+    };
+
+    for (int c = 0; c < columnCount; ++c)
+    {
+        const auto sourceRef = getCellColumnRef (minCellColumn + c);
+        const auto destRef = getCellColumnRef (destCellColumn + c);
+        const bool compatible = (sourceRef.kind == CellColumnKind::NoteLane && destRef.kind == CellColumnKind::NoteLane)
+                             || (isFxKind (sourceRef.kind) && isFxKind (destRef.kind));
+        if (! compatible)
+            return false;
+    }
+
+    std::map<std::pair<int, int>, std::pair<Cell, Cell>> cellMap;
+    std::map<std::pair<int, int>, std::pair<FxSlot, FxSlot>> masterFxMap;
+
+    auto getEditableCell = [&] (int row, int track) -> Cell&
+    {
+        const auto key = std::make_pair (row, track);
+        auto it = cellMap.find (key);
+        if (it == cellMap.end())
+        {
+            const auto oldCell = pat.getCell (row, track);
+            it = cellMap.emplace (key, std::make_pair (oldCell, oldCell)).first;
+        }
+
+        return it->second.second;
+    };
+
+    auto getEditableMasterFx = [&] (int row, int lane) -> FxSlot&
+    {
+        const auto key = std::make_pair (row, lane);
+        auto it = masterFxMap.find (key);
+        if (it == masterFxMap.end())
+        {
+            const auto oldSlot = readPat.getMasterFxSlot (row, lane);
+            it = masterFxMap.emplace (key, std::make_pair (oldSlot, oldSlot)).first;
+        }
+
+        return it->second.second;
+    };
+
+    auto setNoteSlot = [] (Cell& cell, int lane, const NoteSlot& slot)
+    {
+        if (! PatternEditUtils::sameNoteSlot (cell.getNoteLane (lane), slot))
+            cell.setNoteLane (lane, slot);
+    };
+
+    auto setFxSlot = [] (Cell& cell, int lane, const FxSlot& slot)
+    {
+        if (! sameFxSlot (static_cast<const Cell&> (cell).getFxSlot (lane), slot))
+        {
+            cell.ensureFxSlots (lane + 1);
+            cell.getFxSlot (lane) = slot;
+        }
+    };
+
+    for (int r = 0; r < rowCount; ++r)
+    {
+        const int sourceRow = minRow + r;
+        for (int c = 0; c < columnCount; ++c)
+        {
+            const auto sourceRef = getCellColumnRef (minCellColumn + c);
+            if (sourceRef.kind == CellColumnKind::NoteLane)
+            {
+                Cell& cell = getEditableCell (sourceRow, sourceRef.track);
+                setNoteSlot (cell, sourceRef.lane, {});
+            }
+            else if (sourceRef.kind == CellColumnKind::FxLane)
+            {
+                Cell& cell = getEditableCell (sourceRow, sourceRef.track);
+                setFxSlot (cell, sourceRef.lane, {});
+            }
+            else
+            {
+                getEditableMasterFx (sourceRow, sourceRef.lane).clear();
+            }
+        }
+    }
+
+    for (int r = 0; r < rowCount; ++r)
+    {
+        const int targetRow = destRow + r;
+        if (targetRow < 0 || targetRow >= pat.numRows)
+            continue;
+
+        for (int c = 0; c < columnCount; ++c)
+        {
+            const auto destRef = getCellColumnRef (destCellColumn + c);
+            const auto& value = buffer[static_cast<size_t> (r)][static_cast<size_t> (c)];
+
+            if (destRef.kind == CellColumnKind::NoteLane)
+            {
+                Cell& cell = getEditableCell (targetRow, destRef.track);
+                setNoteSlot (cell, destRef.lane, value.noteSlot);
+            }
+            else if (destRef.kind == CellColumnKind::FxLane)
+            {
+                Cell& cell = getEditableCell (targetRow, destRef.track);
+                setFxSlot (cell, destRef.lane, value.fxSlot);
+            }
+            else
+            {
+                FxSlot& slot = getEditableMasterFx (targetRow, destRef.lane);
+                if (! sameFxSlot (slot, value.fxSlot))
+                    slot = value.fxSlot;
+            }
+        }
+    }
+
+    std::vector<MultiCellEditAction::CellRecord> cellRecords;
+    std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords;
+
+    for (auto& [key, values] : cellMap)
+    {
+        if (sameCell (values.first, values.second))
+            continue;
+
+        cellRecords.push_back ({ key.first, key.second, values.first, values.second });
+    }
+
+    for (auto& [key, values] : masterFxMap)
+    {
+        if (sameFxSlot (values.first, values.second))
+            continue;
+
+        masterFxRecords.push_back ({ key.first, key.second, values.first, values.second });
+    }
+
+    const bool changed = applyPatternEdit (pattern, undoManager, pattern.getCurrentPatternIndex(),
+                                           std::move (cellRecords), std::move (masterFxRecords));
+    if (! changed)
+        return false;
+
+    selStartRow = destRow;
+    selEndRow = destRow + rowCount - 1;
+    selStartCellColumn = destCellColumn;
+    selEndCellColumn = destCellColumn + columnCount - 1;
+    updateSelectionTrackBoundsFromCellColumns();
+
+    const int cursorCellColumn = juce::jlimit (0, totalColumns - 1, dragMoveCellColumn);
+    cursorRow = juce::jlimit (0, pat.numRows - 1, dragMoveRow);
+    const auto cursorRef = getCellColumnRef (cursorCellColumn);
+    cursorTrack = cursorRef.track;
+    cursorNoteLane = cursorRef.kind == CellColumnKind::NoteLane ? cursorRef.lane : 0;
+    cursorFxLane = cursorRef.kind == CellColumnKind::NoteLane ? 0 : cursorRef.lane;
+    cursorSubColumn = cursorRef.kind == CellColumnKind::NoteLane ? SubColumn::Note : SubColumn::FX;
+
+    return true;
 }
 
 void TrackerGrid::mouseUp (const juce::MouseEvent& event)
@@ -1532,6 +2062,28 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
 
     if (isDraggingBlock)
     {
+        if (selectionUsesCellColumns)
+        {
+            int row = 0, cellColumn = 0;
+            if (hitTestGridCell (event.x, event.y, row, cellColumn) && hasSelection)
+            {
+                const int destCellColumn = dragMoveCellColumn - dragGrabCellColumnOffset;
+                const int destRow = dragMoveRow - dragGrabRowOffset;
+                if (movePreciseSelection (destRow, destCellColumn))
+                {
+                    if (onPatternDataChanged) onPatternDataChanged();
+                }
+            }
+
+            isDraggingSelection = false;
+            isDraggingBlock = false;
+            dragMoveRow = -1;
+            dragMoveTrack = -1;
+            dragMoveCellColumn = -1;
+            repaint();
+            return;
+        }
+
         // Complete the drag-move: cut from old selection, paste at new position
         // Selection bounds and dragMoveTrack are in visual space
         int row, track;
@@ -1656,6 +2208,7 @@ void TrackerGrid::mouseUp (const juce::MouseEvent& event)
     isDraggingBlock = false;
     dragMoveRow = -1;
     dragMoveTrack = -1;
+    dragMoveCellColumn = -1;
     repaint();
 }
 
@@ -1674,6 +2227,55 @@ void TrackerGrid::mouseDoubleClick (const juce::MouseEvent& event)
 }
 
 void TrackerGrid::drawDragPreview (juce::Graphics& g)
+{
+    if (selectionUsesCellColumns)
+        drawPreciseDragPreview (g);
+    else
+        drawTrackDragPreview (g);
+}
+
+void TrackerGrid::drawPreciseDragPreview (juce::Graphics& g)
+{
+    if (! isDraggingBlock || ! hasSelection || dragMoveRow < 0 || dragMoveCellColumn < 0)
+        return;
+
+    int minRow, maxRow, minCellColumn, maxCellColumn;
+    getSelectionCellColumnBounds (minRow, maxRow, minCellColumn, maxCellColumn);
+
+    const int rowOffset = (dragMoveRow - dragGrabRowOffset) - minRow;
+    const int columnOffset = (dragMoveCellColumn - dragGrabCellColumnOffset) - minCellColumn;
+    const int rowCount = maxRow - minRow + 1;
+    const int columnCount = maxCellColumn - minCellColumn + 1;
+    const int totalColumns = getTotalCellColumnCount();
+    const int visibleTracks = getVisibleTrackCount();
+
+    for (int r = 0; r < rowCount; ++r)
+    {
+        const int destRow = minRow + rowOffset + r;
+        if (destRow < scrollOffset || destRow >= scrollOffset + getVisibleRowCount())
+            continue;
+
+        for (int c = 0; c < columnCount; ++c)
+        {
+            const int destColumn = minCellColumn + columnOffset + c;
+            if (destColumn < 0 || destColumn >= totalColumns)
+                continue;
+
+            const auto ref = getCellColumnRef (destColumn);
+            const int screenVi = ref.visualTrack - horizontalScrollOffset;
+            if (screenVi < 0 || screenVi >= visibleTracks)
+                continue;
+
+            const auto rect = getCellColumnBounds (destRow, destColumn);
+            g.setColour (juce::Colour (0x445588cc));
+            g.fillRect (rect);
+            g.setColour (juce::Colour (0x885588cc));
+            g.drawRect (rect, 1);
+        }
+    }
+}
+
+void TrackerGrid::drawTrackDragPreview (juce::Graphics& g)
 {
     if (! isDraggingBlock || ! hasSelection || dragMoveRow < 0)
         return;
@@ -2002,6 +2604,25 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     if (! velocityLanesVisible && cursorSubColumn == SubColumn::Volume)
         cursorSubColumn = SubColumn::Instrument;
 
+    auto beginPreciseSelectionAtCursor = [this]
+    {
+        hasSelection = true;
+        selectionUsesCellColumns = true;
+        selStartRow = cursorRow;
+        selEndRow = cursorRow;
+        selStartCellColumn = getCellColumnForCursor();
+        selEndCellColumn = selStartCellColumn;
+        updateSelectionTrackBoundsFromCellColumns();
+    };
+
+    auto extendPreciseSelectionToCursor = [this]
+    {
+        selectionUsesCellColumns = true;
+        selEndRow = cursorRow;
+        selEndCellColumn = getCellColumnForCursor();
+        updateSelectionTrackBoundsFromCellColumns();
+    };
+
     // Ctrl+Arrow: transpose selection if active, otherwise the current note.
     if (ctrl && ! shift && ! cmd
         && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey
@@ -2056,27 +2677,19 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     // Navigation
     if (keyCode == juce::KeyPress::upKey)
     {
-        if (shift && ! hasSelection)
-        {
-            hasSelection = true;
-            selStartRow = cursorRow;
-            selStartTrack = trackToVisualIndex (cursorTrack);
-        }
+        if (shift && (! hasSelection || ! selectionUsesCellColumns))
+            beginPreciseSelectionAtCursor();
         moveCursor (-1, 0);
-        if (shift) { selEndRow = cursorRow; selEndTrack = trackToVisualIndex (cursorTrack); }
+        if (shift) extendPreciseSelectionToCursor();
         else clearSelection();
         return true;
     }
     if (keyCode == juce::KeyPress::downKey)
     {
-        if (shift && ! hasSelection)
-        {
-            hasSelection = true;
-            selStartRow = cursorRow;
-            selStartTrack = trackToVisualIndex (cursorTrack);
-        }
+        if (shift && (! hasSelection || ! selectionUsesCellColumns))
+            beginPreciseSelectionAtCursor();
         moveCursor (1, 0);
-        if (shift) { selEndRow = cursorRow; selEndTrack = trackToVisualIndex (cursorTrack); }
+        if (shift) extendPreciseSelectionToCursor();
         else clearSelection();
         return true;
     }
@@ -2091,14 +2704,15 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
             return true;
         }
 
-        if (shift && ! hasSelection)
+        if (shift && (! hasSelection || ! selectionUsesCellColumns))
+            beginPreciseSelectionAtCursor();
+        moveCursorToAdjacentCell (-1);
+        if (shift)
         {
-            hasSelection = true;
-            selStartRow = cursorRow;
-            selStartTrack = trackToVisualIndex (cursorTrack);
+            extendPreciseSelectionToCursor();
+            repaint();
+            if (onCursorMoved) onCursorMoved();
         }
-        moveCursor (0, -1);
-        if (shift) { selEndRow = cursorRow; selEndTrack = trackToVisualIndex (cursorTrack); }
         else clearSelection();
         return true;
     }
@@ -2113,14 +2727,15 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
             return true;
         }
 
-        if (shift && ! hasSelection)
+        if (shift && (! hasSelection || ! selectionUsesCellColumns))
+            beginPreciseSelectionAtCursor();
+        moveCursorToAdjacentCell (1);
+        if (shift)
         {
-            hasSelection = true;
-            selStartRow = cursorRow;
-            selStartTrack = trackToVisualIndex (cursorTrack);
+            extendPreciseSelectionToCursor();
+            repaint();
+            if (onCursorMoved) onCursorMoved();
         }
-        moveCursor (0, 1);
-        if (shift) { selEndRow = cursorRow; selEndTrack = trackToVisualIndex (cursorTrack); }
         else clearSelection();
         return true;
     }
@@ -2280,11 +2895,73 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
     if (keyCode == juce::KeyPress::deleteKey || keyCode == juce::KeyPress::backspaceKey)
     {
         auto& pat = pattern.getCurrentPattern();
+        const auto& readPat = static_cast<const Pattern&> (pat);
         int patIdx = pattern.getCurrentPatternIndex();
         std::vector<MultiCellEditAction::CellRecord> cellRecords;
         std::vector<MultiCellEditAction::MasterFxRecord> masterFxRecords;
 
-        if (hasSelection)
+        if (hasSelection && selectionUsesCellColumns)
+        {
+            int minRow, maxRow, minCellColumn, maxCellColumn;
+            getSelectionCellColumnBounds (minRow, maxRow, minCellColumn, maxCellColumn);
+
+            std::map<std::pair<int, int>, std::pair<Cell, Cell>> cellMap;
+            auto getEditableCell = [&] (int row, int track) -> Cell&
+            {
+                const auto cellKey = std::make_pair (row, track);
+                auto it = cellMap.find (cellKey);
+                if (it == cellMap.end())
+                {
+                    const auto oldCell = pat.getCell (row, track);
+                    it = cellMap.emplace (cellKey, std::make_pair (oldCell, oldCell)).first;
+                }
+
+                return it->second.second;
+            };
+
+            for (int r = minRow; r <= maxRow; ++r)
+            {
+                for (int column = minCellColumn; column <= maxCellColumn; ++column)
+                {
+                    if (column < 0 || column >= getTotalCellColumnCount())
+                        continue;
+
+                    const auto ref = getCellColumnRef (column);
+                    if (ref.kind == CellColumnKind::NoteLane)
+                    {
+                        auto& cell = getEditableCell (r, ref.track);
+                        if (! PatternEditUtils::sameNoteSlot (cell.getNoteLane (ref.lane), {}))
+                            cell.setNoteLane (ref.lane, {});
+                    }
+                    else if (ref.kind == CellColumnKind::FxLane)
+                    {
+                        auto& cell = getEditableCell (r, ref.track);
+                        if (! sameFxSlot (static_cast<const Cell&> (cell).getFxSlot (ref.lane), {}))
+                        {
+                            cell.ensureFxSlots (ref.lane + 1);
+                            cell.getFxSlot (ref.lane).clear();
+                        }
+                    }
+                    else
+                    {
+                        auto oldSlot = readPat.getMasterFxSlot (r, ref.lane);
+                        auto newSlot = oldSlot;
+                        newSlot.clear();
+                        if (! sameFxSlot (oldSlot, newSlot))
+                            masterFxRecords.push_back ({ r, ref.lane, oldSlot, newSlot });
+                    }
+                }
+            }
+
+            for (auto& [cellKey, values] : cellMap)
+            {
+                if (! sameCell (values.first, values.second))
+                    cellRecords.push_back ({ cellKey.first, cellKey.second, values.first, values.second });
+            }
+
+            clearSelection();
+        }
+        else if (hasSelection)
         {
             // Clear all cells in selection (visual space)
             int minRow, maxRow, minViTrack, maxViTrack;
@@ -2297,7 +2974,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                     {
                         for (int lane = 0; lane < trackLayout.getMasterFxLaneCount(); ++lane)
                         {
-                            auto oldSlot = pat.getMasterFxSlot (r, lane);
+                            auto oldSlot = readPat.getMasterFxSlot (r, lane);
                             auto newSlot = oldSlot;
                             newSlot.clear();
                             if (! sameFxSlot (oldSlot, newSlot))

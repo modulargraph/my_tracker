@@ -73,6 +73,7 @@ public:
     int selEndRow = 0, selEndTrack = 0;
     void clearSelection();
     void getSelectionBounds (int& minRow, int& maxRow, int& minTrack, int& maxTrack) const;
+    bool isSelectionCellPrecise() const { return hasSelection && selectionUsesCellColumns; }
 
     // Mute/Solo display
     std::array<bool, kNumTracks> trackMuted {};
@@ -196,8 +197,42 @@ private:
     TrackLayout::Snapshot layoutDragStartSnapshot;
     int dragMoveRow = -1;
     int dragMoveTrack = -1;
+    int dragMoveCellColumn = -1;
     int dragGrabRowOffset = 0;   // offset from selection top-left to grab point
     int dragGrabTrackOffset = 0;
+    int dragGrabCellColumnOffset = 0;
+
+    enum class CellColumnKind { NoteLane, FxLane, MasterFxLane };
+
+    struct CellColumnRef
+    {
+        int visualTrack = 0;
+        int track = 0;
+        CellColumnKind kind = CellColumnKind::NoteLane;
+        int lane = 0;
+    };
+
+    bool selectionUsesCellColumns = false;
+    int selStartCellColumn = 0;
+    int selEndCellColumn = 0;
+
+    int getCellColumnCountForVisualTrack (int visualIndex) const;
+    int getTotalCellColumnCount() const;
+    int getFirstCellColumnForVisualTrack (int visualIndex) const;
+    int getLastCellColumnForVisualTrack (int visualIndex) const;
+    int getCellColumnForHit (int visualTrack, SubColumn subCol, int fxLane, int noteLane) const;
+    int getCellColumnForCursor() const;
+    int cellColumnAtPixel (int pixelX) const;
+    CellColumnRef getCellColumnRef (int cellColumn) const;
+    juce::Rectangle<int> getCellColumnBounds (int row, int cellColumn) const;
+    bool hitTestGridCell (int x, int y, int& outRow, int& outCellColumn) const;
+    void setPreciseSelectionEnd (int row, int cellColumn);
+    void updateSelectionTrackBoundsFromCellColumns();
+    void getSelectionCellColumnBounds (int& minRow, int& maxRow, int& minCellColumn, int& maxCellColumn) const;
+    bool isCellInCurrentSelection (int row, int visualTrack, int cellColumn) const;
+    bool movePreciseSelection (int destRow, int destCellColumn);
+    void drawPreciseDragPreview (juce::Graphics& g);
+    void drawTrackDragPreview (juce::Graphics& g);
 
     // Rendering helper for drag-move preview
     void drawDragPreview (juce::Graphics& g);
