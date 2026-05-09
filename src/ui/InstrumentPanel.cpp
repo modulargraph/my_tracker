@@ -157,6 +157,9 @@ void InstrumentPanel::mouseDown (const juce::MouseEvent& event)
     if (onInstrumentSelected)
         onInstrumentSelected (idx);
 
+    if (! event.mods.isPopupMenu() && onInstrumentMouseSelected)
+        onInstrumentMouseSelected (idx);
+
     if (event.mods.isPopupMenu())
     {
         // Two-finger secondary click on trackpads can emit a tiny wheel event

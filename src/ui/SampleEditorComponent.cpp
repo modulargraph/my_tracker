@@ -56,6 +56,81 @@ juce::String formatPluginSeconds (double seconds)
     return juce::String (seconds, 2) + "s";
 }
 
+double clampLofiSampleRateHz (double hz)
+{
+    if (hz <= 0.0)
+        return 0.0;
+
+    return juce::jlimit (InstrumentParams::kMinLofiSampleRateHz,
+                         InstrumentParams::kMaxLofiSampleRateHz,
+                         hz);
+}
+
+float lofiSampleRateToNorm (double hz)
+{
+    if (hz <= 0.0)
+        return 1.0f;
+
+    const double clampedHz = clampLofiSampleRateHz (hz);
+    return static_cast<float> ((clampedHz - InstrumentParams::kMinLofiSampleRateHz)
+        / (InstrumentParams::kMaxLofiSampleRateHz - InstrumentParams::kMinLofiSampleRateHz));
+}
+
+double normToLofiSampleRateHz (double norm)
+{
+    norm = juce::jlimit (0.0, 1.0, norm);
+    if (norm >= 0.995)
+        return 0.0;
+
+    return InstrumentParams::kMinLofiSampleRateHz
+         + norm * (InstrumentParams::kMaxLofiSampleRateHz - InstrumentParams::kMinLofiSampleRateHz);
+}
+
+juce::String formatLofiSampleRate (double hz)
+{
+    const double clampedHz = clampLofiSampleRateHz (hz);
+    if (clampedHz <= 0.0)
+        return "Off";
+
+    const double khz = clampedHz / 1000.0;
+    return juce::String (khz, khz >= 10.0 ? 1 : 2) + "k";
+}
+
+int getMidiOutLaneForColumn (int column)
+{
+    return juce::jlimit (0, InstrumentParams::kNumMidiOutLanes - 1, column / 2);
+}
+
+bool isMidiOutTypeColumn (int column)
+{
+    return (column % 2) == 0;
+}
+
+juce::String getMidiOutLaneName (int lane)
+{
+    static constexpr char laneNames[] = "ABCDEF";
+    return juce::String::charToString (laneNames[static_cast<size_t> (
+        juce::jlimit (0, InstrumentParams::kNumMidiOutLanes - 1, lane))]);
+}
+
+juce::String getMidiOutTypeName (InstrumentParams::MidiOutMessageType type)
+{
+    switch (type)
+    {
+        case InstrumentParams::MidiOutMessageType::ControlChange:    return "CC";
+        case InstrumentParams::MidiOutMessageType::ProgramChange:    return "PC";
+        case InstrumentParams::MidiOutMessageType::ChannelPressure:  return "ChanPr";
+        case InstrumentParams::MidiOutMessageType::PolyPressure:     return "PolyPr";
+    }
+    return "CC";
+}
+
+bool midiOutAssignmentUsesNumber (InstrumentParams::MidiOutMessageType type)
+{
+    return type == InstrumentParams::MidiOutMessageType::ControlChange
+        || type == InstrumentParams::MidiOutMessageType::PolyPressure;
+}
+
 juce::Colour getPluginSourceColour (int index)
 {
     static constexpr juce::uint32 colours[] = {
@@ -396,7 +471,7 @@ bool SampleEditorComponent::isRealtimeOnlyChange (const InstrumentParams& oldP, 
     if (oldP.granularShape != newP.granularShape) return false;
     if (oldP.granularLoop != newP.granularLoop) return false;
     if (oldP.slicePoints != newP.slicePoints) return false;
-    // Everything else (volume, pan, filter, overdrive, bitDepth, sends, modulations)
+    // Everything else (volume, pan, filter, overdrive, bitDepth, sample-rate reduction, sends, modulations)
     // is handled by InstrumentEffectsPlugin reading from the params map each block
     return true;
 }
@@ -598,6 +673,8 @@ int SampleEditorComponent::getFocusedColumn() const
     {
         if (editSubTab == EditSubTab::Parameters)
             return parametersColumn;
+        if (editSubTab == EditSubTab::MidiOut)
+            return midiOutColumn;
         else
             return modColumn;
     }
@@ -616,6 +693,8 @@ void SampleEditorComponent::setFocusedColumn (int col)
     {
         if (editSubTab == EditSubTab::Parameters)
             parametersColumn = col;
+        else if (editSubTab == EditSubTab::MidiOut)
+            midiOutColumn = col;
         else
             modColumn = col;
     }
@@ -630,7 +709,9 @@ int SampleEditorComponent::getColumnCount() const
     if (displayMode == DisplayMode::InstrumentEdit)
     {
         if (editSubTab == EditSubTab::Parameters)
-            return 11; // Vol, Pan, Tune, Fine, Filter, Cutoff, Rez, OD, BitDepth, RevSend, DlySend
+            return 12; // Vol, Pan, Tune, Fine, Filter, Cutoff, Rez, OD, BitDepth, Rate, RevSend, DlySend
+        if (editSubTab == EditSubTab::MidiOut)
+            return InstrumentParams::kNumMidiOutLanes * 2; // Type + target number per MIDI Out lane
         else
             return 8; // Modulation page
     }
@@ -663,8 +744,13 @@ juce::String SampleEditorComponent::getColumnName (int col) const
         {
             const char* names[] = { "Volume", "Panning", "Tune", "Finetune", "Filter",
                                     "Cutoff", "Resonance", "Overdrive", "Bit Depth",
-                                    "Reverb Send", "Delay Send" };
-            if (col >= 0 && col < 11) return names[col];
+                                    "Rate kHz", "Reverb Send", "Delay Send" };
+            if (col >= 0 && col < 12) return names[col];
+        }
+        else if (editSubTab == EditSubTab::MidiOut)
+        {
+            const int lane = getMidiOutLaneForColumn (col);
+            return getMidiOutLaneName (lane) + (isMidiOutTypeColumn (col) ? " Type" : " Target");
         }
         else // Modulation
         {
@@ -754,9 +840,23 @@ juce::String SampleEditorComponent::getColumnValue (int col) const
                 case 6: return formatPercent (currentParams.resonance);
                 case 7: return formatPercent (currentParams.overdrive);
                 case 8: return juce::String (currentParams.bitDepth);
-                case 9: return formatDb (currentParams.reverbSend);
-                case 10: return formatDb (currentParams.delaySend);
+                case 9: return formatLofiSampleRate (currentParams.lofiSampleRateHz);
+                case 10: return formatDb (currentParams.reverbSend);
+                case 11: return formatDb (currentParams.delaySend);
             }
+        }
+        else if (editSubTab == EditSubTab::MidiOut)
+        {
+            const int lane = getMidiOutLaneForColumn (col);
+            const auto& assignment = currentParams.midiOutAssignments[static_cast<size_t> (lane)];
+            if (isMidiOutTypeColumn (col))
+                return getMidiOutTypeName (assignment.type);
+
+            if (assignment.type == InstrumentParams::MidiOutMessageType::ControlChange)
+                return "CC " + juce::String (assignment.number);
+            if (assignment.type == InstrumentParams::MidiOutMessageType::PolyPressure)
+                return "Note " + juce::String (assignment.number);
+            return "n/a";
         }
         else // Modulation
         {
@@ -936,6 +1036,8 @@ void SampleEditorComponent::paint (juce::Graphics& g)
 
         if (editSubTab == EditSubTab::Parameters)
             drawParametersPage (g, contentArea);
+        else if (editSubTab == EditSubTab::MidiOut)
+            drawMidiOutPage (g, contentArea);
         else
             drawModulationPage (g, contentArea);
     }
@@ -1002,12 +1104,16 @@ void SampleEditorComponent::drawSubTabBar (juce::Graphics& g, juce::Rectangle<in
                         static_cast<float> (area.getBottom()));
 
     struct SubTabItem { juce::String label; EditSubTab tab; };
-    SubTabItem items[] = { { "PARAMS", EditSubTab::Parameters }, { "MOD", EditSubTab::Modulation } };
+    SubTabItem items[] = {
+        { "PARAMS", EditSubTab::Parameters },
+        { "MIDI", EditSubTab::MidiOut },
+        { "MOD", EditSubTab::Modulation }
+    };
 
     g.setFont (lookAndFeel.getMonoFont (10.0f));
     int itemH = 30;
 
-    for (int i = 0; i < 2; ++i)
+    for (int i = 0; i < 3; ++i)
     {
         auto itemArea = juce::Rectangle<int> (area.getX(), area.getY() + i * itemH,
                                                area.getWidth(), itemH);
@@ -2891,6 +2997,8 @@ void SampleEditorComponent::drawHeader (juce::Graphics& g, juce::Rectangle<int> 
     {
         if (editSubTab == EditSubTab::Parameters)
             title = "Instrument Parameters";
+        else if (editSubTab == EditSubTab::MidiOut)
+            title = "MIDI Out Assignments";
         else
             title = "Instrument Automation";
     }
@@ -3087,12 +3195,12 @@ void SampleEditorComponent::drawBarMeter (juce::Graphics& g, juce::Rectangle<int
 }
 
 //==============================================================================
-// Drawing: Parameters page (merged General + Effects = 11 columns)
+// Drawing: Parameters page (merged General + Effects = 12 columns)
 //==============================================================================
 
 void SampleEditorComponent::drawParametersPage (juce::Graphics& g, juce::Rectangle<int> area)
 {
-    int numCols = 11;
+    int numCols = 12;
     int colW = area.getWidth() / numCols;
     auto greenCol = lookAndFeel.findColour (TrackerLookAndFeel::volumeColourId);
     auto blueCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
@@ -3142,13 +3250,59 @@ void SampleEditorComponent::drawParametersPage (juce::Graphics& g, juce::Rectang
     float bd01 = static_cast<float> (currentParams.bitDepth - 4) / 12.0f;
     drawBarMeter (g, colRect (8), bd01, parametersColumn == 8, amberCol);
 
-    // Col 9: Reverb Send (-100..0 dB)
-    float rev01 = static_cast<float> ((currentParams.reverbSend + 100.0) / 100.0);
-    drawBarMeter (g, colRect (9), rev01, parametersColumn == 9, blueCol);
+    // Col 9: Sample-rate reduction
+    drawBarMeter (g, colRect (9), lofiSampleRateToNorm (currentParams.lofiSampleRateHz),
+                  parametersColumn == 9, amberCol);
 
-    // Col 10: Delay Send (-100..0 dB)
+    // Col 10: Reverb Send (-100..0 dB)
+    float rev01 = static_cast<float> ((currentParams.reverbSend + 100.0) / 100.0);
+    drawBarMeter (g, colRect (10), rev01, parametersColumn == 10, blueCol);
+
+    // Col 11: Delay Send (-100..0 dB)
     float dly01 = static_cast<float> ((currentParams.delaySend + 100.0) / 100.0);
-    drawBarMeter (g, colRect (10), dly01, parametersColumn == 10, blueCol);
+    drawBarMeter (g, colRect (11), dly01, parametersColumn == 11, blueCol);
+}
+
+//==============================================================================
+// Drawing: MIDI Out assignment page
+//==============================================================================
+
+void SampleEditorComponent::drawMidiOutPage (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    const int numCols = InstrumentParams::kNumMidiOutLanes * 2;
+    const int colW = area.getWidth() / numCols;
+    auto midiCol = lookAndFeel.findColour (TrackerLookAndFeel::fxColourId);
+    auto mutedCol = lookAndFeel.findColour (TrackerLookAndFeel::textColourId).withAlpha (0.45f);
+
+    auto colRect = [&] (int c) -> juce::Rectangle<int>
+    {
+        const int w = (c < numCols - 1) ? colW : (area.getWidth() - c * colW);
+        return { area.getX() + c * colW, area.getY(), w, area.getHeight() };
+    };
+
+    const juce::StringArray typeItems = { "CC", "PC", "ChanPr", "PolyPr" };
+
+    for (int lane = 0; lane < InstrumentParams::kNumMidiOutLanes; ++lane)
+    {
+        const auto& assignment = currentParams.midiOutAssignments[static_cast<size_t> (lane)];
+        const int typeCol = lane * 2;
+        const int numberCol = typeCol + 1;
+        drawListColumn (g,
+                        colRect (typeCol),
+                        typeItems,
+                        static_cast<int> (assignment.type),
+                        midiOutColumn == typeCol,
+                        midiCol);
+
+        const auto numberColour = midiOutAssignmentUsesNumber (assignment.type) ? midiCol : mutedCol;
+        drawBarMeter (g,
+                      colRect (numberCol),
+                      midiOutAssignmentUsesNumber (assignment.type)
+                          ? static_cast<float> (juce::jlimit (0, 127, assignment.number)) / 127.0f
+                          : 0.0f,
+                      midiOutColumn == numberCol,
+                      numberColour);
+    }
 }
 
 //==============================================================================
@@ -3362,20 +3516,51 @@ void SampleEditorComponent::adjustCurrentValue (int direction, bool fine, bool l
                     currentParams.bitDepth = juce::jlimit (4, 16,
                         currentParams.bitDepth + direction);
                     break;
-                case 9: // Reverb Send
+                case 9: // Sample-rate reduction
+                {
+                    const double step = fine ? 100.0 : (large ? 4000.0 : 1000.0);
+                    const double currentHz = currentParams.lofiSampleRateHz <= 0.0
+                        ? InstrumentParams::kMaxLofiSampleRateHz
+                        : clampLofiSampleRateHz (currentParams.lofiSampleRateHz);
+                    const double nextHz = currentHz + static_cast<double> (direction) * step;
+                    currentParams.lofiSampleRateHz = nextHz >= InstrumentParams::kMaxLofiSampleRateHz
+                        ? 0.0
+                        : juce::jlimit (InstrumentParams::kMinLofiSampleRateHz,
+                                        InstrumentParams::kMaxLofiSampleRateHz,
+                                        nextHz);
+                    break;
+                }
+                case 10: // Reverb Send
                 {
                     double step = fine ? 0.5 : (large ? 12.0 : 1.0);
                     currentParams.reverbSend = juce::jlimit (-100.0, 0.0,
                         currentParams.reverbSend + direction * step);
                     break;
                 }
-                case 10: // Delay Send
+                case 11: // Delay Send
                 {
                     double step = fine ? 0.5 : (large ? 12.0 : 1.0);
                     currentParams.delaySend = juce::jlimit (-100.0, 0.0,
                         currentParams.delaySend + direction * step);
                     break;
                 }
+            }
+        }
+        else if (editSubTab == EditSubTab::MidiOut)
+        {
+            const int lane = getMidiOutLaneForColumn (midiOutColumn);
+            auto& assignment = currentParams.midiOutAssignments[static_cast<size_t> (lane)];
+
+            if (isMidiOutTypeColumn (midiOutColumn))
+            {
+                int v = static_cast<int> (assignment.type);
+                v = (v + direction + 4) % 4;
+                assignment.type = static_cast<InstrumentParams::MidiOutMessageType> (v);
+            }
+            else if (midiOutAssignmentUsesNumber (assignment.type))
+            {
+                const int step = fine ? 1 : (large ? 12 : 5);
+                assignment.number = juce::jlimit (0, 127, assignment.number + direction * step);
             }
         }
         else // Modulation
@@ -3766,14 +3951,46 @@ void SampleEditorComponent::adjustCurrentValueByDelta (double normDelta)
                     currentParams.bitDepth = juce::jlimit (4, 16,
                         currentParams.bitDepth + juce::roundToInt (normDelta * 12.0));
                     break;
-                case 9: // Reverb Send -100..0 dB
+                case 9: // Sample-rate reduction
+                {
+                    const double currentHz = currentParams.lofiSampleRateHz <= 0.0
+                        ? InstrumentParams::kMaxLofiSampleRateHz
+                        : clampLofiSampleRateHz (currentParams.lofiSampleRateHz);
+                    const double nextHz = currentHz
+                        + normDelta * (InstrumentParams::kMaxLofiSampleRateHz
+                                     - InstrumentParams::kMinLofiSampleRateHz);
+                    currentParams.lofiSampleRateHz = nextHz >= InstrumentParams::kMaxLofiSampleRateHz
+                        ? 0.0
+                        : juce::jlimit (InstrumentParams::kMinLofiSampleRateHz,
+                                        InstrumentParams::kMaxLofiSampleRateHz,
+                                        nextHz);
+                    break;
+                }
+                case 10: // Reverb Send -100..0 dB
                     currentParams.reverbSend = juce::jlimit (-100.0, 0.0,
                         currentParams.reverbSend + normDelta * 100.0);
                     break;
-                case 10: // Delay Send -100..0 dB
+                case 11: // Delay Send -100..0 dB
                     currentParams.delaySend = juce::jlimit (-100.0, 0.0,
                         currentParams.delaySend + normDelta * 100.0);
                     break;
+            }
+        }
+        else if (editSubTab == EditSubTab::MidiOut)
+        {
+            const int lane = getMidiOutLaneForColumn (midiOutColumn);
+            auto& assignment = currentParams.midiOutAssignments[static_cast<size_t> (lane)];
+
+            if (isMidiOutTypeColumn (midiOutColumn))
+            {
+                int v = static_cast<int> (assignment.type)
+                        - juce::roundToInt (normDelta * 4.0);
+                assignment.type = static_cast<InstrumentParams::MidiOutMessageType> (juce::jlimit (0, 3, v));
+            }
+            else if (midiOutAssignmentUsesNumber (assignment.type))
+            {
+                assignment.number = juce::jlimit (0, 127,
+                    assignment.number + juce::roundToInt (normDelta * 127.0));
             }
         }
         else // Modulation
@@ -4053,6 +4270,8 @@ bool SampleEditorComponent::isCurrentColumnDiscrete() const
     {
         if (editSubTab == EditSubTab::Parameters)
             return parametersColumn == 4; // Filter type list
+        if (editSubTab == EditSubTab::MidiOut)
+            return isMidiOutTypeColumn (midiOutColumn);
 
         // Modulation
         if (modColumn <= 2) return true; // Destination, Type, Mode are always lists
@@ -4139,6 +4358,8 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
         if (displayMode == DisplayMode::InstrumentEdit)
         {
             if (editSubTab == EditSubTab::Parameters)
+                setEditSubTab (EditSubTab::MidiOut);
+            else if (editSubTab == EditSubTab::MidiOut)
                 setEditSubTab (EditSubTab::Modulation);
             else
                 setEditSubTab (EditSubTab::Parameters);
@@ -4362,10 +4583,15 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
                 setEditSubTab (EditSubTab::Modulation);
                 modColumn = 7; // last modulation column (8 cols, 0-7)
             }
-            else
+            else if (editSubTab == EditSubTab::MidiOut)
             {
                 setEditSubTab (EditSubTab::Parameters);
-                parametersColumn = 10; // last parameters column (11 cols, 0-10)
+                parametersColumn = 11; // last parameters column (12 cols, 0-11)
+            }
+            else
+            {
+                setEditSubTab (EditSubTab::MidiOut);
+                midiOutColumn = InstrumentParams::kNumMidiOutLanes * 2 - 1;
             }
             repaint();
         }
@@ -4386,6 +4612,11 @@ bool SampleEditorComponent::keyPressed (const juce::KeyPress& key)
         {
             // Wrap to the other sub-tab's first column
             if (editSubTab == EditSubTab::Parameters)
+            {
+                setEditSubTab (EditSubTab::MidiOut);
+                midiOutColumn = 0;
+            }
+            else if (editSubTab == EditSubTab::MidiOut)
             {
                 setEditSubTab (EditSubTab::Modulation);
                 modColumn = 0;
@@ -4528,6 +4759,8 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
         if (itemIdx == 0)
             setEditSubTab (EditSubTab::Parameters);
         else if (itemIdx == 1)
+            setEditSubTab (EditSubTab::MidiOut);
+        else if (itemIdx == 2)
             setEditSubTab (EditSubTab::Modulation);
         return;
     }
@@ -4791,6 +5024,20 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                 }
             }
 
+            if (editSubTab == EditSubTab::MidiOut && isMidiOutTypeColumn (col))
+            {
+                const int relY = event.y - contentTop;
+                const int itemIdx = relY / juce::jmax (1, kListItemHeight);
+                if (itemIdx >= 0 && itemIdx < 4)
+                {
+                    const int lane = getMidiOutLaneForColumn (col);
+                    currentParams.midiOutAssignments[static_cast<size_t> (lane)].type
+                        = static_cast<InstrumentParams::MidiOutMessageType> (itemIdx);
+                }
+                notifyParamsChanged();
+                return;
+            }
+
             // For parameters page, handle filter type list clicks (col 4)
             if (editSubTab == EditSubTab::Parameters && col == 4)
             {
@@ -4824,10 +5071,18 @@ void SampleEditorComponent::mouseDown (const juce::MouseEvent& event)
                         case 6: currentParams.resonance = static_cast<int> (norm * 100.0); break;
                         case 7: currentParams.overdrive = static_cast<int> (norm * 100.0); break;
                         case 8: currentParams.bitDepth  = 4 + static_cast<int> (norm * 12.0); break;
-                        case 9: currentParams.reverbSend = -100.0 + norm * 100.0; break;
-                        case 10: currentParams.delaySend = -100.0 + norm * 100.0; break;
+                        case 9: currentParams.lofiSampleRateHz = normToLofiSampleRateHz (norm); break;
+                        case 10: currentParams.reverbSend = -100.0 + norm * 100.0; break;
+                        case 11: currentParams.delaySend = -100.0 + norm * 100.0; break;
                         default: break;
                     }
+                }
+                else if (editSubTab == EditSubTab::MidiOut)
+                {
+                    const int lane = getMidiOutLaneForColumn (midiOutColumn);
+                    auto& assignment = currentParams.midiOutAssignments[static_cast<size_t> (lane)];
+                    if (midiOutAssignmentUsesNumber (assignment.type))
+                        assignment.number = juce::jlimit (0, 127, static_cast<int> (std::round (norm * 127.0)));
                 }
                 else if (editSubTab == EditSubTab::Modulation)
                 {

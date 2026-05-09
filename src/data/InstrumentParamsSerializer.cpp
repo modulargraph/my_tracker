@@ -1,5 +1,54 @@
 #include "InstrumentParamsSerializer.h"
 
+namespace
+{
+InstrumentParams::MidiOutMessageType clampMidiOutMessageType (int type)
+{
+    if (type < static_cast<int> (InstrumentParams::MidiOutMessageType::ControlChange)
+        || type > static_cast<int> (InstrumentParams::MidiOutMessageType::PolyPressure))
+        return InstrumentParams::MidiOutMessageType::ControlChange;
+
+    return static_cast<InstrumentParams::MidiOutMessageType> (type);
+}
+
+void saveMidiOutAssignments (juce::ValueTree& paramTree, const InstrumentParams& params)
+{
+    for (int lane = 0; lane < InstrumentParams::kNumMidiOutLanes; ++lane)
+    {
+        const auto& assignment = params.midiOutAssignments[static_cast<size_t> (lane)];
+        if (assignment.isDefault (lane))
+            continue;
+
+        juce::ValueTree midiOutTree ("MidiOut");
+        midiOutTree.setProperty ("lane", lane, nullptr);
+        midiOutTree.setProperty ("type", static_cast<int> (assignment.type), nullptr);
+        midiOutTree.setProperty ("number", juce::jlimit (0, 127, assignment.number), nullptr);
+        paramTree.addChild (midiOutTree, -1, nullptr);
+    }
+}
+
+void loadMidiOutAssignments (const juce::ValueTree& paramTree, InstrumentParams& params)
+{
+    params.midiOutAssignments = InstrumentParams::makeDefaultMidiOutAssignments();
+
+    for (int i = 0; i < paramTree.getNumChildren(); ++i)
+    {
+        auto midiOutTree = paramTree.getChild (i);
+        if (! midiOutTree.hasType ("MidiOut"))
+            continue;
+
+        const int lane = midiOutTree.getProperty ("lane", -1);
+        if (lane < 0 || lane >= InstrumentParams::kNumMidiOutLanes)
+            continue;
+
+        auto& assignment = params.midiOutAssignments[static_cast<size_t> (lane)];
+        assignment.type = clampMidiOutMessageType (static_cast<int> (midiOutTree.getProperty ("type", 0)));
+        assignment.number = juce::jlimit (0, 127, static_cast<int> (midiOutTree.getProperty (
+            "number", InstrumentParams::getDefaultMidiOutNumber (lane))));
+    }
+}
+} // namespace
+
 void InstrumentParamsSerializer::save (juce::ValueTree& root, const std::map<int, InstrumentParams>& instrumentParams)
 {
     // Instrument params (only save non-default)
@@ -25,6 +74,7 @@ void InstrumentParamsSerializer::save (juce::ValueTree& root, const std::map<int
         // Effects
         paramTree.setProperty ("overdrive", params.overdrive, nullptr);
         paramTree.setProperty ("bitDepth", params.bitDepth, nullptr);
+        paramTree.setProperty ("lofiSampleRateHz", params.lofiSampleRateHz, nullptr);
         paramTree.setProperty ("reverbSend", params.reverbSend, nullptr);
         paramTree.setProperty ("delaySend", params.delaySend, nullptr);
 
@@ -58,6 +108,8 @@ void InstrumentParamsSerializer::save (juce::ValueTree& root, const std::map<int
             }
             paramTree.setProperty ("slices", sliceStr, nullptr);
         }
+
+        saveMidiOutAssignments (paramTree, params);
 
         // Modulations
         for (int d = 0; d < InstrumentParams::kNumModDests; ++d)
@@ -124,6 +176,13 @@ void InstrumentParamsSerializer::load (const juce::ValueTree& root, std::map<int
 
                 params.overdrive  = paramTree.getProperty ("overdrive", 0);
                 params.bitDepth   = paramTree.getProperty ("bitDepth", 16);
+                params.lofiSampleRateHz = paramTree.getProperty ("lofiSampleRateHz", 0.0);
+                if (params.lofiSampleRateHz <= 0.0)
+                    params.lofiSampleRateHz = 0.0;
+                else
+                    params.lofiSampleRateHz = juce::jlimit (InstrumentParams::kMinLofiSampleRateHz,
+                                                            InstrumentParams::kMaxLofiSampleRateHz,
+                                                            params.lofiSampleRateHz);
                 params.reverbSend = paramTree.getProperty ("reverbSend", -100.0);
                 params.delaySend  = paramTree.getProperty ("delaySend", -100.0);
 
@@ -164,6 +223,8 @@ void InstrumentParamsSerializer::load (const juce::ValueTree& root, std::map<int
                         params.slicePoints.push_back (tok.getDoubleValue());
                 }
                 params.selectedSlice = paramTree.getProperty ("selectedSlice", 0);
+
+                loadMidiOutAssignments (paramTree, params);
 
                 // Modulations
                 for (int m = 0; m < paramTree.getNumChildren(); ++m)

@@ -26,6 +26,9 @@ struct InstrumentParams
     // === Effects ===
     int    overdrive   = 0;        // 0-100
     int    bitDepth    = 16;       // 4-16
+    static constexpr double kMinLofiSampleRateHz = 1000.0;
+    static constexpr double kMaxLofiSampleRateHz = 44100.0;
+    double lofiSampleRateHz = 0.0;  // 0 = off, otherwise 1.0-44.1 kHz sample-rate reduction
     double reverbSend  = -100.0;   // dB, -inf (as -100) to 0
     double delaySend   = -100.0;   // dB, -inf (as -100) to 0
 
@@ -63,6 +66,53 @@ struct InstrumentParams
     // === Modulation (per destination) ===
     enum class ModDest { Volume, Panning, Cutoff, GranularPos, Finetune };
     static constexpr int kNumModDests = 5;
+
+    // === MIDI Out (per a-f step FX lane) ===
+    // Polyend MIDI instruments expose six assignable output lanes. Defaults
+    // preserve VC's previous hard-wired CC20-25 behaviour.
+    static constexpr int kNumMidiOutLanes = 6;
+
+    enum class MidiOutMessageType
+    {
+        ControlChange,
+        ProgramChange,
+        ChannelPressure,
+        PolyPressure
+    };
+
+    static constexpr int getDefaultMidiOutNumber (int laneIndex)
+    {
+        return laneIndex >= 0 && laneIndex < kNumMidiOutLanes ? 20 + laneIndex : 20;
+    }
+
+    struct MidiOutAssignment
+    {
+        MidiOutMessageType type = MidiOutMessageType::ControlChange;
+        int number = 20;
+
+        bool isDefault (int laneIndex) const
+        {
+            return type == MidiOutMessageType::ControlChange
+                && number == InstrumentParams::getDefaultMidiOutNumber (laneIndex);
+        }
+    };
+
+    static constexpr MidiOutAssignment makeDefaultMidiOutAssignment (int laneIndex)
+    {
+        return { MidiOutMessageType::ControlChange, getDefaultMidiOutNumber (laneIndex) };
+    }
+
+    static constexpr std::array<MidiOutAssignment, kNumMidiOutLanes> makeDefaultMidiOutAssignments()
+    {
+        return {
+            makeDefaultMidiOutAssignment (0),
+            makeDefaultMidiOutAssignment (1),
+            makeDefaultMidiOutAssignment (2),
+            makeDefaultMidiOutAssignment (3),
+            makeDefaultMidiOutAssignment (4),
+            makeDefaultMidiOutAssignment (5)
+        };
+    }
 
     struct Modulation
     {
@@ -105,6 +155,7 @@ struct InstrumentParams
     };
 
     std::array<Modulation, kNumModDests> modulations {};
+    std::array<MidiOutAssignment, kNumMidiOutLanes> midiOutAssignments = makeDefaultMidiOutAssignments();
 
     // === Legacy compatibility ===
     // Old params mapped during load: attackMs/decayMs/sustainLevel/releaseMs
@@ -115,7 +166,7 @@ struct InstrumentParams
             return false;
         if (filterType != FilterType::Disabled || cutoff != 100 || resonance != 0)
             return false;
-        if (overdrive != 0 || bitDepth != 16)
+        if (overdrive != 0 || bitDepth != 16 || ! approximatelyEqual (lofiSampleRateHz, 0.0))
             return false;
         if (! approximatelyEqual (reverbSend, -100.0) || ! approximatelyEqual (delaySend, -100.0))
             return false;
@@ -136,6 +187,9 @@ struct InstrumentParams
             return false;
         for (auto& mod : modulations)
             if (! mod.isDefault())
+                return false;
+        for (int i = 0; i < kNumMidiOutLanes; ++i)
+            if (! midiOutAssignments[static_cast<size_t> (i)].isDefault (i))
                 return false;
         return true;
     }

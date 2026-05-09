@@ -140,7 +140,7 @@ juce::ValueTree PatternSerializer::patternToValueTree (const Pattern& pattern, i
     return patTree;
 }
 
-void PatternSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern, int /*version*/)
+void PatternSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern, int version)
 {
     pattern.name = tree.getProperty ("name", "Pattern").toString();
     int numRows = tree.getProperty ("numRows", 64);
@@ -192,7 +192,7 @@ void PatternSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
                     int fxp = childTree.getProperty ("fxp", 0);
                     auto fxToken = childTree.getProperty ("fxc", "").toString();
                     if (fxToken.isNotEmpty())
-                        slot.setSymbolicCommand (static_cast<char> (fxToken[0]), fxp);
+                        setFxSlotFromSerializedCommand (slot, static_cast<char> (fxToken[0]), fxp, version);
                 }
             }
 
@@ -201,7 +201,7 @@ void PatternSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
             auto fxToken0 = cellTree.getProperty ("fxc", "").toString();
             auto& firstSlot = cell.getFxSlot (0);
             if (fxToken0.isNotEmpty())
-                firstSlot.setSymbolicCommand (static_cast<char> (fxToken0[0]), fxp0);
+                setFxSlotFromSerializedCommand (firstSlot, static_cast<char> (fxToken0[0]), fxp0, version);
 
             pattern.setCell (row, track, cell);
         }
@@ -219,7 +219,7 @@ void PatternSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
 
             auto& slot = pattern.getMasterFxSlot (row, lane);
             if (fxToken.isNotEmpty())
-                slot.setSymbolicCommand (static_cast<char> (fxToken[0]), fxp);
+                setFxSlotFromSerializedCommand (slot, static_cast<char> (fxToken[0]), fxp, version);
         }
     }
 

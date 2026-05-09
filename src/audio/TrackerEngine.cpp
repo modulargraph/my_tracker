@@ -15,6 +15,7 @@
 #include "InstrumentRouting.h"
 #include "FxParamTransport.h"
 #include "InstrumentPlaybackTiming.h"
+#include "StepFxResolver.h"
 
 namespace
 {
@@ -29,6 +30,18 @@ constexpr int kCcSamplerPosition = 38;
 constexpr int kCcFxNoteReset = 39;
 constexpr int kCcFxVolume = 40;
 constexpr int kCcSamplerSlice = 41;
+constexpr int kCcSamplerRetrigger = 42;
+constexpr int kCcFxMicroTune = 43;
+constexpr int kCcFxOverdrive = 44;
+constexpr int kCcFxLowPass = 45;
+constexpr int kCcFxBandPass = 46;
+constexpr int kCcFxHighPass = 47;
+constexpr int kCcFxBitDepth = 48;
+constexpr int kCcFxVolumeLfoRate = 49;
+constexpr int kCcFxPanLfoRate = 50;
+constexpr int kCcFxFilterLfoRate = 51;
+constexpr int kCcFxPositionLfoRate = 52;
+constexpr int kCcFxFinetuneLfoRate = 53;
 constexpr int kCcSamplerHardCut = 86;
 
 char getSlotCommandLetter (const FxSlot& slot)
@@ -36,18 +49,54 @@ char getSlotCommandLetter (const FxSlot& slot)
     return slot.getCommandLetter();
 }
 
-int getTimingOffsetMs (const Cell& cell)
+struct MidiOutRoute
+{
+    int channel = 1;
+    std::array<InstrumentParams::MidiOutAssignment,
+               InstrumentParams::kNumMidiOutLanes> assignments = InstrumentParams::makeDefaultMidiOutAssignments();
+};
+
+int getTimingOffsetMs (const std::vector<FxSlot>& fxSlots)
 {
     int offsetMs = 0;
 
-    for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
+    for (const auto& fxSlot : fxSlots)
     {
-        const auto& fxSlot = cell.getFxSlot (fxSlotIdx);
-        if (getSlotCommandLetter (fxSlot) == 'N')
+        if (getSlotCommandLetter (fxSlot) == 'm')
             offsetMs = InstrumentPlaybackTiming::decodeSignedTimingOffsetMs (fxSlot.fxParam);
     }
 
     return offsetMs;
+}
+
+int getPatternSwingPercentAtRow (const Pattern& pattern, int row, int repeatIndex)
+{
+    int swingPercent = 50;
+    const int lastRow = juce::jlimit (0, juce::jmax (0, pattern.numRows - 1), row);
+
+    for (int r = 0; r <= lastRow; ++r)
+    {
+        for (int track = 0; track < kNumTracks; ++track)
+        {
+            const auto fxSlots = StepFxResolver::resolveFxSlots (pattern.getCell (r, track), r, track, 0, repeatIndex);
+            const int rowSwing = StepFxResolver::getPercentFxParam (fxSlots, 'I');
+            if (rowSwing >= 0)
+                swingPercent = InstrumentPlaybackTiming::clampSwingPercent (rowSwing);
+        }
+    }
+
+    return swingPercent;
+}
+
+double getStepEventSeconds (double rowSeconds,
+                            double rowEndSeconds,
+                            int row,
+                            int swingPercent,
+                            const std::vector<FxSlot>& fxSlots)
+{
+    const double swungSeconds = InstrumentPlaybackTiming::applySwingOffsetSeconds (
+        rowSeconds, row, rowEndSeconds - rowSeconds, swingPercent);
+    return InstrumentPlaybackTiming::applyTimingOffsetSeconds (swungSeconds, getTimingOffsetMs (fxSlots));
 }
 
 int getRowTempoCommand (const Pattern& pattern, int row)
@@ -55,7 +104,7 @@ int getRowTempoCommand (const Pattern& pattern, int row)
     if (row < 0 || row >= pattern.numRows)
         return -1;
 
-    int bpm = -1;
+    int tempoPercent = -1;
     int laneCount = row < static_cast<int> (pattern.masterFxRows.size())
                         ? static_cast<int> (pattern.masterFxRows[static_cast<size_t> (row)].size())
                         : 0;
@@ -63,11 +112,81 @@ int getRowTempoCommand (const Pattern& pattern, int row)
     for (int lane = 0; lane < laneCount; ++lane)
     {
         const auto& slot = pattern.getMasterFxSlot (row, lane);
-        if (getSlotCommandLetter (slot) == 'F')
-            bpm = juce::jlimit (20, 300, slot.fxParam);
+        if (getSlotCommandLetter (slot) == 'T')
+            tempoPercent = decodeTempoPercentFxParam (slot.fxParam);
     }
 
-    return bpm;
+    return tempoPercent;
+}
+
+double findPatternTempoStopBeat (const Pattern& pattern, int rpb, double beatOffset)
+{
+    const int safeRpb = juce::jmax (1, rpb);
+
+    for (int row = 0; row < pattern.numRows; ++row)
+        if (getRowTempoCommand (pattern, row) == 0)
+            return beatOffset + static_cast<double> (row) / static_cast<double> (safeRpb);
+
+    return -1.0;
+}
+
+double findArrangementTempoStopBeat (const std::vector<std::pair<const Pattern*, int>>& sequence, int rpb)
+{
+    const int safeRpb = juce::jmax (1, rpb);
+    double beatOffset = 0.0;
+
+    for (const auto& [pattern, repeats] : sequence)
+    {
+        if (pattern == nullptr)
+            continue;
+
+        const int safeRepeats = juce::jmax (0, repeats);
+        const double patternLengthBeats = static_cast<double> (pattern->numRows) / static_cast<double> (safeRpb);
+
+        for (int rep = 0; rep < safeRepeats; ++rep)
+        {
+            const double stopBeat = findPatternTempoStopBeat (*pattern, safeRpb, beatOffset);
+            if (stopBeat >= 0.0)
+                return stopBeat;
+
+            beatOffset += patternLengthBeats;
+        }
+    }
+
+    return -1.0;
+}
+
+double tempoPercentToBpm (double baseBpm, int tempoPercent)
+{
+    return juce::jlimit (20.0, 999.0,
+                         baseBpm * static_cast<double> (tempoPercent) / 100.0);
+}
+
+int getMidiOutLaneIndexForCommandLetter (char commandLetter)
+{
+    return commandLetter >= 'a' && commandLetter <= 'f' ? commandLetter - 'a' : -1;
+}
+
+MidiOutRoute getMidiOutRouteForCell (const Cell& cell, int numNoteLanes, const SimpleSampler& sampler)
+{
+    MidiOutRoute route;
+
+    for (int lane = 0; lane < numNoteLanes; ++lane)
+    {
+        const auto noteSlot = cell.getNoteLane (lane);
+        if (noteSlot.instrument >= 0 && noteSlot.instrument < 16)
+        {
+            route.channel = noteSlot.instrument + 1;
+
+            InstrumentParams params;
+            if (sampler.getParamsIfPresent (noteSlot.instrument, params))
+                route.assignments = params.midiOutAssignments;
+
+            return route;
+        }
+    }
+
+    return route;
 }
 
 float getTrackFaderGain (const TrackMixState& mixState)
@@ -78,52 +197,226 @@ float getTrackFaderGain (const TrackMixState& mixState)
     return juce::Decibels::decibelsToGain (static_cast<float> (mixState.volume));
 }
 
-void appendSymbolicTrackFx (juce::MidiMessageSequence& midiSeq, const FxSlot& slot, double ccTime)
+void appendSymbolicTrackFx (juce::MidiMessageSequence& midiSeq,
+                            const FxSlot& slot,
+                            double ccTime,
+                            int midiOutChannel = 1,
+                            const std::array<InstrumentParams::MidiOutAssignment,
+                                             InstrumentParams::kNumMidiOutLanes>* midiOutAssignments = nullptr)
 {
+    midiOutChannel = juce::jlimit (1, 16, midiOutChannel);
+
     switch (getSlotCommandLetter (slot))
     {
-        case 'B':
+        case '!':
+            midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, kCcFxNoteReset, 0), ccTime);
+            break;
+        case 'r':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcSamplerDirection, slot.fxParam, ccTime);
             break;
-        case 'P':
+        case 'p':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcSamplerPosition, slot.fxParam, ccTime);
             break;
-        case 'T':
+        case 'U':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxTune, slot.fxParam, ccTime);
+            break;
+        case 'M':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxMicroTune, slot.fxParam, ccTime);
             break;
         case 'G':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxPortaSteps, slot.fxParam, ccTime);
             break;
-        case 'Y':
+        case 'P':
+            midiSeq.addEvent (juce::MidiMessage::controllerEvent (
+                                  1, 10, juce::jlimit (0, 127, static_cast<int> (std::lround (slot.fxParam * 127.0 / 100.0)))),
+                              ccTime);
+            break;
+        case 's':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxDelaySend, slot.fxParam, ccTime);
             break;
-        case 'R':
+        case 't':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxReverbSend, slot.fxParam, ccTime);
             break;
-        case 'S':
+        case 'F':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxSlideUp, slot.fxParam, ccTime);
             break;
-        case 'D':
+        case 'J':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxSlideDown, slot.fxParam, ccTime);
             break;
         case 'V':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxVolume, slot.fxParam, ccTime);
             break;
-        case 'L':
+        case 'S':
             FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcSamplerSlice, slot.fxParam, ccTime);
             break;
-        case 'N':
+        case 'R':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcSamplerRetrigger, slot.fxParam, ccTime);
+            break;
+        case 'D':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxOverdrive, slot.fxParam, ccTime);
+            break;
+        case 'L':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxLowPass, slot.fxParam, ccTime);
+            break;
+        case 'B':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxBandPass, slot.fxParam, ccTime);
+            break;
+        case 'H':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxHighPass, slot.fxParam, ccTime);
+            break;
+        case 'E':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxBitDepth, slot.fxParam, ccTime);
+            break;
+        case 'g':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxVolumeLfoRate, slot.fxParam, ccTime);
+            break;
+        case 'h':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxPanLfoRate, slot.fxParam, ccTime);
+            break;
+        case 'j':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxFilterLfoRate, slot.fxParam, ccTime);
+            break;
+        case 'k':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxPositionLfoRate, slot.fxParam, ccTime);
+            break;
+        case 'l':
+            FxParamTransport::appendByteAsControllers (midiSeq, 1, kCcFxFinetuneLfoRate, slot.fxParam, ccTime);
+            break;
+        case 'a':
+        case 'b':
+        case 'c':
+        case 'd':
+        case 'e':
+        case 'f':
+            if (const int laneIndex = getMidiOutLaneIndexForCommandLetter (getSlotCommandLetter (slot)); laneIndex >= 0)
+            {
+                const auto assignment = midiOutAssignments != nullptr
+                                            ? (*midiOutAssignments)[static_cast<size_t> (laneIndex)]
+                                            : InstrumentParams::makeDefaultMidiOutAssignment (laneIndex);
+                const int value = juce::jlimit (0, 127, slot.fxParam);
+                const int number = juce::jlimit (0, 127, assignment.number);
+
+                switch (assignment.type)
+                {
+                    case InstrumentParams::MidiOutMessageType::ControlChange:
+                        midiSeq.addEvent (juce::MidiMessage::controllerEvent (midiOutChannel, number, value), ccTime);
+                        break;
+                    case InstrumentParams::MidiOutMessageType::ProgramChange:
+                        midiSeq.addEvent (juce::MidiMessage::programChange (midiOutChannel, value), ccTime);
+                        break;
+                    case InstrumentParams::MidiOutMessageType::ChannelPressure:
+                        midiSeq.addEvent (juce::MidiMessage::channelPressureChange (midiOutChannel, value), ccTime);
+                        break;
+                    case InstrumentParams::MidiOutMessageType::PolyPressure:
+                        midiSeq.addEvent (juce::MidiMessage::aftertouchChange (midiOutChannel, number, value), ccTime);
+                        break;
+                }
+            }
+            break;
+        case 'm':
             // Note timing is handled by the pattern scheduler, not by MIDI CC state.
             break;
-        case 'M':
+        case 'x':
+            // Random FX value is resolved before FX are emitted.
+            break;
+        case 'X':
             // Plugin-instrument modulation triggers are handled from the UI row clock.
             break;
-        case 'F':
+        case 'T':
             // Tempo is handled via master lane tempo points.
             break;
         default:
             break;
     }
+}
+
+void appendNoteSequence (juce::MidiMessageSequence& midiSeq,
+                         int noteChannel,
+                         const std::vector<int>& chordNotes,
+                         const std::vector<int>& arpNotes,
+                         int velocity,
+                         double startSeconds,
+                         double noteOffSeconds,
+                         double rowEndSeconds)
+{
+    if (! arpNotes.empty())
+    {
+        const double arpEndSeconds = juce::jmax (startSeconds + 0.001,
+                                                 std::min (noteOffSeconds, rowEndSeconds));
+        const double sliceSeconds = juce::jmax (0.001,
+                                                (arpEndSeconds - startSeconds)
+                                                    / static_cast<double> (arpNotes.size()));
+
+        for (int i = 0; i < static_cast<int> (arpNotes.size()); ++i)
+        {
+            const int note = arpNotes[static_cast<size_t> (i)];
+            const double eventStart = startSeconds + static_cast<double> (i) * sliceSeconds;
+            const double eventEnd = i + 1 < static_cast<int> (arpNotes.size())
+                                        ? eventStart + sliceSeconds
+                                        : arpEndSeconds;
+
+            midiSeq.addEvent (juce::MidiMessage::noteOn (noteChannel, note, static_cast<juce::uint8> (velocity)),
+                              eventStart);
+            midiSeq.addEvent (juce::MidiMessage::noteOff (noteChannel, note),
+                              InstrumentPlaybackTiming::getHandoffEventTime (
+                                  InstrumentPlaybackTiming::ensureNoteEndAfterStartSeconds (
+                                      eventStart, eventEnd, noteOffSeconds)));
+        }
+        return;
+    }
+
+    for (int chordNote : chordNotes)
+        midiSeq.addEvent (juce::MidiMessage::noteOn (noteChannel, chordNote, static_cast<juce::uint8> (velocity)),
+                          startSeconds);
+
+    for (int chordNote : chordNotes)
+        midiSeq.addEvent (juce::MidiMessage::noteOff (noteChannel, chordNote), noteOffSeconds);
+}
+
+bool appendRolledNoteSequence (juce::MidiMessageSequence& midiSeq,
+                               int noteChannel,
+                               const std::vector<int>& chordNotes,
+                               const SamplePlaybackLayout::RollFx& roll,
+                               int velocity,
+                               double startSeconds,
+                               double noteOffSeconds,
+                               double rowEndSeconds,
+                               int row,
+                               int track,
+                               int lane,
+                               int repeatIndex)
+{
+    if (roll.divider <= 0 || chordNotes.empty())
+        return false;
+
+    const double rollEndSeconds = juce::jmax (startSeconds + 0.001,
+                                              std::min (noteOffSeconds, rowEndSeconds));
+    const double sliceSeconds = juce::jmax (0.001,
+                                            (rollEndSeconds - startSeconds)
+                                                / static_cast<double> (roll.divider));
+
+    for (int i = 0; i < roll.divider; ++i)
+    {
+        const double eventStart = startSeconds + static_cast<double> (i) * sliceSeconds;
+        const double eventEnd = i + 1 < roll.divider ? eventStart + sliceSeconds : rollEndSeconds;
+        const int eventVelocity = StepFxResolver::resolveRollVelocity (velocity, roll.type, i, roll.divider);
+        const int noteOffset = StepFxResolver::resolveRollNoteOffset (roll.type, i, roll.divider,
+                                                                      row, track, lane, repeatIndex);
+
+        for (int chordNote : chordNotes)
+        {
+            const int note = juce::jlimit (0, 127, chordNote + noteOffset);
+            midiSeq.addEvent (juce::MidiMessage::noteOn (noteChannel, note,
+                                                         static_cast<juce::uint8> (eventVelocity)),
+                              eventStart);
+            midiSeq.addEvent (juce::MidiMessage::noteOff (noteChannel, note),
+                              InstrumentPlaybackTiming::getHandoffEventTime (
+                                  InstrumentPlaybackTiming::ensureNoteEndAfterStartSeconds (
+                                      eventStart, eventEnd, noteOffSeconds)));
+        }
+    }
+
+    return true;
 }
 
 te::Plugin* findInsertPluginForSlot (te::AudioTrack& track, int slotIndex)
@@ -241,13 +534,38 @@ bool shouldSuppressDirectOutputForGroupSolo (const MixerState* mixerState, int g
 }
 } // namespace
 
+struct TrackerEngine::TransportStopTimer : private juce::Timer
+{
+    explicit TransportStopTimer (TrackerEngine& ownerIn) : owner (ownerIn) {}
+
+    void schedule (int delayMs)
+    {
+        startTimer (juce::jmax (1, delayMs));
+    }
+
+    void cancel()
+    {
+        stopTimer();
+    }
+
+    void timerCallback() override
+    {
+        stopTimer();
+        owner.handleTransportStopTimer();
+    }
+
+    TrackerEngine& owner;
+};
+
 TrackerEngine::TrackerEngine()
 {
     currentTrackInstrument.fill (-1);
+    transportStopTimer = std::make_unique<TransportStopTimer> (*this);
 }
 
 TrackerEngine::~TrackerEngine()
 {
+    cancelTransportStop();
     stopTimer();
 
     if (edit != nullptr)
@@ -325,8 +643,6 @@ void TrackerEngine::rebuildTempoSequenceFromPatternMasterLane (const Pattern& pa
         return;
 
     auto& tempoSequence = edit->tempoSequence;
-    const double baseBpm = tempoSequence.getTempos()[0]->getBpm();
-
     while (tempoSequence.getNumTempos() > 1)
         tempoSequence.removeTempo (tempoSequence.getNumTempos() - 1, false);
 
@@ -335,16 +651,17 @@ void TrackerEngine::rebuildTempoSequenceFromPatternMasterLane (const Pattern& pa
     std::map<double, int> tempoPoints;
     for (int row = 0; row < pattern.numRows; ++row)
     {
-        int bpm = getRowTempoCommand (pattern, row);
-        if (bpm <= 0)
+        int tempoPercent = getRowTempoCommand (pattern, row);
+        if (tempoPercent <= 0)
             continue;
 
         double beat = static_cast<double> (row) / static_cast<double> (rowsPerBeat);
-        tempoPoints[beat] = bpm;
+        tempoPoints[beat] = tempoPercent;
     }
 
-    for (const auto& [beat, bpm] : tempoPoints)
+    for (const auto& [beat, tempoPercent] : tempoPoints)
     {
+        const double bpm = tempoPercentToBpm (baseBpm, tempoPercent);
         if (beat <= 0.0)
             tempoSequence.getTempos()[0]->setBpm (bpm);
         else
@@ -361,8 +678,6 @@ void TrackerEngine::rebuildTempoSequenceFromArrangementMasterLane (const std::ve
         return;
 
     auto& tempoSequence = edit->tempoSequence;
-    const double baseBpm = tempoSequence.getTempos()[0]->getBpm();
-
     while (tempoSequence.getNumTempos() > 1)
         tempoSequence.removeTempo (tempoSequence.getNumTempos() - 1, false);
 
@@ -382,20 +697,21 @@ void TrackerEngine::rebuildTempoSequenceFromArrangementMasterLane (const std::ve
         {
             for (int row = 0; row < pattern->numRows; ++row)
             {
-                int bpm = getRowTempoCommand (*pattern, row);
-                if (bpm <= 0)
+                int tempoPercent = getRowTempoCommand (*pattern, row);
+                if (tempoPercent <= 0)
                     continue;
 
                 double beat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
-                tempoPoints[beat] = bpm;
+                tempoPoints[beat] = tempoPercent;
             }
 
             beatOffset += patternLengthBeats;
         }
     }
 
-    for (const auto& [beat, bpm] : tempoPoints)
+    for (const auto& [beat, tempoPercent] : tempoPoints)
     {
+        const double bpm = tempoPercentToBpm (baseBpm, tempoPercent);
         if (beat <= 0.0)
             tempoSequence.getTempos()[0]->setBpm (bpm);
         else
@@ -412,6 +728,8 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
     if (edit == nullptr)
         return;
 
+    transportStopBeat = findPatternTempoStopBeat (pattern, rowsPerBeat, 0.0);
+    cancelTransportStop();
     rebuildTempoSequenceFromPatternMasterLane (pattern);
 
     // Ensure correct instruments are loaded on each track
@@ -464,36 +782,60 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
         for (int row = 0; row < pattern.numRows; ++row)
         {
             const auto& cell = pattern.getCell (row, trackIdx);
+            const auto rowFxSlots = StepFxResolver::resolveFxSlots (cell, row, trackIdx, 0, 0);
             double startBeat = static_cast<double> (row) / static_cast<double> (rowsPerBeat);
+            const double patternEndBeat = static_cast<double> (pattern.numRows) / static_cast<double> (rowsPerBeat);
+            const double rowEndBeat = std::min (
+                startBeat + 1.0 / static_cast<double> (rowsPerBeat), patternEndBeat);
             auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
             const double rowSeconds = rowTime.inSeconds();
-            const double noteEventSeconds = InstrumentPlaybackTiming::applyTimingOffsetSeconds (
-                rowSeconds, getTimingOffsetMs (cell));
+            const double rowEndSeconds = edit->tempoSequence
+                .toTime (te::BeatPosition::fromBeats (rowEndBeat)).inSeconds();
+            const int swingPercent = getPatternSwingPercentAtRow (pattern, row, 0);
+            const double noteEventSeconds = getStepEventSeconds (
+                rowSeconds, rowEndSeconds, row, swingPercent, rowFxSlots);
 
-            // Check if any lane has a note for FX reset
-            bool anyLaneHasNote = false;
+            // Check if any lane has an allowed note for FX reset and shared FX.
+            bool anyLaneHasCandidateNote = false;
+            bool anyLaneHasAllowedNote = false;
             for (int nl = 0; nl < numNoteLanes; ++nl)
             {
                 auto slot = cell.getNoteLane (nl);
                 if (slot.note >= 0)
-                    anyLaneHasNote = true;
+                {
+                    const auto laneFxSlots = nl == 0
+                                                 ? rowFxSlots
+                                                 : StepFxResolver::resolveFxSlots (cell, row, trackIdx, nl, 0);
+                    anyLaneHasCandidateNote = true;
+                    if (StepFxResolver::chanceAllowsStep (laneFxSlots, row, trackIdx, nl, 0))
+                        anyLaneHasAllowedNote = true;
+                }
             }
 
-            if (anyLaneHasNote)
+            if (anyLaneHasAllowedNote)
             {
                 const double resetTime = juce::jmax (0.0, noteEventSeconds - 0.00008);
                 midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, kCcFxNoteReset, 0), resetTime);
             }
 
+            const bool rowAllowsSharedFx = anyLaneHasCandidateNote
+                                               ? anyLaneHasAllowedNote
+                                               : StepFxResolver::chanceAllowsStep (rowFxSlots, row, trackIdx, 0, 0);
+            const auto midiOutRoute = getMidiOutRouteForCell (cell, numNoteLanes, sampler);
+
             // Process FX slots (shared)
-            for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
+            for (const auto& fxSlot : rowFxSlots)
             {
-                const auto& fxSlot = cell.getFxSlot (fxSlotIdx);
                 if (fxSlot.isEmpty())
                     continue;
 
                 const auto letter = getSlotCommandLetter (fxSlot);
                 if (letter == '\0')
+                    continue;
+
+                if (! rowAllowsSharedFx)
+                    continue;
+                if (isPluginInstrumentTrack && letter == 'R')
                     continue;
 
                 if (letter == 'G' && fxSlot.fxParam > 0)
@@ -503,10 +845,10 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                         ps = fxSlot.fxParam;
                 }
 
-                const double fxBaseSeconds = anyLaneHasNote ? std::min (rowSeconds, noteEventSeconds)
-                                                            : rowSeconds;
+                const double fxBaseSeconds = anyLaneHasAllowedNote ? std::min (rowSeconds, noteEventSeconds)
+                                                                   : rowSeconds;
                 const double ccTime = juce::jmax (0.0, fxBaseSeconds - 0.00005);
-                appendSymbolicTrackFx (midiSeq, fxSlot, ccTime);
+                appendSymbolicTrackFx (midiSeq, fxSlot, ccTime, midiOutRoute.channel, &midiOutRoute.assignments);
             }
         }
 
@@ -521,18 +863,24 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
             for (int row = 0; row < pattern.numRows; ++row)
             {
                 const auto& cell = pattern.getCell (row, trackIdx);
+                const auto resolvedFxSlots = StepFxResolver::resolveFxSlots (cell, row, trackIdx, laneIdx, 0);
                 auto noteSlot = cell.getNoteLane (laneIdx);
 
                 double startBeat = static_cast<double> (row) / static_cast<double> (rowsPerBeat);
+                const double patternEndBeat = static_cast<double> (pattern.numRows) / static_cast<double> (rowsPerBeat);
+                const double rowEndBeat = std::min (
+                    startBeat + 1.0 / static_cast<double> (rowsPerBeat), patternEndBeat);
                 auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
                 const double rowSeconds = rowTime.inSeconds();
-                const double noteEventSeconds = InstrumentPlaybackTiming::applyTimingOffsetSeconds (
-                    rowSeconds, getTimingOffsetMs (cell));
+                const double rowEndSeconds = edit->tempoSequence
+                    .toTime (te::BeatPosition::fromBeats (rowEndBeat)).inSeconds();
+                const int swingPercent = getPatternSwingPercentAtRow (pattern, row, 0);
+                const double noteEventSeconds = getStepEventSeconds (
+                    rowSeconds, rowEndSeconds, row, swingPercent, resolvedFxSlots);
 
                 // Check FX for portamento (shared FX affects all lanes)
-                for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
+                for (const auto& fxSlot : resolvedFxSlots)
                 {
-                    const auto& fxSlot = cell.getFxSlot (fxSlotIdx);
                     if (fxSlot.isEmpty()) continue;
                     const auto letter = getSlotCommandLetter (fxSlot);
                     if (letter == 'G' && fxSlot.fxParam > 0)
@@ -543,6 +891,11 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
 
                 if (noteSlot.note < 0)
                     continue;
+
+                if (! StepFxResolver::chanceAllowsStep (resolvedFxSlots, row, trackIdx, laneIdx, 0))
+                    continue;
+
+                noteSlot = StepFxResolver::resolveNoteSlot (noteSlot, resolvedFxSlots, row, trackIdx, laneIdx, 0);
 
                 // OFF (255)
                 if (noteSlot.note == 255)
@@ -612,15 +965,17 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 for (int nextRow = row + 1; nextRow < pattern.numRows; ++nextRow)
                 {
                     const auto& nextCell = pattern.getCell (nextRow, trackIdx);
+                    const auto nextFxSlots = StepFxResolver::resolveFxSlots (nextCell, nextRow, trackIdx, laneIdx, 0);
                     auto nextSlot = nextCell.getNoteLane (laneIdx);
-                    if (nextSlot.note >= 0)
+                    if (nextSlot.note >= 0
+                        && StepFxResolver::chanceAllowsStep (nextFxSlots, nextRow, trackIdx, laneIdx, 0))
                     {
+                        nextSlot = StepFxResolver::resolveNoteSlot (nextSlot, nextFxSlots, nextRow, trackIdx, laneIdx, 0);
                         bool nextIsPorta = false;
                         if (nextSlot.note < 254)
                         {
-                            for (int fxi = 0; fxi < nextCell.getNumFxSlots(); ++fxi)
+                            for (const auto& ns : nextFxSlots)
                             {
-                                const auto& ns = nextCell.getFxSlot (fxi);
                                 if (getSlotCommandLetter (ns) == 'G' && ns.fxParam > 0)
                                     nextIsPorta = true;
                             }
@@ -628,32 +983,36 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                         if (nextIsPorta)
                             continue;
                         const double nextBeat = static_cast<double> (nextRow) / static_cast<double> (rowsPerBeat);
+                        const double nextRowEndBeat = std::min (
+                            nextBeat + 1.0 / static_cast<double> (rowsPerBeat), patternEndBeat);
                         const double nextRowSeconds = edit->tempoSequence
                             .toTime (te::BeatPosition::fromBeats (nextBeat)).inSeconds();
-                        nextTriggerSeconds = InstrumentPlaybackTiming::applyTimingOffsetSeconds (
-                            nextRowSeconds, getTimingOffsetMs (nextCell));
+                        const double nextRowEndSeconds = edit->tempoSequence
+                            .toTime (te::BeatPosition::fromBeats (nextRowEndBeat)).inSeconds();
+                        const int nextSwingPercent = getPatternSwingPercentAtRow (pattern, nextRow, 0);
+                        nextTriggerSeconds = getStepEventSeconds (
+                            nextRowSeconds, nextRowEndSeconds, nextRow, nextSwingPercent, nextFxSlots);
                         nextTriggerIsNormalNote = nextSlot.note < 128;
                         break;
                     }
                 }
-                const double patternEndBeat = static_cast<double> (pattern.numRows) / static_cast<double> (rowsPerBeat);
-                const double rowEndBeat = std::min (
-                    startBeat + 1.0 / static_cast<double> (rowsPerBeat), patternEndBeat);
-                const double rowEndSeconds = edit->tempoSequence
-                    .toTime (te::BeatPosition::fromBeats (rowEndBeat)).inSeconds();
                 const double patternEndSeconds = endTime.inSeconds();
                 const double endSeconds = InstrumentPlaybackTiming::chooseNoteEndSeconds (
                     isKill,
                     rowEndSeconds,
                     nextTriggerSeconds,
                     patternEndSeconds);
-                const double noteEndSeconds = InstrumentPlaybackTiming::ensureNoteEndAfterStartSeconds (
+                double noteEndSeconds = InstrumentPlaybackTiming::ensureNoteEndAfterStartSeconds (
                     noteEventSeconds, endSeconds, patternEndSeconds);
+                const int gatePercent = StepFxResolver::getPercentFxParam (resolvedFxSlots, 'q');
+                if (gatePercent >= 0)
+                    noteEndSeconds = InstrumentPlaybackTiming::applyGateLengthSeconds (
+                        noteEventSeconds, rowEndSeconds, noteEndSeconds, patternEndSeconds, gatePercent);
 
                 int velocity = noteSlot.volume >= 0 ? noteSlot.volume : 127;
-
-                midiSeq.addEvent (juce::MidiMessage::noteOn (noteChannel, noteSlot.note, static_cast<juce::uint8> (velocity)),
-                                  noteEventSeconds);
+                const auto chordNotes = StepFxResolver::resolveChordNotes (noteSlot.note, resolvedFxSlots);
+                const auto arpNotes = StepFxResolver::resolveArpNotes (
+                    noteSlot.note, resolvedFxSlots, row, trackIdx, laneIdx, 0);
 
                 const bool hardCutSampleAtEnd = InstrumentPlaybackTiming::shouldSendHardCutAtNoteHandoff (
                     isKill, isPluginInstrumentTrack, nextTriggerIsNormalNote);
@@ -664,10 +1023,18 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
                 const double noteOffSeconds = nextTriggerSeconds >= 0.0
                     ? InstrumentPlaybackTiming::getHandoffEventTime (noteEndSeconds)
                     : noteEndSeconds;
-                midiSeq.addEvent (juce::MidiMessage::noteOff (noteChannel, noteSlot.note),
-                                  noteOffSeconds);
+                const auto rollFx = StepFxResolver::getRollFx (resolvedFxSlots);
+                if (! isPluginInstrumentTrack
+                    || ! arpNotes.empty()
+                    || ! appendRolledNoteSequence (midiSeq, noteChannel, chordNotes, rollFx, velocity,
+                                                   noteEventSeconds, noteOffSeconds, rowEndSeconds,
+                                                   row, trackIdx, laneIdx, 0))
+                {
+                    appendNoteSequence (midiSeq, noteChannel, chordNotes, arpNotes, velocity,
+                                        noteEventSeconds, noteOffSeconds, rowEndSeconds);
+                }
 
-                lastPlayingNote = noteSlot.note;
+                lastPlayingNote = chordNotes.size() == 1 && arpNotes.empty() ? noteSlot.note : -1;
                 activePortaSteps = 0;
             }
         }
@@ -680,14 +1047,24 @@ void TrackerEngine::syncPatternToEdit (const Pattern& pattern,
     applyPatternAutomation (pattern.getAutomationData(), pattern.numRows, rowsPerBeat);
 
     refreshTransportLoopRangeFromClip();
+    scheduleTransportStopFromCurrentPosition();
 }
 
 void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pattern*, int>>& sequence, int rpb,
                                             const std::array<bool, kNumTracks>& releaseMode)
 {
-    if (edit == nullptr || sequence.empty())
+    if (edit == nullptr)
         return;
 
+    transportStopBeat = -1.0;
+    cancelTransportStop();
+    if (sequence.empty())
+    {
+        refreshTransportLoopRangeFromClip();
+        return;
+    }
+
+    transportStopBeat = findArrangementTempoStopBeat (sequence, rpb);
     rebuildTempoSequenceFromArrangementMasterLane (sequence, rpb);
 
     // Prepare instruments once across the full arrangement so program changes can
@@ -771,31 +1148,49 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     for (int row = 0; row < pattern->numRows; ++row)
                     {
                         const auto& cell = pattern->getCell (row, trackIdx);
+                        const auto rowFxSlots = StepFxResolver::resolveFxSlots (cell, row, trackIdx, 0, rep);
                         double startBeat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
+                        const double rowEndBeat = std::min (
+                            startBeat + 1.0 / static_cast<double> (rpb), beatOffset + patternLengthBeats);
                         auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
                         const double rowSeconds = rowTime.inSeconds();
-                        const double noteEventSeconds = InstrumentPlaybackTiming::applyTimingOffsetSeconds (
-                            rowSeconds, getTimingOffsetMs (cell));
+                        const double rowEndSeconds = edit->tempoSequence
+                            .toTime (te::BeatPosition::fromBeats (rowEndBeat)).inSeconds();
+                        const int swingPercent = getPatternSwingPercentAtRow (*pattern, row, rep);
+                        const double noteEventSeconds = getStepEventSeconds (
+                            rowSeconds, rowEndSeconds, row, swingPercent, rowFxSlots);
 
-                        // Check if any lane has a note for FX reset
-                        bool anyLaneHasNote = false;
+                        // Check if any lane has an allowed note for FX reset and shared FX.
+                        bool anyLaneHasCandidateNote = false;
+                        bool anyLaneHasAllowedNote = false;
                         for (int nl = 0; nl < numNoteLanes; ++nl)
                         {
                             auto slot = cell.getNoteLane (nl);
                             if (slot.note >= 0)
-                                anyLaneHasNote = true;
+                            {
+                                const auto laneFxSlots = nl == 0
+                                                             ? rowFxSlots
+                                                             : StepFxResolver::resolveFxSlots (cell, row, trackIdx, nl, rep);
+                                anyLaneHasCandidateNote = true;
+                                if (StepFxResolver::chanceAllowsStep (laneFxSlots, row, trackIdx, nl, rep))
+                                    anyLaneHasAllowedNote = true;
+                            }
                         }
 
-                        if (anyLaneHasNote)
+                        if (anyLaneHasAllowedNote)
                         {
                             const double resetTime = juce::jmax (0.0, noteEventSeconds - 0.00008);
                             midiSeq.addEvent (juce::MidiMessage::controllerEvent (1, kCcFxNoteReset, 0), resetTime);
                         }
 
+                        const bool rowAllowsSharedFx = anyLaneHasCandidateNote
+                                                           ? anyLaneHasAllowedNote
+                                                           : StepFxResolver::chanceAllowsStep (rowFxSlots, row, trackIdx, 0, rep);
+                        const auto midiOutRoute = getMidiOutRouteForCell (cell, numNoteLanes, sampler);
+
                         // Process FX slots (shared across all note lanes)
-                        for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
+                        for (const auto& slot : rowFxSlots)
                         {
-                            const auto& slot = cell.getFxSlot (fxSlotIdx);
                             if (slot.isEmpty())
                                 continue;
 
@@ -803,10 +1198,15 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                             if (letter == '\0')
                                 continue;
 
-                            const double fxBaseSeconds = anyLaneHasNote ? std::min (rowSeconds, noteEventSeconds)
-                                                                        : rowSeconds;
+                            if (! rowAllowsSharedFx)
+                                continue;
+                            if (isPluginInstrumentTrack && letter == 'R')
+                                continue;
+
+                            const double fxBaseSeconds = anyLaneHasAllowedNote ? std::min (rowSeconds, noteEventSeconds)
+                                                                               : rowSeconds;
                             const double ccTime = juce::jmax (0.0, fxBaseSeconds - 0.00005);
-                            appendSymbolicTrackFx (midiSeq, slot, ccTime);
+                            appendSymbolicTrackFx (midiSeq, slot, ccTime, midiOutRoute.channel, &midiOutRoute.assignments);
                         }
                     }
 
@@ -833,18 +1233,24 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                     for (int row = 0; row < pattern->numRows; ++row)
                     {
                         const auto& cell = pattern->getCell (row, trackIdx);
+                        const auto resolvedFxSlots = StepFxResolver::resolveFxSlots (cell, row, trackIdx, laneIdx, rep);
                         auto noteSlot = cell.getNoteLane (laneIdx);
 
                         double startBeat = beatOffset + static_cast<double> (row) / static_cast<double> (rpb);
+                        const double repeatEndBeat = beatOffset + patternLengthBeats;
+                        const double rowEndBeat = std::min (
+                            startBeat + 1.0 / static_cast<double> (rpb), repeatEndBeat);
                         auto rowTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
                         const double rowSeconds = rowTime.inSeconds();
-                        const double noteEventSeconds = InstrumentPlaybackTiming::applyTimingOffsetSeconds (
-                            rowSeconds, getTimingOffsetMs (cell));
+                        const double rowEndSeconds = edit->tempoSequence
+                            .toTime (te::BeatPosition::fromBeats (rowEndBeat)).inSeconds();
+                        const int swingPercent = getPatternSwingPercentAtRow (*pattern, row, rep);
+                        const double noteEventSeconds = getStepEventSeconds (
+                            rowSeconds, rowEndSeconds, row, swingPercent, resolvedFxSlots);
 
                         // Check FX for portamento (shared FX affects all lanes)
-                        for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
+                        for (const auto& fxSlot : resolvedFxSlots)
                         {
-                            const auto& fxSlot = cell.getFxSlot (fxSlotIdx);
                             if (fxSlot.isEmpty()) continue;
                             const auto letter = getSlotCommandLetter (fxSlot);
                             if (letter == 'G' && fxSlot.fxParam > 0)
@@ -855,6 +1261,11 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
 
                         if (noteSlot.note < 0)
                             continue;
+
+                        if (! StepFxResolver::chanceAllowsStep (resolvedFxSlots, row, trackIdx, laneIdx, rep))
+                            continue;
+
+                        noteSlot = StepFxResolver::resolveNoteSlot (noteSlot, resolvedFxSlots, row, trackIdx, laneIdx, rep);
 
                         // OFF (255)
                         if (noteSlot.note == 255)
@@ -918,21 +1329,22 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
 
                         // Notes sustain until the next trigger in this lane or
                         // repeat end. Kill/release only changes sample handoff style.
-                        double repeatEndBeat = beatOffset + patternLengthBeats;
                         double nextTriggerSeconds = -1.0;
                         bool nextTriggerIsNormalNote = false;
                         for (int nextRow = row + 1; nextRow < pattern->numRows; ++nextRow)
                         {
                             const auto& nextCell = pattern->getCell (nextRow, trackIdx);
+                            const auto nextFxSlots = StepFxResolver::resolveFxSlots (nextCell, nextRow, trackIdx, laneIdx, rep);
                             auto nextSlot = nextCell.getNoteLane (laneIdx);
-                            if (nextSlot.note >= 0)
+                            if (nextSlot.note >= 0
+                                && StepFxResolver::chanceAllowsStep (nextFxSlots, nextRow, trackIdx, laneIdx, rep))
                             {
+                                nextSlot = StepFxResolver::resolveNoteSlot (nextSlot, nextFxSlots, nextRow, trackIdx, laneIdx, rep);
                                 bool nextIsPorta = false;
                                 if (nextSlot.note < 254)
                                 {
-                                    for (int fxi = 0; fxi < nextCell.getNumFxSlots(); ++fxi)
+                                    for (const auto& ns : nextFxSlots)
                                     {
-                                        const auto& ns = nextCell.getFxSlot (fxi);
                                         if (getSlotCommandLetter (ns) == 'G' && ns.fxParam > 0)
                                             nextIsPorta = true;
                                     }
@@ -940,19 +1352,20 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                                 if (nextIsPorta)
                                     continue;
                                 const double nextBeat = beatOffset + static_cast<double> (nextRow) / static_cast<double> (rpb);
+                                const double nextRowEndBeat = std::min (
+                                    nextBeat + 1.0 / static_cast<double> (rpb), repeatEndBeat);
                                 const double nextRowSeconds = edit->tempoSequence
                                     .toTime (te::BeatPosition::fromBeats (nextBeat)).inSeconds();
-                                nextTriggerSeconds = InstrumentPlaybackTiming::applyTimingOffsetSeconds (
-                                    nextRowSeconds, getTimingOffsetMs (nextCell));
+                                const double nextRowEndSeconds = edit->tempoSequence
+                                    .toTime (te::BeatPosition::fromBeats (nextRowEndBeat)).inSeconds();
+                                const int nextSwingPercent = getPatternSwingPercentAtRow (*pattern, nextRow, rep);
+                                nextTriggerSeconds = getStepEventSeconds (
+                                    nextRowSeconds, nextRowEndSeconds, nextRow, nextSwingPercent, nextFxSlots);
                                 nextTriggerIsNormalNote = nextSlot.note < 128;
                                 break;
                             }
                         }
 
-                        const double rowEndBeat = std::min (
-                            startBeat + 1.0 / static_cast<double> (rpb), repeatEndBeat);
-                        const double rowEndSeconds = edit->tempoSequence
-                            .toTime (te::BeatPosition::fromBeats (rowEndBeat)).inSeconds();
                         const double repeatEndSeconds = edit->tempoSequence
                             .toTime (te::BeatPosition::fromBeats (repeatEndBeat)).inSeconds();
                         const double endSeconds = InstrumentPlaybackTiming::chooseNoteEndSeconds (
@@ -960,13 +1373,17 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                             rowEndSeconds,
                             nextTriggerSeconds,
                             repeatEndSeconds);
-                        const double noteEndSeconds = InstrumentPlaybackTiming::ensureNoteEndAfterStartSeconds (
+                        double noteEndSeconds = InstrumentPlaybackTiming::ensureNoteEndAfterStartSeconds (
                             noteEventSeconds, endSeconds, repeatEndSeconds);
+                        const int gatePercent = StepFxResolver::getPercentFxParam (resolvedFxSlots, 'q');
+                        if (gatePercent >= 0)
+                            noteEndSeconds = InstrumentPlaybackTiming::applyGateLengthSeconds (
+                                noteEventSeconds, rowEndSeconds, noteEndSeconds, repeatEndSeconds, gatePercent);
 
                         int velocity = noteSlot.volume >= 0 ? noteSlot.volume : 127;
-
-                        midiSeq.addEvent (juce::MidiMessage::noteOn (noteChannel, noteSlot.note, static_cast<juce::uint8> (velocity)),
-                                          noteEventSeconds);
+                        const auto chordNotes = StepFxResolver::resolveChordNotes (noteSlot.note, resolvedFxSlots);
+                        const auto arpNotes = StepFxResolver::resolveArpNotes (
+                            noteSlot.note, resolvedFxSlots, row, trackIdx, laneIdx, rep);
 
                         const bool hardCutSampleAtEnd = InstrumentPlaybackTiming::shouldSendHardCutAtNoteHandoff (
                             isKill, isPluginInstrumentTrack, nextTriggerIsNormalNote);
@@ -977,10 +1394,18 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
                         const double noteOffSeconds = nextTriggerSeconds >= 0.0
                             ? InstrumentPlaybackTiming::getHandoffEventTime (noteEndSeconds)
                             : noteEndSeconds;
-                        midiSeq.addEvent (juce::MidiMessage::noteOff (noteChannel, noteSlot.note),
-                                          noteOffSeconds);
+                        const auto rollFx = StepFxResolver::getRollFx (resolvedFxSlots);
+                        if (! isPluginInstrumentTrack
+                            || ! arpNotes.empty()
+                            || ! appendRolledNoteSequence (midiSeq, noteChannel, chordNotes, rollFx, velocity,
+                                                           noteEventSeconds, noteOffSeconds, rowEndSeconds,
+                                                           row, trackIdx, laneIdx, rep))
+                        {
+                            appendNoteSequence (midiSeq, noteChannel, chordNotes, arpNotes, velocity,
+                                                noteEventSeconds, noteOffSeconds, rowEndSeconds);
+                        }
 
-                        lastPlayingNote = noteSlot.note;
+                        lastPlayingNote = chordNotes.size() == 1 && arpNotes.empty() ? noteSlot.note : -1;
                         activePortaSteps = 0;
                     }
 
@@ -998,6 +1423,7 @@ void TrackerEngine::syncArrangementToEdit (const std::vector<std::pair<const Pat
         applyPatternAutomation (sequence.front().first->getAutomationData(), sequence.front().first->numRows, rpb);
 
     refreshTransportLoopRangeFromClip();
+    scheduleTransportStopFromCurrentPosition();
 }
 
 void TrackerEngine::play()
@@ -1006,16 +1432,98 @@ void TrackerEngine::play()
         return;
 
     auto& transport = edit->getTransport();
+    cancelTransportStop();
     refreshTransportLoopRangeFromClip();
 
     transport.setPosition (te::TimePosition::fromSeconds (0.0));
     transport.play (false);
+    scheduleTransportStopFromCurrentPosition();
+}
+
+void TrackerEngine::playFromBeat (double beat)
+{
+    if (edit == nullptr)
+        return;
+
+    auto& transport = edit->getTransport();
+    cancelTransportStop();
+    refreshTransportLoopRangeFromClip();
+
+    auto loopRange = transport.getLoopRange();
+    if (loopRange.isEmpty())
+    {
+        play();
+        return;
+    }
+
+    auto startTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (juce::jmax (0.0, beat)));
+    if (startTime < loopRange.getStart() || startTime >= loopRange.getEnd())
+        startTime = loopRange.getStart();
+
+    transport.setPosition (startTime);
+    if (! transport.isPlaying())
+        transport.play (false);
+    scheduleTransportStopFromCurrentPosition();
+}
+
+void TrackerEngine::playFromRow (int row)
+{
+    const double beat = static_cast<double> (juce::jmax (0, row)) / static_cast<double> (juce::jmax (1, rowsPerBeat));
+    playFromBeat (beat);
+}
+
+void TrackerEngine::playFocusLoopRows (int startRow, int endRow)
+{
+    if (edit == nullptr)
+        return;
+
+    if (startRow > endRow)
+        std::swap (startRow, endRow);
+
+    const int safeRpb = juce::jmax (1, rowsPerBeat);
+    const int clampedStartRow = juce::jmax (0, startRow);
+    const int clampedEndRow = juce::jmax (clampedStartRow, endRow);
+    const double startBeat = static_cast<double> (clampedStartRow) / static_cast<double> (safeRpb);
+    double endBeat = static_cast<double> (clampedEndRow + 1) / static_cast<double> (safeRpb);
+    endBeat = juce::jmax (startBeat + 1.0 / static_cast<double> (safeRpb), endBeat);
+
+    auto& transport = edit->getTransport();
+    cancelTransportStop();
+
+    bool shouldLoop = true;
+    if (transportStopBeat >= 0.0)
+    {
+        if (transportStopBeat <= startBeat)
+        {
+            stop();
+            return;
+        }
+
+        if (transportStopBeat < endBeat)
+        {
+            endBeat = transportStopBeat;
+            shouldLoop = false;
+        }
+    }
+
+    const auto startTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (startBeat));
+    const auto endTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (endBeat));
+    transport.setLoopRange ({ startTime, endTime });
+    transport.looping = shouldLoop;
+    transport.setPosition (startTime);
+
+    if (! transport.isPlaying())
+        transport.play (false);
+
+    scheduleTransportStopFromCurrentPosition();
 }
 
 void TrackerEngine::stop()
 {
     if (edit == nullptr)
         return;
+
+    cancelTransportStop();
 
     // Stop any active preview before transport shutdown so live preview MIDI
     // gets a matching note-off while the tracks can still process it.
@@ -1094,6 +1602,17 @@ void TrackerEngine::updateLoopRangeForPatternLength (int numRows)
     // Calculate the new pattern length in beats and convert to time
     double patternLengthBeats = static_cast<double> (numRows) / static_cast<double> (rowsPerBeat);
     auto newEndTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (patternLengthBeats));
+    if (transportStopBeat >= 0.0)
+    {
+        const auto stopTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (transportStopBeat));
+        if (stopTime < newEndTime)
+            newEndTime = stopTime;
+        transport.looping = false;
+    }
+    else
+    {
+        transport.looping = true;
+    }
     auto startTime = te::TimePosition::fromSeconds (0.0);
 
     te::TimeRange newRange { startTime, newEndTime };
@@ -1103,6 +1622,58 @@ void TrackerEngine::updateLoopRangeForPatternLength (int numRows)
     auto currentPos = transport.getPosition();
     if (currentPos >= newEndTime)
         transport.setPosition (startTime);
+}
+
+void TrackerEngine::scheduleTransportStopFromCurrentPosition()
+{
+    if (edit == nullptr || transportStopTimer == nullptr || transportStopBeat < 0.0)
+        return;
+
+    auto& transport = edit->getTransport();
+    if (! transport.isPlaying())
+        return;
+
+    const double nowSeconds = transport.getPosition().inSeconds();
+    const double stopSeconds = edit->tempoSequence
+        .toTime (te::BeatPosition::fromBeats (transportStopBeat)).inSeconds();
+    const double remainingSeconds = stopSeconds - nowSeconds;
+
+    if (remainingSeconds <= 0.0)
+    {
+        handleTransportStopTimer();
+        return;
+    }
+
+    const int delayMs = juce::jlimit (1, 60 * 60 * 1000,
+                                      static_cast<int> (std::ceil (remainingSeconds * 1000.0)));
+    transportStopTimer->schedule (delayMs);
+}
+
+void TrackerEngine::cancelTransportStop()
+{
+    if (transportStopTimer != nullptr)
+        transportStopTimer->cancel();
+}
+
+void TrackerEngine::handleTransportStopTimer()
+{
+    if (edit == nullptr || transportStopBeat < 0.0)
+        return;
+
+    auto& transport = edit->getTransport();
+    if (! transport.isPlaying())
+        return;
+
+    const double nowSeconds = transport.getPosition().inSeconds();
+    const double stopSeconds = edit->tempoSequence
+        .toTime (te::BeatPosition::fromBeats (transportStopBeat)).inSeconds();
+    if (nowSeconds + 0.01 < stopSeconds)
+    {
+        scheduleTransportStopFromCurrentPosition();
+        return;
+    }
+
+    stop();
 }
 
 void TrackerEngine::refreshTransportLoopRangeFromClip()
@@ -1120,8 +1691,17 @@ void TrackerEngine::refreshTransportLoopRangeFromClip()
         return;
 
     auto clipRange = clips[0]->getEditTimeRange();
+    if (transportStopBeat >= 0.0)
+    {
+        const auto stopTime = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (transportStopBeat));
+        if (stopTime > clipRange.getStart())
+            clipRange = { clipRange.getStart(), stopTime };
+        else
+            clipRange = { clipRange.getStart(), clipRange.getStart() + te::TimeDuration::fromSeconds (0.001) };
+    }
+
     transport.setLoopRange (clipRange);
-    transport.looping = true;
+    transport.looping = transportStopBeat < 0.0;
 
     auto currentPos = transport.getPosition();
     if (currentPos < clipRange.getStart() || currentPos >= clipRange.getEnd())
@@ -1187,8 +1767,13 @@ void TrackerEngine::setRowsPerBeat (int rpb)
 
     auto tracks = te::getAudioTracks (*edit);
     for (int t = 0; t < kNumTracks && t < tracks.size(); ++t)
+    {
+        if (auto* samplerPlugin = tracks[t]->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+            samplerPlugin->setRowsPerBeat (rowsPerBeat);
+
         if (auto* fxPlugin = tracks[t]->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
             fxPlugin->setRowsPerBeat (rowsPerBeat);
+    }
 }
 
 void TrackerEngine::setBpm (double bpm)
@@ -1197,6 +1782,7 @@ void TrackerEngine::setBpm (double bpm)
         return;
 
     const double clampedBpm = juce::jlimit (20.0, 999.0, bpm);
+    baseBpm = clampedBpm;
     edit->tempoSequence.getTempos()[0]->setBpm (clampedBpm);
     if (sendEffectsPlugin != nullptr)
         sendEffectsPlugin->setTempoBpm (clampedBpm);
@@ -1207,7 +1793,7 @@ double TrackerEngine::getBpm() const
     if (edit == nullptr)
         return 120.0;
 
-    return edit->tempoSequence.getTempos()[0]->getBpm();
+    return baseBpm;
 }
 
 juce::String TrackerEngine::loadSampleForInstrument (int instrumentIndex, const juce::File& sampleFile)
@@ -1261,6 +1847,9 @@ void TrackerEngine::ensureTrackHasInstrument (int trackIndex, int instrumentInde
         if (auto* fxPlugin = track->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
             fxPlugin->setTrackSendGainLinear (
                 getTrackFaderGain (mixerStatePtr->tracks[static_cast<size_t> (trackIndex)]));
+
+    if (auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+        samplerPlugin->setRowsPerBeat (rowsPerBeat);
 }
 
 void TrackerEngine::prepareTracksForPattern (const Pattern& pattern)
@@ -1340,6 +1929,7 @@ void TrackerEngine::prepareTracksForInstrumentUsage (const std::array<std::vecto
                     banks[inst] = bank;
             }
             samplerPlugin->preloadBanks (banks);
+            samplerPlugin->setRowsPerBeat (rowsPerBeat);
         }
 
         // Configure effects plugin with rowsPerBeat, global mod state, and send buffers
@@ -1466,11 +2056,16 @@ void TrackerEngine::previewNotes (int trackIndex, int instrumentIndex, const std
     stopPreview();
 
     // Sample instrument: preview through the dedicated preview track.
+    if (sampler.getSampleBank (instrumentIndex) == nullptr)
+        return;
+
     auto* track = getTrack (kPreviewTrack);
     if (track == nullptr)
         return;
 
     ensureTrackHasInstrument (kPreviewTrack, instrumentIndex);
+    if (getTrackInstrument (kPreviewTrack) != instrumentIndex)
+        return;
 
     // Preview should match instrument DSP and sends, with preview volume applied
     // as a track-level output gain (not as note velocity).
@@ -2024,6 +2619,26 @@ float TrackerEngine::getTrackPeakLevel (int trackIndex) const
     return peak;
 }
 
+float TrackerEngine::getSendReturnPeakLevel (int returnIndex) const
+{
+    if (sendEffectsPlugin == nullptr)
+        return 0.0f;
+
+    float peak = sendEffectsPlugin->getSendReturnPeakLevel (returnIndex);
+    sendEffectsPlugin->resetSendReturnPeak (returnIndex);
+    return peak;
+}
+
+float TrackerEngine::getMasterPeakLevel() const
+{
+    if (sendEffectsPlugin == nullptr)
+        return 0.0f;
+
+    float peak = sendEffectsPlugin->getMasterPeakLevel();
+    sendEffectsPlugin->resetMasterPeak();
+    return peak;
+}
+
 void TrackerEngine::decayTrackPeaks()
 {
     if (edit == nullptr)
@@ -2042,6 +2657,13 @@ void TrackerEngine::decayTrackPeaks()
         auto* mixer = tracks[t]->pluginList.findFirstPluginOfType<MixerPlugin>();
         if (mixer != nullptr)
             mixer->resetPeak();
+    }
+
+    if (sendEffectsPlugin != nullptr)
+    {
+        sendEffectsPlugin->resetSendReturnPeak (0);
+        sendEffectsPlugin->resetSendReturnPeak (1);
+        sendEffectsPlugin->resetMasterPeak();
     }
 }
 
@@ -2066,18 +2688,9 @@ bool TrackerEngine::addInsertPlugin (int trackIndex, const juce::PluginDescripti
 
     stopPreview();
 
-    // Create the plugin instance via Tracktion's plugin cache
-    auto& formatManager = engine->getPluginManager().pluginFormatManager;
-    juce::String errorMessage;
-
-    auto instance = formatManager.createPluginInstance (desc, 44100.0, 512, errorMessage);
-    if (instance == nullptr)
-    {
-        DBG ("Failed to create insert plugin: " + errorMessage);
-        return false;
-    }
-
-    // Create a Tracktion ExternalPlugin wrapper
+    // Create a Tracktion ExternalPlugin wrapper. Avoid an eager standalone
+    // createPluginInstance preflight here: shell plugins such as Waves can be
+    // valid in Tracktion while failing or flickering under double-instantiation.
     auto externalPlugin = track->edit.getPluginCache().createNewPlugin (
         te::ExternalPlugin::xmlTypeName, desc);
 
@@ -2283,16 +2896,6 @@ bool TrackerEngine::addMasterInsertPlugin (const juce::PluginDescription& desc)
     stopPreview();
 
     setupSendEffectsTrack();
-
-    auto& formatManager = engine->getPluginManager().pluginFormatManager;
-    juce::String errorMessage;
-
-    auto instance = formatManager.createPluginInstance (desc, 44100.0, 512, errorMessage);
-    if (instance == nullptr)
-    {
-        DBG ("Failed to create master insert plugin: " + errorMessage);
-        return false;
-    }
 
     auto externalPlugin = edit->getPluginCache().createNewPlugin (
         te::ExternalPlugin::xmlTypeName, desc);
@@ -2517,7 +3120,12 @@ void TrackerEngine::openExternalPluginEditor (te::Plugin* plugin, const juce::St
 
     if (pluginEditorWindows.count (key) > 0 && pluginEditorWindows[key] != nullptr)
     {
-        pluginEditorWindows[key]->toFront (true);
+        auto* existing = pluginEditorWindows[key].get();
+        if (existing->isMinimised())
+            existing->setMinimised (false);
+        if (! existing->isShowing() || ! existing->isVisible())
+            existing->setVisible (true);
+        existing->toFront (true);
         return;
     }
 
@@ -2535,33 +3143,24 @@ void TrackerEngine::openExternalPluginEditor (te::Plugin* plugin, const juce::St
 
     struct PluginEditorWindow : public juce::DocumentWindow
     {
-        PluginEditorWindow (const juce::String& name,
-                            std::map<juce::String, std::unique_ptr<juce::DocumentWindow>>& windowMap,
-                            const juce::String& mapKey)
+        explicit PluginEditorWindow (const juce::String& name)
             : juce::DocumentWindow (name, juce::Colours::darkgrey,
-                                    juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton),
-              windows (windowMap), key (mapKey)
+                                    juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton)
         {
         }
 
         void closeButtonPressed() override
         {
-            windows.erase (key);  // destroys this window
+            setVisible (false);
         }
-
-    private:
-        std::map<juce::String, std::unique_ptr<juce::DocumentWindow>>& windows;
-        juce::String key;
     };
 
-    auto window = std::make_unique<PluginEditorWindow> (
-        externalPlugin->getName(), pluginEditorWindows, key);
+    auto window = std::make_unique<PluginEditorWindow> (externalPlugin->getName());
 
     window->setContentOwned (editor, true);
     window->setResizable (true, false);
     window->centreWithSize (window->getWidth(), window->getHeight());
     window->setVisible (true);
-    window->setAlwaysOnTop (true);
 
     pluginEditorWindows[key] = std::move (window);
 }
@@ -2827,18 +3426,20 @@ void TrackerEngine::ensurePluginInstrumentLoaded (int instrumentIndex)
     if (track == nullptr)
         return;
 
-    // Check if already loaded
-    auto instanceIt = pluginInstrumentInstances.find (instrumentIndex);
-    if (instanceIt != pluginInstrumentInstances.end() && instanceIt->second != nullptr)
-        return;
-
     // Remove any sample-related plugins from the track.  TrackerSamplerPlugin has
     // takesAudioInput()==false, so it would overwrite the plugin instrument's audio
     // output with silence if left in the chain.
-    if (auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
+    while (auto* samplerPlugin = track->pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
         samplerPlugin->removeFromParent();
-    if (auto* effectsPlugin = track->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
+    while (auto* effectsPlugin = track->pluginList.findFirstPluginOfType<InstrumentEffectsPlugin>())
         effectsPlugin->removeFromParent();
+    currentTrackInstrument[static_cast<size_t> (ownerTrack)] = -1;
+
+    // Check if already loaded after pruning stale sample plugins. Live note entry
+    // calls this path repeatedly while playback is running.
+    auto instanceIt = pluginInstrumentInstances.find (instrumentIndex);
+    if (instanceIt != pluginInstrumentInstances.end() && instanceIt->second != nullptr)
+        return;
 
     // Try to find a fully-populated description from the known plugin list so that
     // all metadata fields (numInputChannels, numOutputChannels, etc.) are present.
@@ -3931,7 +4532,6 @@ void TrackerEngine::openPluginInstrumentEditor (int instrumentIndex)
     window->setResizable (true, false);
     window->centreWithSize (window->getWidth(), window->getHeight());
     window->setVisible (true);
-    window->setAlwaysOnTop (true);
     window->toFront (true);
     content->grabKeyboardFocus();
 

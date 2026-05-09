@@ -22,7 +22,7 @@ public:
 
     // Display modes (set by MainComponent based on active tab)
     enum class DisplayMode { InstrumentEdit, InstrumentType };
-    enum class EditSubTab { Parameters, Modulation };
+    enum class EditSubTab { Parameters, MidiOut, Modulation };
 
     void setDisplayMode (DisplayMode mode);
     DisplayMode getDisplayMode() const { return displayMode; }
@@ -174,6 +174,7 @@ private:
 
     // Column-based focus (per mode/sub-tab)
     int parametersColumn = 0;
+    int midiOutColumn = 0;
     int modColumn = 0;
     int modDestIndex = 0;
     int playbackColumn = 0;
@@ -268,6 +269,7 @@ private:
 
     // Page drawing
     void drawParametersPage (juce::Graphics& g, juce::Rectangle<int> area);
+    void drawMidiOutPage (juce::Graphics& g, juce::Rectangle<int> area);
     void drawModulationPage (juce::Graphics& g, juce::Rectangle<int> area);
     void drawPlaybackPage (juce::Graphics& g, juce::Rectangle<int> area);
     void drawSubTabBar (juce::Graphics& g, juce::Rectangle<int> area);

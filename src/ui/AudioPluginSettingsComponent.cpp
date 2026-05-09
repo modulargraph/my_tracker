@@ -15,7 +15,7 @@ AudioPluginSettingsComponent::AudioPluginSettingsComponent (te::Engine& e,
 
     // Create the audio device selector:
     //   showMidiInputOptions = false
-    //   showMidiOutputSelector = false
+    //   showMidiOutputSelector = true
     //   showChannelsAsStereoPairs = true
     //   hideAdvancedOptions = false
     // The min/max input channels are 0 (no input controls)
@@ -24,7 +24,7 @@ AudioPluginSettingsComponent::AudioPluginSettingsComponent (te::Engine& e,
         0, 0,       // min/max input channels (disabled)
         1, 256,     // min/max output channels
         false,      // show MIDI input options
-        false,      // show MIDI output selector
+        true,       // show MIDI output selector
         true,       // show channels as stereo pairs
         false);     // hide advanced options
 
@@ -121,6 +121,7 @@ AudioPluginSettingsComponent::AudioPluginSettingsComponent (te::Engine& e,
 AudioPluginSettingsComponent::~AudioPluginSettingsComponent()
 {
     catalogService.getKnownPluginList().removeChangeListener (this);
+    catalogService.requestScanCancellation();
 
     if (scanThread.joinable())
         scanThread.join();

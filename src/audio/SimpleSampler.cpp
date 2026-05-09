@@ -225,12 +225,25 @@ void SimpleSampler::playNote (te::AudioTrack& track, int midiNote, float velocit
 
 void SimpleSampler::playNotes (te::AudioTrack& track, const std::vector<int>& midiNotes, float velocity)
 {
-    if (auto* sampler = track.pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
-        sampler->playNotes (midiNotes, juce::jlimit (0.0f, 1.0f, velocity));
+    if (track.pluginList.findFirstPluginOfType<TrackerSamplerPlugin>() == nullptr)
+        return;
+
+    if (velocity <= 0.0f)
+        return;
+
+    const int midiVelocity = juce::jlimit (1, 127, static_cast<int> (velocity * 127.0f + 0.5f));
+    for (int note : midiNotes)
+    {
+        track.injectLiveMidiMessage (
+            juce::MidiMessage::noteOn (1, juce::jlimit (0, 127, note),
+                                       static_cast<juce::uint8> (midiVelocity)), 0);
+    }
 }
 
 void SimpleSampler::stopNote (te::AudioTrack& track)
 {
+    track.injectLiveMidiMessage (juce::MidiMessage::allNotesOff (1), 0);
+
     if (auto* sampler = track.pluginList.findFirstPluginOfType<TrackerSamplerPlugin>())
         sampler->stopAllNotes();
 }

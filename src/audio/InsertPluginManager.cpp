@@ -31,18 +31,8 @@ bool InsertPluginManager::addInsertPlugin (int trackIndex, const juce::PluginDes
     if (track == nullptr)
         return false;
 
-    // Create the plugin instance via Tracktion's plugin cache
-    auto& formatManager = engine.getEngine().getPluginManager().pluginFormatManager;
-    juce::String errorMessage;
-
-    auto instance = formatManager.createPluginInstance (desc, 44100.0, 512, errorMessage);
-    if (instance == nullptr)
-    {
-        DBG ("Failed to create insert plugin: " + errorMessage);
-        return false;
-    }
-
-    // Create a Tracktion ExternalPlugin wrapper
+    // Let Tracktion's ExternalPlugin own instantiation. Preflighting with a
+    // separate createPluginInstance causes shell plugins to load twice.
     auto externalPlugin = track->edit.getPluginCache().createNewPlugin (
         te::ExternalPlugin::xmlTypeName, desc);
 
@@ -277,7 +267,12 @@ void InsertPluginManager::openPluginEditor (int trackIndex, int slotIndex)
     // Check if window already exists
     if (pluginEditorWindows.count (key) > 0 && pluginEditorWindows[key] != nullptr)
     {
-        pluginEditorWindows[key]->toFront (true);
+        auto* existing = pluginEditorWindows[key].get();
+        if (existing->isMinimised())
+            existing->setMinimised (false);
+        if (! existing->isShowing() || ! existing->isVisible())
+            existing->setVisible (true);
+        existing->toFront (true);
         return;
     }
 
@@ -295,33 +290,24 @@ void InsertPluginManager::openPluginEditor (int trackIndex, int slotIndex)
 
     struct PluginEditorWindow : public juce::DocumentWindow
     {
-        PluginEditorWindow (const juce::String& name,
-                            std::map<juce::String, std::unique_ptr<juce::DocumentWindow>>& windowMap,
-                            const juce::String& mapKey)
+        explicit PluginEditorWindow (const juce::String& name)
             : juce::DocumentWindow (name, juce::Colours::darkgrey,
-                                    juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton),
-              windows (windowMap), key (mapKey)
+                                    juce::DocumentWindow::closeButton | juce::DocumentWindow::minimiseButton)
         {
         }
 
         void closeButtonPressed() override
         {
-            windows.erase (key);  // destroys this window
+            setVisible (false);
         }
-
-    private:
-        std::map<juce::String, std::unique_ptr<juce::DocumentWindow>>& windows;
-        juce::String key;
     };
 
-    auto window = std::make_unique<PluginEditorWindow> (
-        externalPlugin->getName(), pluginEditorWindows, key);
+    auto window = std::make_unique<PluginEditorWindow> (externalPlugin->getName());
 
     window->setContentOwned (editor, true);
     window->setResizable (true, false);
     window->centreWithSize (editor->getWidth(), editor->getHeight());
     window->setVisible (true);
-    window->setAlwaysOnTop (true);
 
     pluginEditorWindows[key] = std::move (window);
 }

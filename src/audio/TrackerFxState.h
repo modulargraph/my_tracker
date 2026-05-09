@@ -20,7 +20,7 @@ struct TrackOverrides
 // FX command state (per-track, updated via CC messages)
 struct TrackerFxState
 {
-    // Arpeggio (0xy): cycle base, +x, +y semitones
+    // Legacy per-track arpeggio state; current Polyend Axx scheduling is resolved before MIDI emission.
     int arpParam = 0;         // x=high nibble, y=low nibble
     int arpPhase = 0;         // 0, 1, 2 cycling
 
@@ -55,7 +55,7 @@ struct TrackerFxState
     // Sample offset (9xx)
     int sampleOffset = 0;
 
-    // Set Speed/Tempo (Fxx)
+    // Legacy speed/tempo cache.
     int lastSpeedTempo = 0;
     int trackerSpeed = 6; // ticks per row
 

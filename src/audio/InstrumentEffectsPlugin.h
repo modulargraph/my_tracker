@@ -47,7 +47,7 @@ public:
     void setOutputGainLinear (float gain) { outputGainLinear.store (juce::jlimit (0.0f, 1.0f, gain), std::memory_order_relaxed); }
     void setTrackSendGainLinear (float gain) { trackSendGainLinear.store (juce::jmax (0.0f, gain), std::memory_order_relaxed); }
 
-    // Callback for Fxx (Set Speed/Tempo) — called on audio thread
+    // Legacy callback hook; master-lane T tempo FX are handled by TrackerEngine.
     std::function<void (int)> onTempoChange;
 
 private:
@@ -66,16 +66,25 @@ private:
         int delaySendOverride = -1;   // 0-255 (mapped to -100..0 dB)
         int reverbSendOverride = -1;  // 0-255 (mapped to -100..0 dB)
         int volumeFxRaw = -1;         // -1 = no override, 0-255 from Vxx
+        int filterTypeOverride = -1;  // -1 = use instrument, otherwise InstrumentParams::FilterType ordinal
+        int cutoffOverride = -1;      // -1 = use instrument cutoff, 0-100
+        int overdriveOverride = -1;   // -1 = use instrument overdrive, 0-100
+        int bitDepthOverride = -1;    // -1 = use instrument bit depth, 4-16
+        std::array<int, InstrumentParams::kNumModDests> lfoSpeedOverride; // -1 = use instrument LFO speed
         std::array<int, InstrumentParams::kNumModDests> modModeOverride;  // -1 = use default
 
-        TrackOverrides() { modModeOverride.fill (-1); }
+        TrackOverrides()
+        {
+            lfoSpeedOverride.fill (-1);
+            modModeOverride.fill (-1);
+        }
     };
     TrackOverrides overrides;
 
     // FX command state (per-track, updated via CC messages)
     struct FxState
     {
-        // Arpeggio (0xy): cycle base, +x, +y semitones
+        // Legacy per-track arpeggio state; current Polyend Axx scheduling is resolved before MIDI emission.
         int arpParam = 0;         // x=high nibble, y=low nibble
         int arpPhase = 0;         // 0, 1, 2 cycling
 
@@ -110,7 +119,7 @@ private:
         // Sample offset (9xx)
         int sampleOffset = 0;
 
-        // Set Speed/Tempo (Fxx)
+        // Legacy speed/tempo cache.
         int lastSpeedTempo = 0;
         int trackerSpeed = 6; // ticks per row
 
@@ -124,6 +133,7 @@ private:
 
         // New symbolic command pitch state.
         float tuneOffset = 0.0f;
+        float microTuneOffset = 0.0f;
         float stepSlideOffset = 0.0f;
         bool stepSlideActive = false;
         float stepSlideStart = 0.0f;
@@ -162,6 +172,7 @@ private:
             resetPendingParamHighBits();
             currentNote = -1;
             tuneOffset = 0.0f;
+            microTuneOffset = 0.0f;
             stepSlideOffset = 0.0f;
             stepSlideActive = false;
             stepSlideStart = 0.0f;
@@ -194,6 +205,8 @@ private:
     juce::dsp::StateVariableTPTFilter<float> svfFilter;
     bool filterInitialized = false;
     InstrumentParams::FilterType lastFilterType = InstrumentParams::FilterType::Disabled;
+    double sampleRateReductionPhase = 1.0;
+    std::array<float, 2> sampleRateReductionHeldSamples {};
 
     // LFO state per destination
     struct LFOState
@@ -221,6 +234,8 @@ private:
                         const InstrumentParams& params, float cutoffMod);
     void processOverdrive (juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
                            int overdrive);
+    void processSampleRateReduction (juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
+                                     double targetSampleRateHz);
     void processBitDepth (juce::AudioBuffer<float>& buffer, int startSample, int numSamples,
                           int bitDepth);
     void processVolumeAndPan (juce::AudioBuffer<float>& buffer, int startSample, int numSamples,

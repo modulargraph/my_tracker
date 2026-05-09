@@ -27,6 +27,7 @@ public:
 
     // Callbacks
     std::function<void (int instrument)> onInstrumentSelected;
+    std::function<void (int instrument)> onInstrumentMouseSelected;
     std::function<void (int instrument)> onLoadSampleRequested;
     std::function<void (int instrument)> onEditSampleRequested;
     std::function<void (int instrument)> onClearSampleRequested;

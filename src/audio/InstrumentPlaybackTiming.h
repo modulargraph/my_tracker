@@ -48,6 +48,49 @@ namespace InstrumentPlaybackTiming
         return std::min (segmentEndSeconds, noteStartSeconds + 0.001);
     }
 
+    inline int clampPercentValue (int value)
+    {
+        return std::clamp (value, 0, 100);
+    }
+
+    inline double applyGateLengthSeconds (double noteStartSeconds,
+                                          double rowEndSeconds,
+                                          double noteEndSeconds,
+                                          double segmentEndSeconds,
+                                          int gatePercent)
+    {
+        gatePercent = clampPercentValue (gatePercent);
+
+        const double availableRowSeconds = std::max (0.001, rowEndSeconds - noteStartSeconds);
+        const double gateDurationSeconds = std::max (0.001,
+                                                     availableRowSeconds * static_cast<double> (gatePercent) / 100.0);
+        const double gatedEnd = std::min (noteEndSeconds, noteStartSeconds + gateDurationSeconds);
+        return ensureNoteEndAfterStartSeconds (noteStartSeconds, gatedEnd, segmentEndSeconds);
+    }
+
+    inline int clampSwingPercent (int value)
+    {
+        return std::clamp (value, 25, 75);
+    }
+
+    inline double getSwingOffsetSeconds (int rowIndex, double rowDurationSeconds, int swingPercent)
+    {
+        if ((rowIndex & 1) == 0)
+            return 0.0;
+
+        const int swing = clampSwingPercent (swingPercent);
+        const double safeRowDuration = std::max (0.0, rowDurationSeconds);
+        return (static_cast<double> (swing - 50) / 50.0) * safeRowDuration * 0.5;
+    }
+
+    inline double applySwingOffsetSeconds (double baseTimeSeconds,
+                                           int rowIndex,
+                                           double rowDurationSeconds,
+                                           int swingPercent)
+    {
+        return std::max (0.0, baseTimeSeconds + getSwingOffsetSeconds (rowIndex, rowDurationSeconds, swingPercent));
+    }
+
     inline bool shouldSendHardCutAtNoteHandoff (bool killMode,
                                                 bool pluginInstrumentTrack,
                                                 bool nextTriggerIsNormalNote)

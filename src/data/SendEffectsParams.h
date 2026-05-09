@@ -9,7 +9,7 @@ struct DelayParams
     double feedback = 40.0;     // 0-100%
     int filterType = 0;         // 0=off, 1=LP, 2=HP
     double filterCutoff = 80.0; // 0-100%
-    double wet = 50.0;          // 0-100%
+    double wet = 100.0;         // fixed at 100% for send FX; retained for project compatibility
     double stereoWidth = 50.0;  // 0-100%
 };
 
@@ -19,5 +19,5 @@ struct ReverbParams
     double decay = 50.0;        // 0-100%
     double damping = 50.0;      // 0-100%
     double preDelay = 10.0;     // ms (0-100)
-    double wet = 30.0;          // 0-100%
+    double wet = 100.0;         // fixed at 100% for send FX; retained for project compatibility
 };

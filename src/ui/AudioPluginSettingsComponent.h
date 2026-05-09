@@ -11,7 +11,7 @@ namespace te = tracktion;
 
 /**
  * Settings dialog component containing:
- *   1. Audio Output device selection (sample rate, block size, output device)
+ *   1. Audio/MIDI output device selection (sample rate, block size, output/MIDI device)
  *   2. Plugin scan paths list (editable) with scan/rescan button
  *   3. Discovered plugin list
  */

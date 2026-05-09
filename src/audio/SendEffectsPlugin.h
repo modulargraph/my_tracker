@@ -51,6 +51,8 @@ public:
     void setTempoBpm (double bpm);
 
     // Master peak metering
+    float getSendReturnPeakLevel (int returnIndex) const;
+    void resetSendReturnPeak (int returnIndex);
     float getMasterPeakLevel() const { return masterPeakLevel.load (std::memory_order_relaxed); }
     void resetMasterPeak() { masterPeakLevel.store (0.0f, std::memory_order_relaxed); }
 
@@ -70,7 +72,7 @@ private:
         std::atomic<float> feedback { 40.0f };
         std::atomic<int> filterType { 0 };
         std::atomic<float> filterCutoff { 80.0f };
-        std::atomic<float> wet { 50.0f };
+        std::atomic<float> wet { 100.0f };
         std::atomic<float> stereoWidth { 50.0f };
 
         void store (const DelayParams& params);
@@ -85,7 +87,7 @@ private:
         std::atomic<float> decay { 50.0f };
         std::atomic<float> damping { 50.0f };
         std::atomic<float> preDelay { 10.0f };
-        std::atomic<float> wet { 30.0f };
+        std::atomic<float> wet { 100.0f };
 
         void store (const ReverbParams& params);
         bool loadConsistent (ReverbParams& params) const;
@@ -187,7 +189,8 @@ private:
     // Master limiter state
     float masterLimiterEnvelope = 1.0f;
 
-    // Master peak level
+    // Send return and master peak levels
+    std::array<std::atomic<float>, 2> sendReturnPeakLevels {};
     std::atomic<float> masterPeakLevel { 0.0f };
 
     // Processing helpers

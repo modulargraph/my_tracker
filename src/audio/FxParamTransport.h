@@ -9,7 +9,7 @@ constexpr int kParamHighBitCc = 118;
 constexpr int kNoPendingParamHighBit = -1;
 constexpr int kDedicatedParamHighBitCcBase = 11;
 constexpr int kDedicatedParamValueCcMin = 31;
-constexpr int kDedicatedParamValueCcMax = 41;
+constexpr int kDedicatedParamValueCcMax = 53;
 
 inline bool usesDedicatedHighBitController (int valueController)
 {

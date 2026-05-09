@@ -12,6 +12,26 @@ float percentToUnit (double value)
     return juce::jlimit (0.0f, 1.0f, static_cast<float> (value) / 100.0f);
 }
 
+float getBufferPeak (const juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
+{
+    float peak = 0.0f;
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+    {
+        auto mag = buffer.getMagnitude (ch, startSample, numSamples);
+        if (mag > peak)
+            peak = mag;
+    }
+
+    return peak;
+}
+
+void storePeak (std::atomic<float>& peakLevel, float peak)
+{
+    const float prev = peakLevel.load (std::memory_order_relaxed);
+    if (peak > prev)
+        peakLevel.store (peak, std::memory_order_relaxed);
+}
+
 float softLimitDelaySample (float value)
 {
     if (! std::isfinite (value))
@@ -57,7 +77,7 @@ void SendEffectsPlugin::AtomicDelayParams::store (const DelayParams& params)
     feedback.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.feedback)), std::memory_order_relaxed);
     filterType.store (juce::jlimit (0, 2, params.filterType), std::memory_order_relaxed);
     filterCutoff.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.filterCutoff)), std::memory_order_relaxed);
-    wet.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.wet)), std::memory_order_relaxed);
+    wet.store (100.0f, std::memory_order_relaxed);
     stereoWidth.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.stereoWidth)), std::memory_order_relaxed);
     sequence.fetch_add (1, std::memory_order_release);
 }
@@ -76,7 +96,7 @@ bool SendEffectsPlugin::AtomicDelayParams::loadConsistent (DelayParams& params) 
     snapshot.feedback = feedback.load (std::memory_order_relaxed);
     snapshot.filterType = filterType.load (std::memory_order_relaxed);
     snapshot.filterCutoff = filterCutoff.load (std::memory_order_relaxed);
-    snapshot.wet = wet.load (std::memory_order_relaxed);
+    snapshot.wet = 100.0;
     snapshot.stereoWidth = stereoWidth.load (std::memory_order_relaxed);
 
     const auto after = sequence.load (std::memory_order_acquire);
@@ -97,7 +117,7 @@ DelayParams SendEffectsPlugin::AtomicDelayParams::loadRelaxed() const
     params.feedback = feedback.load (std::memory_order_relaxed);
     params.filterType = filterType.load (std::memory_order_relaxed);
     params.filterCutoff = filterCutoff.load (std::memory_order_relaxed);
-    params.wet = wet.load (std::memory_order_relaxed);
+    params.wet = 100.0;
     params.stereoWidth = stereoWidth.load (std::memory_order_relaxed);
     return params;
 }
@@ -109,7 +129,7 @@ void SendEffectsPlugin::AtomicReverbParams::store (const ReverbParams& params)
     decay.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.decay)), std::memory_order_relaxed);
     damping.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.damping)), std::memory_order_relaxed);
     preDelay.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.preDelay)), std::memory_order_relaxed);
-    wet.store (static_cast<float> (juce::jlimit (0.0, 100.0, params.wet)), std::memory_order_relaxed);
+    wet.store (100.0f, std::memory_order_relaxed);
     sequence.fetch_add (1, std::memory_order_release);
 }
 
@@ -124,7 +144,7 @@ bool SendEffectsPlugin::AtomicReverbParams::loadConsistent (ReverbParams& params
     snapshot.decay = decay.load (std::memory_order_relaxed);
     snapshot.damping = damping.load (std::memory_order_relaxed);
     snapshot.preDelay = preDelay.load (std::memory_order_relaxed);
-    snapshot.wet = wet.load (std::memory_order_relaxed);
+    snapshot.wet = 100.0;
 
     const auto after = sequence.load (std::memory_order_acquire);
     if (before != after || (after & 1u) != 0u)
@@ -141,7 +161,7 @@ ReverbParams SendEffectsPlugin::AtomicReverbParams::loadRelaxed() const
     params.decay = decay.load (std::memory_order_relaxed);
     params.damping = damping.load (std::memory_order_relaxed);
     params.preDelay = preDelay.load (std::memory_order_relaxed);
-    params.wet = wet.load (std::memory_order_relaxed);
+    params.wet = 100.0;
     return params;
 }
 
@@ -279,6 +299,22 @@ DelayParams SendEffectsPlugin::getDelayParams() const
 ReverbParams SendEffectsPlugin::getReverbParams() const
 {
     return pendingReverbParams.loadRelaxed();
+}
+
+float SendEffectsPlugin::getSendReturnPeakLevel (int returnIndex) const
+{
+    if (returnIndex < 0 || returnIndex >= static_cast<int> (sendReturnPeakLevels.size()))
+        return 0.0f;
+
+    return sendReturnPeakLevels[static_cast<size_t> (returnIndex)].load (std::memory_order_relaxed);
+}
+
+void SendEffectsPlugin::resetSendReturnPeak (int returnIndex)
+{
+    if (returnIndex < 0 || returnIndex >= static_cast<int> (sendReturnPeakLevels.size()))
+        return;
+
+    sendReturnPeakLevels[static_cast<size_t> (returnIndex)].store (0.0f, std::memory_order_relaxed);
 }
 
 void SendEffectsPlugin::setTempoBpm (double bpm)
@@ -428,7 +464,7 @@ void SendEffectsPlugin::processDelay (const juce::AudioBuffer<float>& input,
 {
     if (numSamples <= 0) return;
 
-    float wet = percentToUnit (activeDelayParams.wet);
+    static constexpr float wet = 1.0f;
     float feedback = juce::jlimit (0.0f, 0.98f, percentToUnit (activeDelayParams.feedback));
     int delaySamples = getDelayTimeSamples();
 
@@ -521,8 +557,7 @@ void SendEffectsPlugin::processReverb (const juce::AudioBuffer<float>& input,
 {
     if (numSamples <= 0) return;
 
-    float wet = percentToUnit (activeReverbParams.wet);
-    if (wet <= 0.0f) return;
+    static constexpr float wet = 1.0f;
 
     // Configure juce::Reverb parameters
     juce::Reverb::Parameters rvParams;
@@ -533,7 +568,7 @@ void SendEffectsPlugin::processReverb (const juce::AudioBuffer<float>& input,
     rvParams.width      = 1.0f;
     rvParams.freezeMode = 0.0f;
 
-    // Map decay to room size blend (decay affects both roomSize and wet)
+    // Map decay to room size blend.
     float decayFactor = percentToUnit (activeReverbParams.decay);
     rvParams.roomSize = juce::jlimit (0.0f, 1.0f, rvParams.roomSize * (0.5f + decayFactor * 0.5f));
 
@@ -656,16 +691,7 @@ void SendEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 data[i] *= masterGains.left;
         }
 
-        // Master peak metering
-        float peak = 0.0f;
-        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-        {
-            auto mag = buffer.getMagnitude (ch, startSample, numSamples);
-            if (mag > peak) peak = mag;
-        }
-        float prev = masterPeakLevel.load (std::memory_order_relaxed);
-        if (peak > prev)
-            masterPeakLevel.store (peak, std::memory_order_relaxed);
+        storePeak (masterPeakLevel, getBufferPeak (buffer, startSample, numSamples));
     }
 
     // Safety limiter
@@ -715,6 +741,7 @@ void SendEffectsPlugin::processSendEffectsChunk (juce::AudioBuffer<float>& buffe
                                  delayReturnEqMidL, delayReturnEqMidR,
                                  delayReturnEqHighL, delayReturnEqHighR);
             applySendReturnVolumePan (delayReturnScratch, numSamples, delayReturn);
+            storePeak (sendReturnPeakLevels[0], getBufferPeak (delayReturnScratch, 0, numSamples));
 
             for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
                 buffer.addFrom (ch, startSample, delayReturnScratch, ch, 0, numSamples);
@@ -727,6 +754,7 @@ void SendEffectsPlugin::processSendEffectsChunk (juce::AudioBuffer<float>& buffe
                                  reverbReturnEqMidL, reverbReturnEqMidR,
                                  reverbReturnEqHighL, reverbReturnEqHighR);
             applySendReturnVolumePan (reverbReturnScratch, numSamples, reverbReturn);
+            storePeak (sendReturnPeakLevels[1], getBufferPeak (reverbReturnScratch, 0, numSamples));
 
             for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
                 buffer.addFrom (ch, startSample, reverbReturnScratch, ch, 0, numSamples);

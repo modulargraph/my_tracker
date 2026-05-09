@@ -152,6 +152,52 @@ int clampColourSchemeIndex (int schemeIndex)
 {
     return TrackerLookAndFeel::clampColourSchemeIndex (schemeIndex);
 }
+
+InstrumentParams::MidiOutMessageType clampMidiOutMessageType (int type)
+{
+    if (type < static_cast<int> (InstrumentParams::MidiOutMessageType::ControlChange)
+        || type > static_cast<int> (InstrumentParams::MidiOutMessageType::PolyPressure))
+        return InstrumentParams::MidiOutMessageType::ControlChange;
+
+    return static_cast<InstrumentParams::MidiOutMessageType> (type);
+}
+
+void saveMidiOutAssignments (juce::ValueTree& paramTree, const InstrumentParams& params)
+{
+    for (int lane = 0; lane < InstrumentParams::kNumMidiOutLanes; ++lane)
+    {
+        const auto& assignment = params.midiOutAssignments[static_cast<size_t> (lane)];
+        if (assignment.isDefault (lane))
+            continue;
+
+        juce::ValueTree midiOutTree ("MidiOut");
+        midiOutTree.setProperty ("lane", lane, nullptr);
+        midiOutTree.setProperty ("type", static_cast<int> (assignment.type), nullptr);
+        midiOutTree.setProperty ("number", juce::jlimit (0, 127, assignment.number), nullptr);
+        paramTree.addChild (midiOutTree, -1, nullptr);
+    }
+}
+
+void loadMidiOutAssignments (const juce::ValueTree& paramTree, InstrumentParams& params)
+{
+    params.midiOutAssignments = InstrumentParams::makeDefaultMidiOutAssignments();
+
+    for (int i = 0; i < paramTree.getNumChildren(); ++i)
+    {
+        auto midiOutTree = paramTree.getChild (i);
+        if (! midiOutTree.hasType ("MidiOut"))
+            continue;
+
+        const int lane = midiOutTree.getProperty ("lane", -1);
+        if (lane < 0 || lane >= InstrumentParams::kNumMidiOutLanes)
+            continue;
+
+        auto& assignment = params.midiOutAssignments[static_cast<size_t> (lane)];
+        assignment.type = clampMidiOutMessageType (static_cast<int> (midiOutTree.getProperty ("type", 0)));
+        assignment.number = juce::jlimit (0, 127, static_cast<int> (midiOutTree.getProperty (
+            "number", InstrumentParams::getDefaultMidiOutNumber (lane))));
+    }
+}
 } // namespace
 
 juce::String ProjectSerializer::saveToFile (const juce::File& file, const PatternData& patternData,
@@ -168,7 +214,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
                                             const std::map<int, InstrumentSlotInfo>* pluginSlots)
 {
     juce::ValueTree root (kProjectRootName);
-    root.setProperty ("version", 10, nullptr);
+    root.setProperty ("version", 13, nullptr);
 
     // Settings
     juce::ValueTree settings ("Settings");
@@ -233,6 +279,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         // Effects
         paramTree.setProperty ("overdrive", params.overdrive, nullptr);
         paramTree.setProperty ("bitDepth", params.bitDepth, nullptr);
+        paramTree.setProperty ("lofiSampleRateHz", params.lofiSampleRateHz, nullptr);
         paramTree.setProperty ("reverbSend", params.reverbSend, nullptr);
         paramTree.setProperty ("delaySend", params.delaySend, nullptr);
 
@@ -266,6 +313,8 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
             }
             paramTree.setProperty ("slices", sliceStr, nullptr);
         }
+
+        saveMidiOutAssignments (paramTree, params);
 
         // Modulations
         for (int d = 0; d < InstrumentParams::kNumModDests; ++d)
@@ -648,7 +697,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         delayTree.setProperty ("feedback", delayParams.feedback, nullptr);
         delayTree.setProperty ("filterType", delayParams.filterType, nullptr);
         delayTree.setProperty ("filterCutoff", delayParams.filterCutoff, nullptr);
-        delayTree.setProperty ("wet", delayParams.wet, nullptr);
+        delayTree.setProperty ("wet", 100.0, nullptr);
         delayTree.setProperty ("stereoWidth", delayParams.stereoWidth, nullptr);
         sendTree.addChild (delayTree, -1, nullptr);
 
@@ -657,7 +706,7 @@ juce::String ProjectSerializer::saveToFile (const juce::File& file, const Patter
         reverbTree.setProperty ("decay", reverbParams.decay, nullptr);
         reverbTree.setProperty ("damping", reverbParams.damping, nullptr);
         reverbTree.setProperty ("preDelay", reverbParams.preDelay, nullptr);
-        reverbTree.setProperty ("wet", reverbParams.wet, nullptr);
+        reverbTree.setProperty ("wet", 100.0, nullptr);
         sendTree.addChild (reverbTree, -1, nullptr);
 
         root.addChild (sendTree, -1, nullptr);
@@ -810,6 +859,13 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
 
                 params.overdrive  = paramTree.getProperty ("overdrive", 0);
                 params.bitDepth   = paramTree.getProperty ("bitDepth", 16);
+                params.lofiSampleRateHz = paramTree.getProperty ("lofiSampleRateHz", 0.0);
+                if (params.lofiSampleRateHz <= 0.0)
+                    params.lofiSampleRateHz = 0.0;
+                else
+                    params.lofiSampleRateHz = juce::jlimit (InstrumentParams::kMinLofiSampleRateHz,
+                                                            InstrumentParams::kMaxLofiSampleRateHz,
+                                                            params.lofiSampleRateHz);
                 params.reverbSend = paramTree.getProperty ("reverbSend", -100.0);
                 params.delaySend  = paramTree.getProperty ("delaySend", -100.0);
 
@@ -850,6 +906,8 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
                         params.slicePoints.push_back (tok.getDoubleValue());
                 }
                 params.selectedSlice = paramTree.getProperty ("selectedSlice", 0);
+
+                loadMidiOutAssignments (paramTree, params);
 
                 // Modulations
                 for (int m = 0; m < paramTree.getNumChildren(); ++m)
@@ -1271,7 +1329,7 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             delayParams.feedback     = delayTree.getProperty ("feedback", 40.0);
             delayParams.filterType   = delayTree.getProperty ("filterType", 0);
             delayParams.filterCutoff = delayTree.getProperty ("filterCutoff", 80.0);
-            delayParams.wet          = delayTree.getProperty ("wet", 50.0);
+            delayParams.wet          = 100.0;
             delayParams.stereoWidth  = delayTree.getProperty ("stereoWidth", 50.0);
         }
 
@@ -1282,7 +1340,7 @@ juce::String ProjectSerializer::loadFromFile (const juce::File& file, PatternDat
             reverbParams.decay    = reverbTree.getProperty ("decay", 50.0);
             reverbParams.damping  = reverbTree.getProperty ("damping", 50.0);
             reverbParams.preDelay = reverbTree.getProperty ("preDelay", 10.0);
-            reverbParams.wet      = reverbTree.getProperty ("wet", 30.0);
+            reverbParams.wet      = 100.0;
         }
     }
 
@@ -1450,7 +1508,7 @@ juce::ValueTree ProjectSerializer::patternToValueTree (const Pattern& pattern, i
     return patTree;
 }
 
-void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern, int /*version*/)
+void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern& pattern, int version)
 {
     pattern.name = tree.getProperty ("name", "Pattern").toString();
     int numRows = tree.getProperty ("numRows", 64);
@@ -1502,7 +1560,7 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
                     int fxp = childTree.getProperty ("fxp", 0);
                     auto fxToken = childTree.getProperty ("fxc", "").toString();
                     if (fxToken.isNotEmpty())
-                        slot.setSymbolicCommand (static_cast<char> (fxToken[0]), fxp);
+                        setFxSlotFromSerializedCommand (slot, static_cast<char> (fxToken[0]), fxp, version);
                 }
             }
 
@@ -1511,7 +1569,7 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
             auto fxToken0 = cellTree.getProperty ("fxc", "").toString();
             auto& firstSlot = cell.getFxSlot (0);
             if (fxToken0.isNotEmpty())
-                firstSlot.setSymbolicCommand (static_cast<char> (fxToken0[0]), fxp0);
+                setFxSlotFromSerializedCommand (firstSlot, static_cast<char> (fxToken0[0]), fxp0, version);
 
             pattern.setCell (row, track, cell);
         }
@@ -1529,7 +1587,7 @@ void ProjectSerializer::valueTreeToPattern (const juce::ValueTree& tree, Pattern
 
             auto& slot = pattern.getMasterFxSlot (row, lane);
             if (fxToken.isNotEmpty())
-                slot.setSymbolicCommand (static_cast<char> (fxToken[0]), fxp);
+                setFxSlotFromSerializedCommand (slot, static_cast<char> (fxToken[0]), fxp, version);
         }
     }
 

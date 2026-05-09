@@ -40,8 +40,8 @@ private:
     int reverbColumn = 0;
 
     // Column counts
-    static constexpr int kDelayColumns = 9;  // Time, Sync Div, BPM Sync, Dotted, Feedback, Filter, Cutoff, Wet, Ping Pong
-    static constexpr int kReverbColumns = 5; // Room Size, Decay, Damping, Pre-Delay, Wet
+    static constexpr int kDelayColumns = 8;  // Time, Sync Div, BPM Sync, Dotted, Feedback, Filter, Cutoff, Ping Pong
+    static constexpr int kReverbColumns = 4; // Room Size, Decay, Damping, Pre-Delay
 
     // Layout
     static constexpr int kHeaderHeight = 26;

@@ -114,7 +114,7 @@ public:
     static constexpr int kNoteWidth = 28;
     static constexpr int kInstWidth = 18;
     static constexpr int kVolWidth = 18;
-    static constexpr int kFxWidth = 26;  // Increased from 22 for proper 3-char display
+    static constexpr int kFxWidth = 40;  // Allows signed Polyend-style FX values.
     static constexpr int kCellPadding = 2;
     static constexpr int kSubColSpace = 2; // Space between sub-columns (was 4)
     static constexpr int kGroupHeaderHeight = 16;

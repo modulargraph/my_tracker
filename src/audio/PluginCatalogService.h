@@ -33,6 +33,10 @@ public:
     /** Returns true while a scan is in progress. */
     bool isScanning() const { return scanning.load(); }
 
+    /** Ask the active scan to stop. Safe to call from the message thread before
+     *  joining the UI-owned scan thread. */
+    void requestScanCancellation();
+
     //==============================================================================
     // Filtered lists (rebuilt after each scan)
 
@@ -75,6 +79,7 @@ public:
 private:
     te::Engine& engine;
     std::atomic<bool> scanning { false };
+    std::atomic<bool> scanCancelRequested { false };
 
     void loadPersistedKnownPluginList();
     void savePersistedKnownPluginList();

@@ -723,13 +723,7 @@ void TrackerGrid::drawCell (juce::Graphics& g, const Cell& cell, int x, int y, i
     for (int fxLane = 0; fxLane < fxLaneCount; ++fxLane)
     {
         const auto& slot = cell.getFxSlot (fxLane);
-        juce::String fxStr = "...";
-        if (! slot.isEmpty())
-        {
-            auto letter = slot.getCommandLetter();
-            if (letter != '\0')
-                fxStr = juce::String::formatted ("%c%02X", letter, slot.fxParam);
-        }
+        const auto fxStr = formatFxSlotForDisplay (slot);
 
         const bool isFxCursor = isCursor && cursorSubColumn == SubColumn::FX && cursorFxLane == fxLane;
         if (isFxCursor)
@@ -756,13 +750,7 @@ void TrackerGrid::drawMasterCell (juce::Graphics& g, const Pattern& pat, int row
     for (int lane = 0; lane < laneCount; ++lane)
     {
         const auto& slot = pat.getMasterFxSlot (row, lane);
-        juce::String fxStr = "...";
-        if (! slot.isEmpty())
-        {
-            auto letter = slot.getCommandLetter();
-            if (letter != '\0')
-                fxStr = juce::String::formatted ("%c%02X", letter, slot.fxParam);
-        }
+        const auto fxStr = formatFxSlotForDisplay (slot);
 
         const bool isFxCursor = isCursor && cursorSubColumn == SubColumn::FX && cursorFxLane == lane;
         if (isFxCursor)
@@ -3235,6 +3223,17 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
         auto ch = key.getTextCharacter();
         int hexVal = hexCharToValue (ch);
         int letterCmd = fxLetterToCommand (static_cast<char> (ch));
+        auto getCurrentFxCommand = [this]() -> char
+        {
+            auto& pat = pattern.getCurrentPattern();
+            if (isMasterTrack (cursorTrack))
+            {
+                pat.ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
+                return pat.getMasterFxSlot (cursorRow, cursorFxLane).getCommandLetter();
+            }
+
+            return pat.getCell (cursorRow, cursorTrack).getFxSlot (cursorFxLane).getCommandLetter();
+        };
 
         auto applyFxSlotEdit = [this] (auto&& mutator)
         {
@@ -3268,7 +3267,8 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
 
         if (hexDigitCount == 0)
         {
-            if (letterCmd > 0)
+            const auto currentCommand = getCurrentFxCommand();
+            if (letterCmd > 0 && (hexVal < 0 || currentCommand == '\0'))
             {
                 bool changed = applyFxSlotEdit ([ch] (FxSlot& slot)
                 {
@@ -3283,18 +3283,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
 
             if (hexVal >= 0)
             {
-                auto& pat = pattern.getCurrentPattern();
-                char commandLetter = '\0';
-                if (isMasterTrack (cursorTrack))
-                {
-                    pat.ensureMasterFxSlots (trackLayout.getMasterFxLaneCount());
-                    commandLetter = pat.getMasterFxSlot (cursorRow, cursorFxLane).getCommandLetter();
-                }
-                else
-                {
-                    const auto& cell = pat.getCell (cursorRow, cursorTrack);
-                    commandLetter = cell.getFxSlot (cursorFxLane).getCommandLetter();
-                }
+                char commandLetter = currentCommand;
 
                 if (commandLetter != '\0')
                 {
@@ -3302,7 +3291,7 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                     hexDigitCount = 2;
                     bool changed = applyFxSlotEdit ([this] (FxSlot& slot)
                     {
-                        slot.fxParam = hexAccumulator;
+                        slot.setParam (hexAccumulator);
                     });
                     if (changed && onPatternDataChanged) onPatternDataChanged();
                     repaint();
@@ -3318,22 +3307,31 @@ bool TrackerGrid::keyPressed (const juce::KeyPress& key)
                 hexDigitCount = 2;
                 bool changed = applyFxSlotEdit ([this] (FxSlot& slot)
                 {
-                    slot.fxParam = hexAccumulator;
+                    slot.setParam (hexAccumulator);
                 });
                 if (changed && onPatternDataChanged) onPatternDataChanged();
             }
             else
             {
                 hexAccumulator = (hexAccumulator << 4) | hexVal;
-                int fxParamValue = hexAccumulator & 0xFF;
+                const bool extendedChord = getCurrentFxCommand() == '0';
+                const int maxParamDigits = extendedChord ? 3 : 2;
+                const int fxParamValue = hexAccumulator & (extendedChord ? 0x0FFF : 0xFF);
                 bool changed = applyFxSlotEdit ([fxParamValue] (FxSlot& slot)
                 {
-                    slot.fxParam = fxParamValue;
+                    slot.setParam (fxParamValue);
                 });
                 if (changed && onPatternDataChanged) onPatternDataChanged();
-                hexDigitCount = 0;
-                hexAccumulator = 0;
-                moveCursor (editStep, 0);
+                if (hexDigitCount >= maxParamDigits)
+                {
+                    hexDigitCount = 0;
+                    hexAccumulator = 0;
+                    moveCursor (editStep, 0);
+                }
+                else
+                {
+                    ++hexDigitCount;
+                }
             }
             repaint();
             return true;

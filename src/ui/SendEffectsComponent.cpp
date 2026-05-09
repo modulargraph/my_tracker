@@ -12,12 +12,14 @@ SendEffectsComponent::SendEffectsComponent (TrackerLookAndFeel& lnf)
 void SendEffectsComponent::setDelayParams (const DelayParams& params)
 {
     delay = params;
+    delay.wet = 100.0;
     repaint();
 }
 
 void SendEffectsComponent::setReverbParams (const ReverbParams& params)
 {
     reverb = params;
+    reverb.wet = 100.0;
     repaint();
 }
 
@@ -283,17 +285,13 @@ void SendEffectsComponent::drawDelaySection (juce::Graphics& g, juce::Rectangle<
     float cutoff01 = static_cast<float> (delay.filterCutoff) / 100.0f;
     drawBarMeter (g, colRect (6), cutoff01, sf && delayColumn == 6, blueCol);
 
-    // Col 7: Wet bar
-    float wet01 = static_cast<float> (delay.wet) / 100.0f;
-    drawBarMeter (g, colRect (7), wet01, sf && delayColumn == 7, blueCol);
-
-    // Col 8: Ping Pong bar
+    // Col 7: Ping Pong bar
     float width01 = static_cast<float> (delay.stereoWidth) / 100.0f;
-    drawBarMeter (g, colRect (8), width01, sf && delayColumn == 8, blueCol);
+    drawBarMeter (g, colRect (7), width01, sf && delayColumn == 7, blueCol);
 
     // Column labels at the top of each bar
     g.setFont (lookAndFeel.getMonoFont (9.0f));
-    const char* labels[] = { "TIME", "DIV", "SYNC", "DOT", "FDBK", "FILT", "FREQ", "WET", "P.PONG" };
+    const char* labels[] = { "TIME", "DIV", "SYNC", "DOT", "FDBK", "FILT", "FREQ", "P.PONG" };
     for (int c = 0; c < kDelayColumns; ++c)
     {
         auto r = colRect (c);
@@ -347,13 +345,9 @@ void SendEffectsComponent::drawReverbSection (juce::Graphics& g, juce::Rectangle
     float pd01 = static_cast<float> (reverb.preDelay) / 100.0f;
     drawBarMeter (g, colRect (3), pd01, sf && reverbColumn == 3, greenCol);
 
-    // Col 4: Wet bar
-    float wet01 = static_cast<float> (reverb.wet) / 100.0f;
-    drawBarMeter (g, colRect (4), wet01, sf && reverbColumn == 4, greenCol);
-
     // Column labels
     g.setFont (lookAndFeel.getMonoFont (9.0f));
-    const char* labels[] = { "ROOM", "DECAY", "DAMP", "PREDL", "WET" };
+    const char* labels[] = { "ROOM", "DECAY", "DAMP", "PREDL" };
     for (int c = 0; c < kReverbColumns; ++c)
     {
         auto r = colRect (c);
@@ -371,13 +365,13 @@ juce::String SendEffectsComponent::getColumnName() const
     if (section == 0)
     {
         const char* names[] = { "Time", "Sync Division", "BPM Sync", "Dotted",
-                                "Feedback", "Filter", "Filter Cutoff", "Wet Level", "Ping Pong" };
+                                "Feedback", "Filter", "Filter Cutoff", "Ping Pong" };
         if (delayColumn >= 0 && delayColumn < kDelayColumns)
             return juce::String ("DELAY: ") + names[delayColumn];
     }
     else
     {
-        const char* names[] = { "Room Size", "Decay", "Damping", "Pre-Delay", "Wet Level" };
+        const char* names[] = { "Room Size", "Decay", "Damping", "Pre-Delay" };
         if (reverbColumn >= 0 && reverbColumn < kReverbColumns)
             return juce::String ("REVERB: ") + names[reverbColumn];
     }
@@ -420,8 +414,7 @@ juce::String SendEffectsComponent::getColumnValue() const
                 if (delay.filterType == 1) return "LowPass";
                 return "HighPass";
             case 6: return juce::String (delay.filterCutoff, 0) + "%";
-            case 7: return juce::String (delay.wet, 0) + "%";
-            case 8: return juce::String (delay.stereoWidth, 0) + "%";
+            case 7: return juce::String (delay.stereoWidth, 0) + "%";
         }
     }
     else
@@ -432,7 +425,6 @@ juce::String SendEffectsComponent::getColumnValue() const
             case 1: return juce::String (reverb.decay, 0) + "%";
             case 2: return juce::String (reverb.damping, 0) + "%";
             case 3: return juce::String (reverb.preDelay, 1) + " ms";
-            case 4: return juce::String (reverb.wet, 0) + "%";
         }
     }
     return {};
@@ -580,10 +572,7 @@ void SendEffectsComponent::adjustCurrentValue (int direction, bool fine, bool la
             case 6: // Filter cutoff
                 delay.filterCutoff = juce::jlimit (0.0, 100.0, delay.filterCutoff + delta);
                 break;
-            case 7: // Wet
-                delay.wet = juce::jlimit (0.0, 100.0, delay.wet + delta);
-                break;
-            case 8: // Ping Pong
+            case 7: // Ping Pong
                 delay.stereoWidth = juce::jlimit (0.0, 100.0, delay.stereoWidth + delta);
                 break;
         }
@@ -604,9 +593,6 @@ void SendEffectsComponent::adjustCurrentValue (int direction, bool fine, bool la
             case 3: // Pre-delay
                 reverb.preDelay = juce::jlimit (0.0, 100.0, reverb.preDelay + delta);
                 break;
-            case 4: // Wet
-                reverb.wet = juce::jlimit (0.0, 100.0, reverb.wet + delta);
-                break;
         }
     }
 
@@ -616,6 +602,9 @@ void SendEffectsComponent::adjustCurrentValue (int direction, bool fine, bool la
 
 void SendEffectsComponent::notifyChanged()
 {
+    delay.wet = 100.0;
+    reverb.wet = 100.0;
+
     if (onParamsChanged)
         onParamsChanged (delay, reverb);
 }
@@ -654,8 +643,7 @@ void SendEffectsComponent::setCurrentValueFromNorm (float norm)
                 break;
             case 4: delay.feedback = static_cast<double> (norm) * 100.0; break;
             case 6: delay.filterCutoff = static_cast<double> (norm) * 100.0; break;
-            case 7: delay.wet = static_cast<double> (norm) * 100.0; break;
-            case 8: delay.stereoWidth = static_cast<double> (norm) * 100.0; break;
+            case 7: delay.stereoWidth = static_cast<double> (norm) * 100.0; break;
             default: break;
         }
     }
@@ -668,7 +656,6 @@ void SendEffectsComponent::setCurrentValueFromNorm (float norm)
             case 1: reverb.decay = val; break;
             case 2: reverb.damping = val; break;
             case 3: reverb.preDelay = val; break;
-            case 4: reverb.wet = val; break;
             default: break;
         }
     }

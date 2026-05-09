@@ -42,6 +42,9 @@ public:
 
     // Transport control
     void play();
+    void playFromBeat (double beat);
+    void playFromRow (int row);
+    void playFocusLoopRows (int startRow, int endRow);
     void stop();
     void togglePlayStop();
     bool isPlaying() const;
@@ -160,6 +163,8 @@ public:
 
     // Peak level metering (read from audio thread, consumed by UI)
     float getTrackPeakLevel (int trackIndex) const;
+    float getSendReturnPeakLevel (int returnIndex) const;
+    float getMasterPeakLevel() const;
     void decayTrackPeaks();
 
     //==============================================================================
@@ -267,11 +272,16 @@ public:
                                               float currentValue) const;
 
 private:
+    struct TransportStopTimer;
+
     std::unique_ptr<te::Engine> engine;
     std::unique_ptr<te::Edit> edit;
     SimpleSampler sampler;
     std::unique_ptr<PluginCatalogService> pluginCatalog;
     int rowsPerBeat = 4;
+    double baseBpm = 120.0;
+    double transportStopBeat = -1.0;
+    std::unique_ptr<TransportStopTimer> transportStopTimer;
     std::array<int, kNumTracks + 3> currentTrackInstrument {};
 
     // Preview, metronome, and send effects track indices
@@ -308,6 +318,9 @@ private:
     int previewSampleTrack = -1;
     bool stopSamplePreview();
 
+    void scheduleTransportStopFromCurrentPosition();
+    void cancelTransportStop();
+    void handleTransportStopTimer();
     void prepareTracksForInstrumentUsage (const std::array<std::vector<int>, kNumTracks>& instrumentsByTrack);
     void rebuildTempoSequenceFromPatternMasterLane (const Pattern& pattern);
 

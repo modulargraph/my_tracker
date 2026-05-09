@@ -1002,6 +1002,7 @@ MainComponent::MainComponent()
     toolbar->onInstrumentDrag = [this] (int delta)
     {
         int inst = juce::jlimit (0, 255, trackerGrid->getCurrentInstrument() + delta);
+        manualInstrumentSelectionPinned = true;
         trackerGrid->setCurrentInstrument (inst);
         instrumentPanel->setSelectedInstrument (inst);
         updateStatusBar();
@@ -1134,18 +1135,25 @@ MainComponent::MainComponent()
     };
     instrumentPanel->onEditSampleRequested = [this] (int inst)
     {
+        manualInstrumentSelectionPinned = true;
         trackerGrid->setCurrentInstrument (inst);
         instrumentPanel->setSelectedInstrument (inst);
         switchToTab (Tab::InstrumentEdit);
     };
     instrumentPanel->onInstrumentSelected = [this] (int inst)
     {
+        manualInstrumentSelectionPinned = true;
         trackerGrid->setCurrentInstrument (inst);
         updateStatusBar();
         updateToolbar();
         // Refresh editor if on an edit/type tab
         if (activeTab == Tab::InstrumentEdit || activeTab == Tab::InstrumentType)
             updateSampleEditorForCurrentInstrument();
+    };
+    instrumentPanel->onInstrumentMouseSelected = [this] (int)
+    {
+        if (activeTab == Tab::Tracker)
+            trackerGrid->grabKeyboardFocus();
     };
     instrumentPanel->onSetPluginInstrumentRequested = [this] (int inst)
     {
@@ -1438,6 +1446,14 @@ MainComponent::MainComponent()
     {
         return trackerEngine.getTrackPeakLevel (track);
     });
+    mixerComponent->setSendReturnPeakLevelCallback ([this] (int returnIndex) -> float
+    {
+        return trackerEngine.getSendReturnPeakLevel (returnIndex);
+    });
+    mixerComponent->setMasterPeakLevelCallback ([this] () -> float
+    {
+        return trackerEngine.getMasterPeakLevel();
+    });
     mixerComponent->startMetering();
 
     // Create file browser (hidden by default)
@@ -1475,6 +1491,7 @@ MainComponent::MainComponent()
             }
 
             // Auto-select the loaded instrument in the tracker and instrument panel
+            manualInstrumentSelectionPinned = true;
             trackerGrid->setCurrentInstrument (instrument);
             instrumentPanel->setSelectedInstrument (instrument);
 
@@ -1628,10 +1645,17 @@ MainComponent::MainComponent()
             // from notes under the cursor. Sync only when entering another track.
             if (enteringTrack)
             {
-                const int instrument = PatternEditUtils::resolveCursorInstrument (
-                    pat, row, track, trackerGrid->getCursorNoteLane(),
-                    trackerGrid->getCurrentInstrument(), true);
-                trackerGrid->setCurrentInstrument (instrument);
+                if (manualInstrumentSelectionPinned)
+                {
+                    manualInstrumentSelectionPinned = false;
+                }
+                else
+                {
+                    const int instrument = PatternEditUtils::resolveCursorInstrument (
+                        pat, row, track, trackerGrid->getCursorNoteLane(),
+                        trackerGrid->getCurrentInstrument(), true);
+                    trackerGrid->setCurrentInstrument (instrument);
+                }
             }
         }
         lastCursorInstrumentTrack = track;
@@ -1682,6 +1706,7 @@ MainComponent::MainComponent()
     trackerGrid->onFileDroppedOnTrack = [this] (int track, const juce::File& file)
     {
         int inst = resolveInstrumentForTrackDrop (track);
+        manualInstrumentSelectionPinned = true;
         trackerGrid->setCurrentInstrument (inst);
         instrumentPanel->setSelectedInstrument (inst);
 
@@ -2126,14 +2151,22 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
         if (keyCode == juce::KeyPress::spaceKey
             && activeTab != Tab::InstrumentEdit && activeTab != Tab::InstrumentType)
         {
-            if (! trackerEngine.isPlaying())
+            const bool startFromCursor = shift && ! cmd && ! ctrl && ! alt;
+            if (startFromCursor)
             {
-                if (songMode)
-                    syncArrangementToEdit();
-                else
-                    trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
+                startPlaybackFromCursorRow();
             }
-            trackerEngine.togglePlayStop();
+            else
+            {
+                if (! trackerEngine.isPlaying())
+                {
+                    if (songMode)
+                        syncArrangementToEdit();
+                    else
+                        trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
+                }
+                trackerEngine.togglePlayStop();
+            }
             updateStatusBar();
             updateToolbar();
             return true;
@@ -2145,15 +2178,24 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     // Space: toggle play/stop
     if (keyCode == juce::KeyPress::spaceKey)
     {
-        if (! trackerEngine.isPlaying())
+        const bool startFromCursor = shift && ! cmd && ! ctrl && ! alt;
+        if (startFromCursor)
         {
-            if (songMode)
-                syncArrangementToEdit();
-            else
-                trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
+            startPlaybackFromCursorRow();
+        }
+        else
+        {
+            if (! trackerEngine.isPlaying())
+            {
+                if (songMode)
+                    syncArrangementToEdit();
+                else
+                    trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
+            }
+
+            trackerEngine.togglePlayStop();
         }
 
-        trackerEngine.togglePlayStop();
         updateStatusBar();
         updateToolbar();
         return true;
@@ -2228,6 +2270,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     if (cmd && ! shift && keyCode == juce::KeyPress::upKey)
     {
         int inst = juce::jlimit (0, 255, trackerGrid->getCurrentInstrument() - 1);
+        manualInstrumentSelectionPinned = true;
         trackerGrid->setCurrentInstrument (inst);
         updateStatusBar();
         updateToolbar();
@@ -2237,6 +2280,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
     if (cmd && ! shift && keyCode == juce::KeyPress::downKey)
     {
         int inst = juce::jlimit (0, 255, trackerGrid->getCurrentInstrument() + 1);
+        manualInstrumentSelectionPinned = true;
         trackerGrid->setCurrentInstrument (inst);
         updateStatusBar();
         updateToolbar();
@@ -4239,11 +4283,12 @@ void MainComponent::showHelpOverlay()
                     "Cmd+1 to Cmd+8   Set octave 0-7",
                     "= (note col)     Note-off (OFF)",
                     "- (note col)     Note-kill (KILL)",
-                    "FX: letter+2 hex  (e.g. T0C, P80)",
+                    "FX: letter+2 hex  (e.g. U0C, p80, x20, T82 on master)",
                     "/ or ? (FX col)   FX command list",
                     "Backspace         Clear cell" }},
                 { "PLAYBACK", {
                     "Space             Play / Stop",
+                    "Shift+Space       Focus Loop selection / cursor",
                     "Cmd+[ / Cmd+]     BPM down / up",
                     "Cmd+- / Cmd+=     Step down / up" }}
             };
@@ -4431,6 +4476,85 @@ void MainComponent::resyncPlaybackForCurrentMode()
     }
 }
 
+double MainComponent::getCursorPlaybackStartBeat() const
+{
+    const int rowsPerBeat = juce::jmax (1, trackerEngine.getRowsPerBeat());
+    const auto& currentPattern = patternData.getCurrentPattern();
+    const int cursorRow = juce::jlimit (0, juce::jmax (0, currentPattern.numRows - 1),
+                                        trackerGrid != nullptr ? trackerGrid->getCursorRow() : 0);
+    const double rowBeat = static_cast<double> (cursorRow) / static_cast<double> (rowsPerBeat);
+
+    if (! songMode || arrangement.getNumEntries() == 0)
+        return rowBeat;
+
+    const int currentPatternIndex = patternData.getCurrentPatternIndex();
+    double accumulatedBeats = 0.0;
+
+    for (const auto& entry : arrangement.getEntries())
+    {
+        if (entry.patternIndex < 0 || entry.patternIndex >= patternData.getNumPatterns())
+            continue;
+
+        const auto& pattern = patternData.getPattern (entry.patternIndex);
+        const double patternBeats = static_cast<double> (pattern.numRows) / static_cast<double> (rowsPerBeat);
+
+        if (entry.patternIndex == currentPatternIndex)
+            return accumulatedBeats + rowBeat;
+
+        accumulatedBeats += patternBeats * static_cast<double> (entry.repeats);
+    }
+
+    return rowBeat;
+}
+
+void MainComponent::startPlaybackFromCursorRow()
+{
+    if (startFocusLoopFromSelection())
+        return;
+
+    if (! trackerEngine.isPlaying())
+    {
+        if (songMode)
+            syncArrangementToEdit();
+        else
+            trackerEngine.syncPatternToEdit (patternData.getCurrentPattern(), getReleaseModes());
+    }
+
+    if (songMode)
+        trackerEngine.playFromBeat (getCursorPlaybackStartBeat());
+    else
+        trackerEngine.playFromRow (trackerGrid != nullptr ? trackerGrid->getCursorRow() : 0);
+}
+
+bool MainComponent::startFocusLoopFromSelection()
+{
+    if (songMode || trackerGrid == nullptr || ! trackerGrid->hasSelection)
+        return false;
+
+    auto& pat = patternData.getCurrentPattern();
+    if (pat.numRows <= 0)
+        return false;
+
+    int minRow = 0;
+    int maxRow = 0;
+    int minTrack = 0;
+    int maxTrack = 0;
+    trackerGrid->getSelectionBounds (minRow, maxRow, minTrack, maxTrack);
+    juce::ignoreUnused (minTrack, maxTrack);
+
+    minRow = juce::jlimit (0, pat.numRows - 1, minRow);
+    maxRow = juce::jlimit (minRow, pat.numRows - 1, maxRow);
+
+    if (! trackerEngine.isPlaying())
+        trackerEngine.syncPatternToEdit (pat, getReleaseModes());
+
+    trackerEngine.playFocusLoopRows (minRow, maxRow);
+    setTemporaryStatus ("Focus Loop rows " + juce::String (minRow + 1)
+                        + "-" + juce::String (maxRow + 1),
+                        false, 1800);
+    return true;
+}
+
 void MainComponent::syncArrangementToEdit()
 {
     if (arrangement.getNumEntries() == 0)
@@ -4545,7 +4669,7 @@ void MainComponent::applyPluginModulationAtPlaybackPosition (int playPatternInde
                 for (int fxSlotIdx = 0; fxSlotIdx < cell.getNumFxSlots(); ++fxSlotIdx)
                 {
                     const auto& fxSlot = cell.getFxSlot (fxSlotIdx);
-                    if (fxSlot.getCommandLetter() != 'M')
+                    if (fxSlot.getCommandLetter() != 'X')
                         continue;
 
                     const int action = (fxSlot.fxParam >> 4) & 0xF;

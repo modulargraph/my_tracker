@@ -7,6 +7,7 @@ MixerComponent::MixerComponent (TrackerLookAndFeel& lnf, MixerState& state, Trac
 {
     setWantsKeyboardFocus (true);
     trackPeakLevels.fill (0.0f);
+    sendReturnPeakLevels.fill (0.0f);
 
     horizontalScrollbar.setAutoHide (false);
     horizontalScrollbar.setSingleStepSize (1.0);
@@ -111,24 +112,40 @@ void MixerComponent::timerCallback()
     bool needsRepaint = false;
     constexpr float decayRate = 0.85f;  // peak decay per timer tick (~30Hz)
 
+    auto updateCachedPeak = [&needsRepaint] (float& cachedPeak, float newPeak)
+    {
+        float decayed = cachedPeak * decayRate;
+        float level = juce::jmax (newPeak, decayed);
+
+        if (level < 0.001f)
+            level = 0.0f;
+
+        if (std::abs (level - cachedPeak) > 0.0001f)
+        {
+            cachedPeak = level;
+            needsRepaint = true;
+        }
+    };
+
     for (int t = 0; t < kNumTracks; ++t)
     {
         float newPeak = 0.0f;
         if (peakLevelCallback)
             newPeak = peakLevelCallback (t);
 
-        // Use the max of the new peak and the decayed old peak
-        float decayed = trackPeakLevels[static_cast<size_t> (t)] * decayRate;
-        float level = juce::jmax (newPeak, decayed);
-
-        if (level < 0.001f) level = 0.0f;
-
-        if (std::abs (level - trackPeakLevels[static_cast<size_t> (t)]) > 0.0001f)
-        {
-            trackPeakLevels[static_cast<size_t> (t)] = level;
-            needsRepaint = true;
-        }
+        updateCachedPeak (trackPeakLevels[static_cast<size_t> (t)], newPeak);
     }
+
+    for (int i = 0; i < static_cast<int> (sendReturnPeakLevels.size()); ++i)
+    {
+        float newPeak = 0.0f;
+        if (sendReturnPeakLevelCallback)
+            newPeak = sendReturnPeakLevelCallback (i);
+
+        updateCachedPeak (sendReturnPeakLevels[static_cast<size_t> (i)], newPeak);
+    }
+
+    updateCachedPeak (masterPeakLevel, masterPeakLevelCallback ? masterPeakLevelCallback() : 0.0f);
 
     if (needsRepaint)
         repaint();
@@ -587,7 +604,10 @@ void MixerComponent::paintSendReturnStrip (juce::Graphics& g, int returnIndex,
     MixerStripPainter::paintGenericMuteSolo (g, lookAndFeel, sr.muted, false, muteSoloArea, false);
 
     // Volume fader fills the rest
-    MixerStripPainter::paintGenericVolumeFader (g, lookAndFeel, sr.volume, r, isSelected && currentSection == Section::Volume);
+    float peakLevel = sendReturnPeakLevels[static_cast<size_t> (returnIndex)];
+    MixerStripPainter::paintGenericVolumeFader (g, lookAndFeel, sr.volume, r,
+                                                isSelected && currentSection == Section::Volume,
+                                                peakLevel);
 }
 
 //==============================================================================
@@ -766,7 +786,9 @@ void MixerComponent::paintMasterStrip (juce::Graphics& g, juce::Rectangle<int> b
     r.removeFromTop (1);
 
     // Volume fader fills the rest
-    MixerStripPainter::paintGenericVolumeFader (g, lookAndFeel, master.volume, r, isSelected && currentSection == Section::Volume);
+    MixerStripPainter::paintGenericVolumeFader (g, lookAndFeel, master.volume, r,
+                                                isSelected && currentSection == Section::Volume,
+                                                masterPeakLevel);
 }
 
 //==============================================================================

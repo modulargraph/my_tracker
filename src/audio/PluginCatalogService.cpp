@@ -4,7 +4,8 @@
 
 namespace
 {
-constexpr int kPluginScanTimeoutMs = 30000;
+constexpr int kPluginScanTimeoutMs = 120000;
+constexpr int kPluginScanPollMs = 100;
 
 struct PluginScanPlan
 {
@@ -47,8 +48,10 @@ bool readWorkerResult (const juce::File& resultFile,
 class OutOfProcessPluginScanner final : public juce::KnownPluginList::CustomScanner
 {
 public:
-    explicit OutOfProcessPluginScanner (juce::File workerToUse)
+    OutOfProcessPluginScanner (juce::File workerToUse,
+                               std::atomic<bool>& cancelFlag)
         : worker (std::move (workerToUse)),
+          cancelRequested (cancelFlag),
           tempDirectory (juce::File::getSpecialLocation (juce::File::tempDirectory)
                              .getChildFile ("VCTrackerPluginScan"))
     {
@@ -85,7 +88,22 @@ public:
             return false;
         }
 
-        const auto finished = child.waitForProcessToFinish (kPluginScanTimeoutMs);
+        bool finished = false;
+        int elapsedMs = 0;
+
+        while (! finished && elapsedMs < kPluginScanTimeoutMs)
+        {
+            if (cancelRequested.load())
+            {
+                child.kill();
+                resultFile.deleteFile();
+                DBG ("Plugin scan worker cancelled: " + fileOrIdentifier);
+                return false;
+            }
+
+            finished = child.waitForProcessToFinish (kPluginScanPollMs);
+            elapsedMs += kPluginScanPollMs;
+        }
 
         if (! finished)
         {
@@ -113,6 +131,7 @@ public:
 
 private:
     juce::File worker;
+    std::atomic<bool>& cancelRequested;
     juce::File tempDirectory;
 };
 
@@ -147,6 +166,11 @@ PluginCatalogService::PluginCatalogService (te::Engine& e)
     loadPersistedKnownPluginList();
 }
 
+void PluginCatalogService::requestScanCancellation()
+{
+    scanCancelRequested.store (true);
+}
+
 juce::File PluginCatalogService::getDeadPluginsFile()
 {
     return getPluginDataDirectory().getChildFile ("dead-plugins.txt");
@@ -168,6 +192,8 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths,
     if (scanning.exchange (true))
         return;
 
+    scanCancelRequested.store (false);
+
     auto& formatManager = engine.getPluginManager().pluginFormatManager;
     auto& knownList = engine.getPluginManager().knownPluginList;
     auto deadPluginsFile = getDeadPluginsFile();
@@ -183,7 +209,7 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths,
     }
 
     juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal (knownList, deadPluginsFile);
-    knownList.setCustomScanner (std::make_unique<OutOfProcessPluginScanner> (worker));
+    knownList.setCustomScanner (std::make_unique<OutOfProcessPluginScanner> (worker, scanCancelRequested));
 
     try
     {
@@ -193,6 +219,9 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths,
         // Build the candidate list up front so the UI can show X/Y progress.
         for (int i = 0; i < formatManager.getNumFormats(); ++i)
         {
+            if (scanCancelRequested.load())
+                break;
+
             auto* format = formatManager.getFormat (i);
             if (format == nullptr)
                 continue;
@@ -228,6 +257,9 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths,
         int completedPlugins = 0;
         for (auto& plan : scanPlans)
         {
+            if (scanCancelRequested.load())
+                break;
+
             if (plan.format == nullptr)
                 continue;
 
@@ -240,6 +272,9 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths,
 
             for (int candidate = 0; candidate < plan.filesOrIdentifiers.size(); ++candidate)
             {
+                if (scanCancelRequested.load())
+                    break;
+
                 auto pluginName = scanner.getNextPluginFileThatWillBeScanned();
                 notifyScanProgress (progressCallback, completedPlugins, totalPluginsToScan,
                                     plan.formatName, pluginName);
@@ -254,6 +289,9 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths,
                 notifyScanProgress (progressCallback, completedPlugins, totalPluginsToScan,
                                     plan.formatName, pluginName);
             }
+
+            if (scanCancelRequested.load())
+                break;
 
             for (auto& failedFile : scanner.getFailedFiles())
             {
@@ -273,6 +311,7 @@ void PluginCatalogService::scanForPlugins (const juce::StringArray& scanPaths,
 
     knownList.setCustomScanner (nullptr);
     savePersistedKnownPluginList();
+    scanCancelRequested.store (false);
     scanning.store (false);
     notifyScanCompleteOnMessageThread (*this);
 }

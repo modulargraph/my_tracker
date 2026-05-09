@@ -49,6 +49,8 @@ public:
 
     // Peak level metering
     void setPeakLevelCallback (std::function<float (int)> cb) { peakLevelCallback = std::move (cb); }
+    void setSendReturnPeakLevelCallback (std::function<float (int)> cb) { sendReturnPeakLevelCallback = std::move (cb); }
+    void setMasterPeakLevelCallback (std::function<float()> cb) { masterPeakLevelCallback = std::move (cb); }
     void startMetering() { startTimerHz (30); }
     void stopMetering() { stopTimer(); }
 
@@ -75,7 +77,11 @@ private:
 
     // Peak level metering
     std::array<float, kNumTracks> trackPeakLevels {};
+    std::array<float, 2> sendReturnPeakLevels {};
+    float masterPeakLevel = 0.0f;
     std::function<float (int)> peakLevelCallback;
+    std::function<float (int)> sendReturnPeakLevelCallback;
+    std::function<float()> masterPeakLevelCallback;
 
     // Horizontal scroll
     int scrollOffset = 0;

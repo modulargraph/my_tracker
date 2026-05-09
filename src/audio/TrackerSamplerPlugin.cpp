@@ -10,6 +10,8 @@ const char* TrackerSamplerPlugin::xmlTypeName = "TrackerSampler";
 namespace
 {
 constexpr int kCcSamplerHardCut = 86;
+constexpr int kCcSamplerRetrigger = 42;
+constexpr double kEnvelopeReleaseTailTimeConstants = 7.0;
 }
 
 TrackerSamplerPlugin::TrackerSamplerPlugin (te::PluginCreationInfo info)
@@ -48,6 +50,7 @@ void TrackerSamplerPlugin::deinitialise()
     clearPendingParamHighBits();
     directionOverride = -1;
     sliceOverride = -1;
+    clearRetriggerState();
 }
 
 void TrackerSamplerPlugin::clearPendingParamHighBits()
@@ -272,7 +275,74 @@ void TrackerSamplerPlugin::startFadeOut (Voice& source, Voice& fadeTarget)
     fadeTarget = source;
     fadeTarget.state = Voice::State::FadingOut;
     fadeTarget.fadeOutRemaining = Voice::kFadeOutSamples;
+    fadeTarget.releaseTailActive = false;
+    fadeTarget.releaseTailRemaining = 0;
+    fadeTarget.releaseStopFadeRemaining = 0;
+    source.releaseTailActive = false;
+    source.releaseTailRemaining = 0;
+    source.releaseStopFadeRemaining = 0;
     source.state = Voice::State::Idle;
+}
+
+bool TrackerSamplerPlugin::hasAudibleVolumeEnvelopeRelease (const InstrumentParams& params)
+{
+    const auto& mod = params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Volume)];
+    return mod.type == InstrumentParams::Modulation::Type::Envelope
+        && mod.amount > 0
+        && mod.releaseS > 0.001;
+}
+
+int TrackerSamplerPlugin::getReleaseTailSamples (const InstrumentParams& params) const
+{
+    const auto& mod = params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Volume)];
+    const double releaseSeconds = juce::jmax (0.001, mod.releaseS) * kEnvelopeReleaseTailTimeConstants;
+    const double sampleRate = juce::jmax (1.0, outputSampleRate);
+    return juce::jmax (Voice::kFadeOutSamples,
+                       static_cast<int> (std::ceil (releaseSeconds * sampleRate)));
+}
+
+void TrackerSamplerPlugin::releaseVoice (Voice& source, Voice& fadeTarget)
+{
+    if (source.state != Voice::State::Playing)
+        return;
+
+    if (! hasAudibleVolumeEnvelopeRelease (source.params))
+    {
+        startFadeOut (source, fadeTarget);
+        return;
+    }
+
+    source.releaseTailActive = true;
+    source.releaseTailRemaining = juce::jmax (source.releaseTailRemaining,
+                                              getReleaseTailSamples (source.params));
+    source.releaseStopFadeRemaining = 0;
+}
+
+float TrackerSamplerPlugin::getReleaseTailGain (Voice& v)
+{
+    if (v.releaseStopFadeRemaining > 0)
+    {
+        const float gain = static_cast<float> (v.releaseStopFadeRemaining)
+                         / static_cast<float> (Voice::kFadeOutSamples);
+        --v.releaseStopFadeRemaining;
+        if (v.releaseStopFadeRemaining <= 0)
+            v.state = Voice::State::Idle;
+        return gain;
+    }
+
+    if (! v.releaseTailActive)
+        return 1.0f;
+
+    if (v.releaseTailRemaining > 0)
+        --v.releaseTailRemaining;
+
+    if (v.releaseTailRemaining <= 0)
+    {
+        v.releaseTailActive = false;
+        v.releaseStopFadeRemaining = Voice::kFadeOutSamples;
+    }
+
+    return 1.0f;
 }
 
 //==============================================================================
@@ -293,10 +363,11 @@ void TrackerSamplerPlugin::renderOneShot (Voice& v, juce::AudioBuffer<float>& bu
     for (int i = 0; i < numSamples; ++i)
     {
         if (v.state != Voice::State::Playing) break;
+        const float releaseGain = getReleaseTailGain (v);
 
         for (int ch = 0; ch < numCh; ++ch)
             buffer.addSample (ch, startSample + i,
-                              interpolateSample (bank, ch, v.playbackPos) * v.velocity);
+                              interpolateSample (bank, ch, v.playbackPos) * v.velocity * releaseGain);
 
         v.playbackPos += advance;
 
@@ -325,10 +396,11 @@ void TrackerSamplerPlugin::renderForwardLoop (Voice& v, juce::AudioBuffer<float>
     for (int i = 0; i < numSamples; ++i)
     {
         if (v.state != Voice::State::Playing) break;
+        const float releaseGain = getReleaseTailGain (v);
 
         for (int ch = 0; ch < numCh; ++ch)
             buffer.addSample (ch, startSample + i,
-                              interpolateSample (bank, ch, v.playbackPos) * v.velocity);
+                              interpolateSample (bank, ch, v.playbackPos) * v.velocity * releaseGain);
 
         bool advancedInAttack = false;
         if (! v.inLoopPhase)
@@ -373,10 +445,11 @@ void TrackerSamplerPlugin::renderBackwardLoop (Voice& v, juce::AudioBuffer<float
     for (int i = 0; i < numSamples; ++i)
     {
         if (v.state != Voice::State::Playing) break;
+        const float releaseGain = getReleaseTailGain (v);
 
         for (int ch = 0; ch < numCh; ++ch)
             buffer.addSample (ch, startSample + i,
-                              interpolateSample (bank, ch, v.playbackPos) * v.velocity);
+                              interpolateSample (bank, ch, v.playbackPos) * v.velocity * releaseGain);
 
         if (! v.inLoopPhase)
         {
@@ -419,10 +492,11 @@ void TrackerSamplerPlugin::renderPingpongLoop (Voice& v, juce::AudioBuffer<float
     for (int i = 0; i < numSamples; ++i)
     {
         if (v.state != Voice::State::Playing) break;
+        const float releaseGain = getReleaseTailGain (v);
 
         for (int ch = 0; ch < numCh; ++ch)
             buffer.addSample (ch, startSample + i,
-                              interpolateSample (bank, ch, v.playbackPos) * v.velocity);
+                              interpolateSample (bank, ch, v.playbackPos) * v.velocity * releaseGain);
 
         if (! v.inLoopPhase)
         {
@@ -482,10 +556,11 @@ void TrackerSamplerPlugin::renderSlice (Voice& v, juce::AudioBuffer<float>& buff
     for (int i = 0; i < numSamples; ++i)
     {
         if (v.state != Voice::State::Playing) break;
+        const float releaseGain = getReleaseTailGain (v);
 
         for (int ch = 0; ch < numCh; ++ch)
             buffer.addSample (ch, startSample + i,
-                              interpolateSample (bank, ch, v.playbackPos) * v.velocity);
+                              interpolateSample (bank, ch, v.playbackPos) * v.velocity * releaseGain);
 
         v.playbackPos += v.playingForward ? pitchRatio : -pitchRatio;
 
@@ -559,12 +634,13 @@ void TrackerSamplerPlugin::renderGranular (Voice& v, juce::AudioBuffer<float>& b
     for (int i = 0; i < numSamples; ++i)
     {
         if (v.state != Voice::State::Playing) break;
+        const float releaseGain = getReleaseTailGain (v);
 
         float env = getGranularEnvelope (params, v.grainPos, v.grainLength);
 
         for (int ch = 0; ch < numCh; ++ch)
             buffer.addSample (ch, startSample + i,
-                              interpolateSample (bank, ch, v.playbackPos) * v.velocity * env);
+                              interpolateSample (bank, ch, v.playbackPos) * v.velocity * env * releaseGain);
 
         if (v.playingForward)
             v.playbackPos += pitchRatio;
@@ -659,6 +735,125 @@ void TrackerSamplerPlugin::applySliceCommandToVoice (Voice& v, int sliceByte)
                                       : juce::jmax (v.sliceStart, v.sliceEnd - 1.0);
 }
 
+void TrackerSamplerPlugin::clearRetriggerState()
+{
+    retriggerState.clear();
+}
+
+void TrackerSamplerPlugin::requestRetriggerCapture (int denominator)
+{
+    const auto roll = SamplePlaybackLayout::decodeRollFx (denominator);
+    if (roll.divider <= 0)
+    {
+        clearRetriggerState();
+        return;
+    }
+
+    retriggerState.clear();
+    retriggerState.active = true;
+    retriggerState.capturePending = true;
+    retriggerState.stepDenominator = roll.divider;
+    retriggerState.rollType = roll.type;
+    retriggerState.randomSeed = 0x9e3779b9u
+        ^ (static_cast<uint32_t> (denominator) * 2654435761u);
+}
+
+void TrackerSamplerPlugin::updateRetriggerIntervalSamples (double bpm)
+{
+    if (! retriggerState.active || retriggerState.stepDenominator <= 0)
+        return;
+
+    const double previousInterval = retriggerState.intervalSamples;
+    retriggerState.intervalSamples = SamplePlaybackLayout::getRetriggerIntervalSamples (
+        retriggerState.stepDenominator, outputSampleRate, bpm, rowsPerBeat);
+
+    if (retriggerState.intervalSamples <= 0.0)
+        return;
+
+    if (previousInterval <= 0.0 || retriggerState.samplesUntilNext <= 0.0)
+    {
+        retriggerState.samplesUntilNext = retriggerState.intervalSamples;
+        return;
+    }
+
+    const double progress = juce::jlimit (0.0, 1.0, retriggerState.samplesUntilNext / previousInterval);
+    retriggerState.samplesUntilNext = juce::jlimit (1.0, retriggerState.intervalSamples,
+                                                    progress * retriggerState.intervalSamples);
+}
+
+bool TrackerSamplerPlugin::captureRetriggerAnchors()
+{
+    bool captured = false;
+    for (size_t i = 0; i < voices.size(); ++i)
+    {
+        if (voices[i].state != Voice::State::Playing || voices[i].bank == nullptr)
+        {
+            retriggerState.snapshots[i] = {};
+            continue;
+        }
+
+        retriggerState.snapshots[i].capture (voices[i]);
+        captured = true;
+    }
+
+    if (captured)
+    {
+        retriggerState.capturePending = false;
+        retriggerState.repeatIndex = 0;
+        retriggerState.samplesUntilNext = juce::jmax (1.0, retriggerState.intervalSamples);
+    }
+
+    return captured;
+}
+
+bool TrackerSamplerPlugin::hasRetriggerAnchors() const
+{
+    for (const auto& snapshot : retriggerState.snapshots)
+        if (snapshot.valid)
+            return true;
+
+    return false;
+}
+
+void TrackerSamplerPlugin::applyRetrigger()
+{
+    ++retriggerState.repeatIndex;
+
+    int noteOffset = 0;
+    float velocityScale = 1.0f;
+    const int denominator = juce::jmax (1, retriggerState.stepDenominator);
+    const float progress = juce::jlimit (0.0f, 1.0f,
+        static_cast<float> (retriggerState.repeatIndex) / static_cast<float> (denominator));
+
+    switch (retriggerState.rollType)
+    {
+        case SamplePlaybackLayout::RollType::Regular:
+            break;
+        case SamplePlaybackLayout::RollType::VolumeDown:
+            velocityScale = 1.0f - progress;
+            break;
+        case SamplePlaybackLayout::RollType::VolumeUp:
+            velocityScale = progress;
+            break;
+        case SamplePlaybackLayout::RollType::NoteDown:
+            noteOffset = -retriggerState.repeatIndex;
+            break;
+        case SamplePlaybackLayout::RollType::NoteUp:
+            noteOffset = retriggerState.repeatIndex;
+            break;
+        case SamplePlaybackLayout::RollType::NoteRandom:
+        {
+            retriggerState.randomSeed = retriggerState.randomSeed * 1664525u + 1013904223u;
+            const int span = denominator * 2 + 1;
+            noteOffset = static_cast<int> (retriggerState.randomSeed % static_cast<uint32_t> (span)) - denominator;
+            break;
+        }
+    }
+
+    for (size_t i = 0; i < voices.size(); ++i)
+        retriggerState.snapshots[i].restore (voices[i], noteOffset, velocityScale);
+}
+
 //==============================================================================
 // Voice rendering dispatcher
 //==============================================================================
@@ -678,7 +873,7 @@ void TrackerSamplerPlugin::renderVoice (Voice& v, juce::AudioBuffer<float>& buff
     if (mode == InstrumentParams::PlayMode::Slice && params.slicePoints.empty())
         mode = InstrumentParams::PlayMode::OneShot;
 
-    // BeatSlice uses slice renderer
+    // BeatSlice uses slice renderer.
     if (mode == InstrumentParams::PlayMode::BeatSlice)
         mode = InstrumentParams::PlayMode::Slice;
 
@@ -694,6 +889,52 @@ void TrackerSamplerPlugin::renderVoice (Voice& v, juce::AudioBuffer<float>& buff
     }
 }
 
+void TrackerSamplerPlugin::renderPlaybackVoices (juce::AudioBuffer<float>& buffer,
+                                                  int startSample, int numSamples)
+{
+    for (auto& v : voices)
+        renderVoice (v, buffer, startSample, numSamples);
+    for (auto& previewVoice : previewVoices)
+        renderVoice (previewVoice, buffer, startSample, numSamples);
+}
+
+void TrackerSamplerPlugin::renderPlaybackVoicesWithRetrigger (juce::AudioBuffer<float>& buffer,
+                                                               int startSample, int numSamples)
+{
+    const bool canRetrigger = retriggerState.active
+                           && ! retriggerState.capturePending
+                           && retriggerState.intervalSamples >= 1.0
+                           && hasRetriggerAnchors();
+
+    if (! canRetrigger)
+    {
+        renderPlaybackVoices (buffer, startSample, numSamples);
+        return;
+    }
+
+    int rendered = 0;
+    while (rendered < numSamples)
+    {
+        while (retriggerState.samplesUntilNext <= 0.0 && retriggerState.active)
+        {
+            applyRetrigger();
+            retriggerState.samplesUntilNext += retriggerState.intervalSamples;
+        }
+
+        int segmentSamples = numSamples - rendered;
+        if (retriggerState.active && retriggerState.samplesUntilNext > 0.0)
+        {
+            segmentSamples = juce::jmin (segmentSamples,
+                                         juce::jmax (1, static_cast<int> (std::ceil (retriggerState.samplesUntilNext))));
+        }
+
+        renderPlaybackVoices (buffer, startSample + rendered, segmentSamples);
+        rendered += segmentSamples;
+
+        retriggerState.samplesUntilNext -= static_cast<double> (segmentSamples);
+    }
+}
+
 //==============================================================================
 // Main processing
 //==============================================================================
@@ -705,6 +946,8 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     auto& buffer = *fc.destBuffer;
     int startSample = fc.bufferStartSample;
     int numSamples = fc.bufferNumSamples;
+    const double blockBpm = edit.tempoSequence.getTempos()[0]->getBpm();
+    updateRetriggerIntervalSamples (blockBpm);
 
     // Get current selected bank (thread-safe shared_ptr copy).
     // Active voices keep their own bank snapshots, so missing this lock doesn't
@@ -767,12 +1010,11 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
             if (hardCut)
             {
-                v.state = Voice::State::Idle;
-                fadeOutVoices[i].state = Voice::State::Idle;
+                startFadeOut (v, fadeOutVoices[i]);
             }
             else
             {
-                startFadeOut (v, fadeOutVoices[i]);
+                releaseVoice (v, fadeOutVoices[i]);
             }
         }
     };
@@ -797,7 +1039,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     if (previewStop.exchange (false))
     {
         for (size_t i = 0; i < previewVoices.size(); ++i)
-            startFadeOut (previewVoices[i], previewFadeOutVoices[i]);
+            releaseVoice (previewVoices[i], previewFadeOutVoices[i]);
     }
 
     // --- Handle preview notes from message thread ---
@@ -808,7 +1050,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         float pVel = previewVelocity.load (std::memory_order_relaxed);
 
         for (size_t i = 0; i < previewVoices.size(); ++i)
-            startFadeOut (previewVoices[i], previewFadeOutVoices[i]);
+            releaseVoice (previewVoices[i], previewFadeOutVoices[i]);
 
         if (currentBank != nullptr && currentBank->totalSamples > 0)
         {
@@ -827,8 +1069,9 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     {
         if (fc.bufferForMidiMessages->isAllNotesOff)
         {
-            // Graceful fade (same as noteOff)
+            // OFF release path (same as noteOff)
             stopVoices (-1, -1, false);
+            clearRetriggerState();
         }
 
         for (auto& m : *fc.bufferForMidiMessages)
@@ -858,7 +1101,17 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             }
             else if (m.isController())
             {
-                if (m.getControllerNumber() == 0) // Bank Select MSB
+                if (m.isAllNotesOff())
+                {
+                    stopVoices (getChannelIndex (m), -1, false);
+                    clearRetriggerState();
+                }
+                else if (m.isAllSoundOff())
+                {
+                    stopVoices (getChannelIndex (m), -1, true);
+                    clearRetriggerState();
+                }
+                else if (m.getControllerNumber() == 0) // Bank Select MSB
                 {
                     const int channelIndex = getChannelIndex (m);
                     const int msb = m.getControllerValue() & 0x7F;
@@ -911,6 +1164,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     directionOverride = -1;
                     pendingSampleOffset = -1;
                     sliceOverride = -1;
+                    clearRetriggerState();
                     clearPendingParamHighBits();
                     pitchOffset.store (0.0f, std::memory_order_relaxed);
                     for (auto& v : voices)
@@ -930,14 +1184,21 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     pitchOffset.store (static_cast<float> (static_cast<int8_t> (value & 0xFF)),
                                        std::memory_order_relaxed);
                 }
-                else if (m.getControllerNumber() == 41) // Lxx slice select
+                else if (m.getControllerNumber() == 41) // Sxx slice select, 1-based in pattern data
                 {
-                    sliceOverride = decodeControllerByte (m.getControllerNumber(), m.getControllerValue());
+                    sliceOverride = juce::jmax (
+                        0, decodeControllerByte (m.getControllerNumber(), m.getControllerValue()) - 1);
                     const int channelIndex = getChannelIndex (m);
                     for (auto& v : voices)
                         if (v.state == Voice::State::Playing
                             && (channelIndex == 0 || v.midiChannel == channelIndex + 1))
                             applySliceCommandToVoice (v, sliceOverride);
+                }
+                else if (m.getControllerNumber() == kCcSamplerRetrigger) // Rxx roll/retrigger
+                {
+                    const int value = decodeControllerByte (m.getControllerNumber(), m.getControllerValue());
+                    requestRetriggerCapture (value);
+                    updateRetriggerIntervalSamples (blockBpm);
                 }
             }
             else if (m.isNoteOn())
@@ -969,21 +1230,27 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             }
             else if (m.isNoteOff())
             {
-                // Graceful fade-out with crossfade
+                // OFF: let the sample source feed the envelope release if present.
                 stopVoices (getChannelIndex (m), m.getNoteNumber(), false);
             }
             else if (m.isAllNotesOff())
             {
-                // Graceful fade (OFF) — same as noteOff
+                // OFF: all voices on this channel enter release.
                 stopVoices (getChannelIndex (m), -1, false);
+                clearRetriggerState();
             }
             else if (m.isAllSoundOff())
             {
-                // Hard cut (KILL) — immediate silence
+                // KILL: short anti-click fade, no envelope release tail.
                 stopVoices (getChannelIndex (m), -1, true);
+                clearRetriggerState();
             }
         }
     }
+
+    updateRetriggerIntervalSamples (blockBpm);
+    if (retriggerState.capturePending)
+        captureRetriggerAnchors();
 
     auto renderFadeOut = [this, &buffer, startSample, numSamples] (Voice& fadingVoice)
     {
@@ -1034,10 +1301,7 @@ void TrackerSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         renderFadeOut (fadingPreviewVoice);
 
     // --- Render main voices ---
-    for (auto& v : voices)
-        renderVoice (v, buffer, startSample, numSamples);
-    for (auto& previewVoice : previewVoices)
-        renderVoice (previewVoice, buffer, startSample, numSamples);
+    renderPlaybackVoicesWithRetrigger (buffer, startSample, numSamples);
 
     // Publish playback position for UI cursor
     for (auto& v : voices)

@@ -187,10 +187,36 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     target_compile_options(PluginScanWorker PRIVATE "-fno-aligned-allocation")
 endif()
 
+add_executable(PluginEditorSmoke
+    src/audio/PluginEditorSmoke.cpp)
+
+target_compile_features(PluginEditorSmoke PRIVATE cxx_std_20)
+
+target_compile_definitions(PluginEditorSmoke PRIVATE
+    JUCE_PLUGINHOST_AU=1
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_STRICT_REFCOUNTEDPOINTER=1)
+
+target_link_libraries(PluginEditorSmoke PRIVATE
+    juce::juce_audio_processors
+    juce::juce_audio_utils
+    juce::juce_gui_basics
+    juce::juce_recommended_warning_flags)
+
+if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    target_compile_options(PluginEditorSmoke PRIVATE "-fno-aligned-allocation")
+endif()
+
 add_executable(VCTrackerTests
     tests/VCTrackerTests.cpp
     src/data/Pattern.cpp
     src/data/PatternData.cpp
+    src/audio/PatternMidiBuilder.cpp
+    src/audio/ChannelStripPlugin.cpp
+    src/audio/TrackOutputPlugin.cpp
     src/ui/ProjectSerializer.cpp
     src/ui/ArrangementComponent.cpp
     src/ui/TrackerLookAndFeel.cpp
@@ -230,7 +256,7 @@ add_test(NAME VCTrackerTests COMMAND VCTrackerTests)
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     # --- Out-of-process plugin validator (tiny C binary) ---
     add_executable(PluginValidator src/audio/PluginValidator.c)
-    add_dependencies(VCTracker PluginScanWorker PluginValidator)
+    add_dependencies(VCTracker PluginScanWorker PluginEditorSmoke PluginValidator)
 
     # Copy scanner helpers into app bundle (before codesigning)
     add_custom_command(TARGET VCTracker POST_BUILD
@@ -245,6 +271,13 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
             "$<TARGET_FILE:PluginValidator>"
             "$<TARGET_BUNDLE_DIR:VCTracker>/Contents/MacOS/PluginValidator"
         COMMENT "Copying PluginValidator into app bundle"
+        VERBATIM)
+
+    add_custom_command(TARGET VCTracker POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:PluginEditorSmoke>"
+            "$<TARGET_BUNDLE_DIR:VCTracker>/Contents/MacOS/PluginEditorSmoke"
+        COMMENT "Copying PluginEditorSmoke into app bundle"
         VERBATIM)
 
     option(TRACKER_CREATE_APP_SHORTCUT "Create fixed app symlink at run/VCTracker.app" ON)
@@ -283,6 +316,10 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
             add_custom_command(TARGET PluginScanWorker POST_BUILD
                 COMMAND ${CODESIGN_COMMAND} --force --sign - "$<TARGET_FILE:PluginScanWorker>"
+                VERBATIM)
+
+            add_custom_command(TARGET PluginEditorSmoke POST_BUILD
+                COMMAND ${CODESIGN_COMMAND} --force --sign - "$<TARGET_FILE:PluginEditorSmoke>"
                 VERBATIM)
         else()
             message(WARNING "codesign not found; VCTracker targets will not be signed")

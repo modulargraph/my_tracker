@@ -8,6 +8,30 @@
 
 namespace SamplePlaybackLayout
 {
+enum class RollType
+{
+    Regular,
+    VolumeDown,
+    VolumeUp,
+    NoteDown,
+    NoteUp,
+    NoteRandom
+};
+
+struct RollFx
+{
+    RollType type = RollType::Regular;
+    int divider = 0;
+};
+
+inline RollFx decodeRollFx (int param)
+{
+    const int clamped = std::clamp (param, 0, 101);
+    const int typeIndex = std::clamp (clamped / 17, 0, 5);
+    const int divider = clamped % 17;
+
+    return { static_cast<RollType> (typeIndex), divider };
+}
 
 inline double clampNorm (double v)
 {
@@ -53,6 +77,27 @@ inline double getGranularRenderLengthSamples (const InstrumentParams& params,
     }
 
     return static_cast<double> (std::max (1, params.granularLength)) * 0.001 * safeSampleRate;
+}
+
+inline int decodeRetriggerStepDenominator (int param)
+{
+    return decodeRollFx (param).divider;
+}
+
+inline double getRetriggerIntervalSamples (int stepDenominator,
+                                           double outputSampleRate,
+                                           double bpm,
+                                           int rowsPerBeat)
+{
+    const int denominator = decodeRetriggerStepDenominator (stepDenominator);
+    if (denominator <= 0)
+        return 0.0;
+
+    const double safeSampleRate = std::max (1.0, outputSampleRate);
+    const double safeBpm = std::max (1.0, bpm);
+    const int safeRowsPerBeat = std::max (1, rowsPerBeat);
+    const double rowSamples = safeSampleRate * 60.0 / safeBpm / static_cast<double> (safeRowsPerBeat);
+    return std::max (1.0, rowSamples / static_cast<double> (denominator));
 }
 
 inline double getRegionStartNorm (const InstrumentParams& params)

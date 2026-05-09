@@ -4,9 +4,29 @@
 #include "InstrumentRouting.h"
 #include "FxParamTransport.h"
 #include "PanMapping.h"
+#include <cmath>
 #include <cstdint>
 
 const char* InstrumentEffectsPlugin::xmlTypeName = "InstrumentEffects";
+
+namespace
+{
+int byteToPercent (int value)
+{
+    return juce::jlimit (0, 100, static_cast<int> (std::lround (juce::jlimit (0, 255, value) * 100.0 / 255.0)));
+}
+
+int byteToBitDepth (int value)
+{
+    return juce::jlimit (4, 16, 4 + static_cast<int> (std::lround (juce::jlimit (0, 255, value) * 12.0 / 255.0)));
+}
+
+float microTuneByteToSemitones (int value)
+{
+    const int cents = juce::jlimit (-99, 99, juce::jlimit (0, 198, value) - 99);
+    return static_cast<float> (cents) / 100.0f;
+}
+}
 
 InstrumentEffectsPlugin::InstrumentEffectsPlugin (te::PluginCreationInfo info)
     : te::Plugin (info)
@@ -21,6 +41,8 @@ void InstrumentEffectsPlugin::initialise (const te::PluginInitialisationInfo& in
 {
     sampleRate = info.sampleRate;
     blockSize = info.blockSizeSamples;
+    sampleRateReductionPhase = 1.0;
+    sampleRateReductionHeldSamples.fill (0.0f);
 
     // Prepare filter
     juce::dsp::ProcessSpec spec;
@@ -43,6 +65,8 @@ void InstrumentEffectsPlugin::deinitialise()
 {
     svfFilter.reset();
     filterInitialized = false;
+    sampleRateReductionPhase = 1.0;
+    sampleRateReductionHeldSamples.fill (0.0f);
 }
 
 void InstrumentEffectsPlugin::resetModulationState()
@@ -62,6 +86,8 @@ void InstrumentEffectsPlugin::resetModulationState()
     noteActive = false;
     currentInstrument = -1;
     lastFilterType = InstrumentParams::FilterType::Disabled;
+    sampleRateReductionPhase = 1.0;
+    sampleRateReductionHeldSamples.fill (0.0f);
     overrides = TrackOverrides();
     fxState.reset();
 }
@@ -549,6 +575,48 @@ void InstrumentEffectsPlugin::processOverdrive (juce::AudioBuffer<float>& buffer
     }
 }
 
+void InstrumentEffectsPlugin::processSampleRateReduction (juce::AudioBuffer<float>& buffer, int startSample,
+                                                          int numSamples, double targetSampleRateHz)
+{
+    if (sampleRate <= 0.0 || numSamples <= 0)
+        return;
+
+    if (targetSampleRateHz <= 0.0 || targetSampleRateHz >= sampleRate * 0.98)
+    {
+        sampleRateReductionPhase = 1.0;
+        return;
+    }
+
+    targetSampleRateHz = juce::jlimit (InstrumentParams::kMinLofiSampleRateHz,
+                                       InstrumentParams::kMaxLofiSampleRateHz,
+                                       targetSampleRateHz);
+
+    const int channels = juce::jmin (buffer.getNumChannels(),
+                                     static_cast<int> (sampleRateReductionHeldSamples.size()));
+    if (channels <= 0)
+        return;
+
+    const double phaseInc = targetSampleRateHz / sampleRate;
+    if (! std::isfinite (sampleRateReductionPhase) || sampleRateReductionPhase < 0.0)
+        sampleRateReductionPhase = 1.0;
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        if (sampleRateReductionPhase >= 1.0)
+        {
+            for (int ch = 0; ch < channels; ++ch)
+                sampleRateReductionHeldSamples[static_cast<size_t> (ch)] = buffer.getSample (ch, startSample + i);
+
+            sampleRateReductionPhase -= std::floor (sampleRateReductionPhase);
+        }
+
+        for (int ch = 0; ch < channels; ++ch)
+            buffer.setSample (ch, startSample + i, sampleRateReductionHeldSamples[static_cast<size_t> (ch)]);
+
+        sampleRateReductionPhase += phaseInc;
+    }
+}
+
 void InstrumentEffectsPlugin::processBitDepth (juce::AudioBuffer<float>& buffer, int startSample,
                                                 int numSamples, int bitDepth)
 {
@@ -631,7 +699,7 @@ void InstrumentEffectsPlugin::processFxCommands (int numSamples, float& pitchMod
     const double rowsPerSecond = static_cast<double> (juce::jmax (1, rowsPerBeat)) * bpm / 60.0;
     const double rowsThisBlock = rowsPerSecond * blockDuration;
 
-    // Sxy/Dxy: slide in tracker steps.
+    // Fxy/Jxy: slide in tracker steps.
     if (fxState.stepSlideActive && fxState.stepSlideSteps > 0)
     {
         fxState.stepSlideRowsProgress += rowsThisBlock;
@@ -659,7 +727,7 @@ void InstrumentEffectsPlugin::processFxCommands (int numSamples, float& pitchMod
         }
     }
 
-    pitchMod = fxState.tuneOffset + fxState.stepSlideOffset + fxState.portaPitch;
+    pitchMod = fxState.tuneOffset + fxState.microTuneOffset + fxState.stepSlideOffset + fxState.portaPitch;
 
     if (overrides.volumeOverride >= 0)
         fxVolumeMod *= static_cast<float> (overrides.volumeOverride) / 127.0f;
@@ -794,8 +862,14 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     fxState.portaPitch = 0.0f;
                     fxState.portaRowsProgress = 0.0;
                     fxState.portaTargetOffset = 0.0f;
+                    fxState.microTuneOffset = 0.0f;
                     overrides.delaySendOverride = -1;
                     overrides.reverbSendOverride = -1;
+                    overrides.filterTypeOverride = -1;
+                    overrides.cutoffOverride = -1;
+                    overrides.overdriveOverride = -1;
+                    overrides.bitDepthOverride = -1;
+                    overrides.lfoSpeedOverride.fill (-1);
                     fxState.resetPendingParamHighBits();
                 }
                 else if (ccNum == 28) // Portamento target note (don't retrigger)
@@ -817,10 +891,15 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 {
                     overrides.panningOverride = ccVal;
                 }
-                else if (ccNum == 31) // Txx tune (signed two's complement)
+                else if (ccNum == 31) // Uxx tune (signed two's complement)
                 {
                     const int fxParam = decodeFxParam (ccNum, ccVal);
                     fxState.tuneOffset = static_cast<float> (static_cast<int8_t> (fxParam & 0xFF));
+                }
+                else if (ccNum == 43) // Mxx micro-tune (-99..+99 cents, encoded as 0..198)
+                {
+                    const int fxParam = decodeFxParam (ccNum, ccVal);
+                    fxState.microTuneOffset = microTuneByteToSemitones (fxParam);
                 }
                 else if (ccNum == 32) // Gxx portamento speed in steps
                 {
@@ -828,7 +907,7 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                     if (fxParam > 0)
                         fxState.portaSteps = fxParam;
                 }
-                else if (ccNum == 33 || ccNum == 34) // Sxy/Dxy step slide
+                else if (ccNum == 33 || ccNum == 34) // Fxy/Jxy step slide
                 {
                     const int fxParam = decodeFxParam (ccNum, ccVal);
                     const float semitones = static_cast<float> ((fxParam >> 4) & 0xF);
@@ -849,17 +928,43 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                         fxState.stepSlideRowsProgress = 0.0;
                     }
                 }
-                else if (ccNum == 35) // Yxx delay send override
+                else if (ccNum == 35) // sxx delay send override
                 {
                     overrides.delaySendOverride = decodeFxParam (ccNum, ccVal);
                 }
-                else if (ccNum == 36) // Rxx reverb send override
+                else if (ccNum == 36) // txx reverb send override
                 {
                     overrides.reverbSendOverride = decodeFxParam (ccNum, ccVal);
                 }
                 else if (ccNum == 40) // Vxx volume FX override
                 {
                     overrides.volumeFxRaw = decodeFxParam (ccNum, ccVal);
+                }
+                else if (ccNum == 44) // Dxx overdrive amount
+                {
+                    overrides.overdriveOverride = byteToPercent (decodeFxParam (ccNum, ccVal));
+                }
+                else if (ccNum == 45 || ccNum == 46 || ccNum == 47) // L/B/Hxx filter cutoff
+                {
+                    const int fxParam = decodeFxParam (ccNum, ccVal);
+                    overrides.cutoffOverride = byteToPercent (fxParam);
+                    if (ccNum == 45)
+                        overrides.filterTypeOverride = static_cast<int> (InstrumentParams::FilterType::LowPass);
+                    else if (ccNum == 46)
+                        overrides.filterTypeOverride = static_cast<int> (InstrumentParams::FilterType::BandPass);
+                    else
+                        overrides.filterTypeOverride = static_cast<int> (InstrumentParams::FilterType::HighPass);
+                }
+                else if (ccNum == 48) // Exx bit-depth reduction
+                {
+                    overrides.bitDepthOverride = byteToBitDepth (decodeFxParam (ccNum, ccVal));
+                }
+                else if (ccNum >= 49 && ccNum <= 53) // g/h/j/k/l LFO rate overrides
+                {
+                    const int destIndex = ccNum - 49;
+                    if (destIndex >= 0 && destIndex < InstrumentParams::kNumModDests)
+                        overrides.lfoSpeedOverride[static_cast<size_t> (destIndex)] =
+                            juce::jlimit (1, 128, decodeFxParam (ccNum, ccVal));
                 }
                 else if (ccNum == 85) // Mod mode override (from Exy effect, encoded as dest*2+mode)
                 {
@@ -961,8 +1066,23 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         return;
     }
 
+    auto effectiveParams = params;
+    for (int dest = 0; dest < InstrumentParams::kNumModDests; ++dest)
+    {
+        const int overrideSpeed = overrides.lfoSpeedOverride[static_cast<size_t> (dest)];
+        if (overrideSpeed < 0)
+            continue;
+
+        auto& mod = effectiveParams.modulations[static_cast<size_t> (dest)];
+        if (mod.type == InstrumentParams::Modulation::Type::LFO)
+        {
+            mod.lfoSpeedMode = InstrumentParams::Modulation::LFOSpeedMode::Steps;
+            mod.lfoSpeed = juce::jlimit (1, 128, overrideSpeed);
+        }
+    }
+
     // Advance global envelopes once per rendered block start position.
-    advanceGlobalEnvelopes (params, blockStartSample, numSamples);
+    advanceGlobalEnvelopes (effectiveParams, blockStartSample, numSamples);
 
     // Get tempo for LFO sync
     double bpm = edit.tempoSequence.getTempos()[0]->getBpm();
@@ -974,10 +1094,10 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     // --- Volume: subtractive gain multiplier (0.0 = silence, 1.0 = configured volume) ---
     float volumeGainMult = 1.0f;
     {
-        auto& volMod = params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Volume)];
+        auto& volMod = effectiveParams.modulations[static_cast<size_t> (InstrumentParams::ModDest::Volume)];
         float volAmount = static_cast<float> (volMod.amount) / 100.0f;
         float volScaled = getModulationValue (static_cast<int> (InstrumentParams::ModDest::Volume),
-                                               params, bpm, numSamples);
+                                               effectiveParams, bpm, numSamples);
 
         if (volMod.type == InstrumentParams::Modulation::Type::Envelope)
             volumeGainMult = juce::jlimit (0.0f, 1.0f, 1.0f - volAmount + volScaled);
@@ -987,15 +1107,15 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
     // --- Pan: additive (swing both directions) ---
     float panMod = getModulationValue (static_cast<int> (InstrumentParams::ModDest::Panning),
-                                        params, bpm, numSamples);
+                                        effectiveParams, bpm, numSamples);
 
     // --- Cutoff: subtractive multiplier (0.0 = fully closed, 1.0 = set cutoff) ---
     float cutoffMult = 1.0f;
     {
-        auto& cutMod = params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)];
+        auto& cutMod = effectiveParams.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)];
         float cutAmount = static_cast<float> (cutMod.amount) / 100.0f;
         float cutScaled = getModulationValue (static_cast<int> (InstrumentParams::ModDest::Cutoff),
-                                               params, bpm, numSamples);
+                                               effectiveParams, bpm, numSamples);
 
         if (cutMod.type == InstrumentParams::Modulation::Type::Envelope)
             cutoffMult = juce::jlimit (0.0f, 1.0f, 1.0f - cutAmount + cutScaled);
@@ -1006,12 +1126,12 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     // --- Granular position: additive offset across the selected playback region ---
     float granularPositionMod = getModulationValue (
         static_cast<int> (InstrumentParams::ModDest::GranularPos),
-        params, bpm, numSamples);
+        effectiveParams, bpm, numSamples);
 
     // --- Finetune: full modulation amount spans one semitone (+/- 100 cents) ---
     float finetunePitchMod = getModulationValue (
         static_cast<int> (InstrumentParams::ModDest::Finetune),
-        params, bpm, numSamples);
+        effectiveParams, bpm, numSamples);
 
     // Process FX commands (arpeggio, slides, vibrato, tremolo, volume slide)
     float fxPitchMod = 0.0f;
@@ -1036,11 +1156,22 @@ void InstrumentEffectsPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     // Apply FX volume modifier
     volumeGainMult *= fxVolumeMod;
 
-    // DSP chain: Volume/Pan → Filter → Overdrive → BitDepth → Safety Limiter
-    processVolumeAndPan (buffer, startSample, numSamples, params, volumeGainMult, panMod);
-    processFilter (buffer, startSample, numSamples, params, cutoffMult);
-    processOverdrive (buffer, startSample, numSamples, params.overdrive);
-    processBitDepth (buffer, startSample, numSamples, params.bitDepth);
+    if (overrides.filterTypeOverride >= 0)
+        effectiveParams.filterType = static_cast<InstrumentParams::FilterType> (
+            juce::jlimit (0, 3, overrides.filterTypeOverride));
+    if (overrides.cutoffOverride >= 0)
+        effectiveParams.cutoff = juce::jlimit (0, 100, overrides.cutoffOverride);
+    if (overrides.overdriveOverride >= 0)
+        effectiveParams.overdrive = juce::jlimit (0, 100, overrides.overdriveOverride);
+    if (overrides.bitDepthOverride >= 0)
+        effectiveParams.bitDepth = juce::jlimit (4, 16, overrides.bitDepthOverride);
+
+    // DSP chain: Volume/Pan -> Filter -> Overdrive -> Sample Rate -> BitDepth -> Safety Limiter
+    processVolumeAndPan (buffer, startSample, numSamples, effectiveParams, volumeGainMult, panMod);
+    processFilter (buffer, startSample, numSamples, effectiveParams, cutoffMult);
+    processOverdrive (buffer, startSample, numSamples, effectiveParams.overdrive);
+    processSampleRateReduction (buffer, startSample, numSamples, effectiveParams.lofiSampleRateHz);
+    processBitDepth (buffer, startSample, numSamples, effectiveParams.bitDepth);
 
     // Safety limiter: hard clip to protect ears against any unexpected spikes
     static constexpr float kSafetyLimit = 4.0f; // ~12dB headroom (accommodates Vxx +10dB boost)

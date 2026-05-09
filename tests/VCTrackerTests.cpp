@@ -19,6 +19,8 @@
 #include "MixerNavigation.h"
 #include "PatternData.h"
 #include "Pattern.h"
+#include "PatternMidiBuilder.h"
+#include "StepFxResolver.h"
 #include "PatternEditUtils.h"
 #include "PluginAutomationData.h"
 #include "ProjectSerializer.h"
@@ -99,6 +101,14 @@ bool moveCursorToFxColumn (TrackerGrid& grid)
 bool enterFxCommand (TrackerGrid& grid, char letter, int param)
 {
     return grid.keyPressed (makeTextKey (letter))
+        && grid.keyPressed (makeTextKey (hexDigitFor (param >> 4)))
+        && grid.keyPressed (makeTextKey (hexDigitFor (param)));
+}
+
+bool enterExtendedChordFxCommand (TrackerGrid& grid, int param)
+{
+    return grid.keyPressed (makeTextKey ('0'))
+        && grid.keyPressed (makeTextKey (hexDigitFor (param >> 8)))
         && grid.keyPressed (makeTextKey (hexDigitFor (param >> 4)))
         && grid.keyPressed (makeTextKey (hexDigitFor (param)));
 }
@@ -1290,6 +1300,7 @@ bool testProjectRoundTripKeepsMixerLayoutAndInstrumentParams()
     InstrumentParams params;
     params.volume = -9.0;
     params.panning = -12;
+    params.lofiSampleRateHz = 12000.0;
     params.reverbSend = -18.0;
     params.delaySend = -24.0;
     params.playMode = InstrumentParams::PlayMode::Granular;
@@ -1299,6 +1310,11 @@ bool testProjectRoundTripKeepsMixerLayoutAndInstrumentParams()
     params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].type
         = InstrumentParams::Modulation::Type::LFO;
     params.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].amount = 48;
+    params.midiOutAssignments[0].number = 74;
+    params.midiOutAssignments[1].type = InstrumentParams::MidiOutMessageType::ProgramChange;
+    params.midiOutAssignments[2].type = InstrumentParams::MidiOutMessageType::ChannelPressure;
+    params.midiOutAssignments[3].type = InstrumentParams::MidiOutMessageType::PolyPressure;
+    params.midiOutAssignments[3].number = 61;
     instrumentParams[255] = params;
 
     PatternData loaded;
@@ -1396,6 +1412,7 @@ bool testProjectRoundTripKeepsMixerLayoutAndInstrumentParams()
     const auto& loadedParams = it->second;
     if (std::abs (loadedParams.volume - (-9.0)) > 1.0e-6
         || loadedParams.panning != -12
+        || std::abs (loadedParams.lofiSampleRateHz - 12000.0) > 1.0e-6
         || std::abs (loadedParams.reverbSend - (-18.0)) > 1.0e-6
         || std::abs (loadedParams.delaySend - (-24.0)) > 1.0e-6
         || loadedParams.playMode != InstrumentParams::PlayMode::Granular
@@ -1404,7 +1421,13 @@ bool testProjectRoundTripKeepsMixerLayoutAndInstrumentParams()
         || std::abs (loadedParams.granularLengthSteps - 12.5) > 1.0e-6
         || loadedParams.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].type
             != InstrumentParams::Modulation::Type::LFO
-        || loadedParams.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].amount != 48)
+        || loadedParams.modulations[static_cast<size_t> (InstrumentParams::ModDest::Cutoff)].amount != 48
+        || loadedParams.midiOutAssignments[0].type != InstrumentParams::MidiOutMessageType::ControlChange
+        || loadedParams.midiOutAssignments[0].number != 74
+        || loadedParams.midiOutAssignments[1].type != InstrumentParams::MidiOutMessageType::ProgramChange
+        || loadedParams.midiOutAssignments[2].type != InstrumentParams::MidiOutMessageType::ChannelPressure
+        || loadedParams.midiOutAssignments[3].type != InstrumentParams::MidiOutMessageType::PolyPressure
+        || loadedParams.midiOutAssignments[3].number != 61)
     {
         std::cerr << "instrument params mismatch after round-trip\n";
         return false;
@@ -2207,6 +2230,409 @@ bool testFxParamTransportIndependentHighBits()
     return true;
 }
 
+bool testPatternMidiBuilderPolyendFxMapping()
+{
+    auto requireEncodedByte = [] (const juce::MidiMessageSequence& sequence,
+                                  int valueController,
+                                  int expectedByte,
+                                  const char* label) -> bool
+    {
+        const int highBitController = FxParamTransport::getHighBitControllerForValueController (valueController);
+        bool sawHighBit = false;
+        bool sawValue = false;
+        int highBit = -1;
+        int lowBits = -1;
+
+        for (int i = 0; i < sequence.getNumEvents(); ++i)
+        {
+            const auto* event = sequence.getEventPointer (i);
+            if (event == nullptr || ! event->message.isController())
+                continue;
+
+            const int controller = event->message.getControllerNumber();
+            if (controller == highBitController)
+            {
+                sawHighBit = true;
+                highBit = event->message.getControllerValue();
+            }
+            else if (controller == valueController)
+            {
+                sawValue = true;
+                lowBits = event->message.getControllerValue();
+            }
+        }
+
+        const int clampedByte = FxParamTransport::clampToByte (expectedByte);
+        if (! sawHighBit || ! sawValue
+            || highBit != ((clampedByte >> 7) & 0x1)
+            || lowBits != (clampedByte & 0x7F))
+        {
+            std::cerr << "PatternMidiBuilder byte CC mismatch for " << label
+                      << ": high=" << highBit << " low=" << lowBits << "\n";
+            return false;
+        }
+
+        return true;
+    };
+
+    struct ByteCommandCase
+    {
+        char letter;
+        int param;
+        int valueController;
+        const char* label;
+    };
+
+    const std::array<ByteCommandCase, 22> byteCases = {{
+        { 'r', 0x81, PatternMidiBuilder::kCcSamplerDirection, "reverse sample" },
+        { 'p', 0xFE, PatternMidiBuilder::kCcSamplerPosition, "sample position" },
+        { 'U', 0x8C, PatternMidiBuilder::kCcFxTune, "tuning" },
+        { 'M', 0x63, PatternMidiBuilder::kCcFxMicroTune, "micro tune" },
+        { 'G', 0x20, PatternMidiBuilder::kCcFxPortaSteps, "glide" },
+        { 's', 0x95, PatternMidiBuilder::kCcFxDelaySend, "delay send" },
+        { 't', 0xA0, PatternMidiBuilder::kCcFxReverbSend, "reverb send" },
+        { 'F', 0x34, PatternMidiBuilder::kCcFxSlideUp, "slide up" },
+        { 'J', 0x45, PatternMidiBuilder::kCcFxSlideDown, "slide down" },
+        { 'V', 0x7E, PatternMidiBuilder::kCcFxVolume, "volume" },
+        { 'S', 0x04, PatternMidiBuilder::kCcSamplerSlice, "slice" },
+        { 'R', 0x06, PatternMidiBuilder::kCcSamplerRetrigger, "roll" },
+        { 'D', 0xC0, PatternMidiBuilder::kCcFxOverdrive, "overdrive" },
+        { 'L', 0xD0, PatternMidiBuilder::kCcFxLowPass, "low pass" },
+        { 'B', 0x70, PatternMidiBuilder::kCcFxBandPass, "band pass" },
+        { 'H', 0x50, PatternMidiBuilder::kCcFxHighPass, "high pass" },
+        { 'E', 0x30, PatternMidiBuilder::kCcFxBitDepth, "bit depth" },
+        { 'g', 0x18, PatternMidiBuilder::kCcFxVolumeLfoRate, "volume LFO rate" },
+        { 'h', 0x19, PatternMidiBuilder::kCcFxPanLfoRate, "panning LFO rate" },
+        { 'j', 0x1A, PatternMidiBuilder::kCcFxFilterLfoRate, "filter LFO rate" },
+        { 'k', 0x1B, PatternMidiBuilder::kCcFxPositionLfoRate, "position LFO rate" },
+        { 'l', 0x1C, PatternMidiBuilder::kCcFxFinetuneLfoRate, "finetune LFO rate" },
+    }};
+
+    for (const auto& tc : byteCases)
+    {
+        FxSlot slot;
+        slot.setSymbolicCommand (tc.letter, tc.param);
+
+        juce::MidiMessageSequence sequence;
+        PatternMidiBuilder::appendSymbolicTrackFx (sequence, slot, 1.5);
+
+        if (sequence.getNumEvents() != 2 || ! requireEncodedByte (sequence, tc.valueController, tc.param, tc.label))
+            return false;
+    }
+
+    {
+        FxSlot slot;
+        slot.setSymbolicCommand ('P', 100);
+
+        juce::MidiMessageSequence sequence;
+        PatternMidiBuilder::appendSymbolicTrackFx (sequence, slot, 2.0);
+
+        if (sequence.getNumEvents() != 1)
+        {
+            std::cerr << "panning FX should emit one MIDI CC event\n";
+            return false;
+        }
+
+        const auto* event = sequence.getEventPointer (0);
+        if (event == nullptr
+            || ! event->message.isController()
+            || event->message.getControllerNumber() != 10
+            || event->message.getControllerValue() != 127)
+        {
+            std::cerr << "panning FX should map to MIDI pan CC10\n";
+            return false;
+        }
+    }
+
+    struct MidiOutCommandCase
+    {
+        char letter;
+        int param;
+        int cc;
+        int channel;
+    };
+
+    const std::array<MidiOutCommandCase, 6> midiOutCases = {{
+        { 'a', 0x40, PatternMidiBuilder::kCcMidiOutA, 1 },
+        { 'b', 0x41, PatternMidiBuilder::kCcMidiOutB, 2 },
+        { 'c', 0x42, PatternMidiBuilder::kCcMidiOutC, 3 },
+        { 'd', 0x43, PatternMidiBuilder::kCcMidiOutD, 4 },
+        { 'e', 0x44, PatternMidiBuilder::kCcMidiOutE, 5 },
+        { 'f', 0xC5, PatternMidiBuilder::kCcMidiOutF, 16 },
+    }};
+
+    for (const auto& tc : midiOutCases)
+    {
+        FxSlot slot;
+        slot.setSymbolicCommand (tc.letter, tc.param);
+
+        juce::MidiMessageSequence sequence;
+        PatternMidiBuilder::appendSymbolicTrackFx (sequence, slot, 2.0, tc.channel);
+
+        if (sequence.getNumEvents() != 1)
+        {
+            std::cerr << "MIDI Out FX should emit one CC event for lane " << tc.letter << "\n";
+            return false;
+        }
+
+        const auto* event = sequence.getEventPointer (0);
+        if (event == nullptr
+            || ! event->message.isController()
+            || event->message.getChannel() != tc.channel
+            || event->message.getControllerNumber() != tc.cc
+            || event->message.getControllerValue() != juce::jlimit (0, 127, tc.param))
+        {
+            std::cerr << "MIDI Out FX lane " << tc.letter << " mapped incorrectly\n";
+            return false;
+        }
+    }
+
+    {
+        auto assignments = InstrumentParams::makeDefaultMidiOutAssignments();
+        assignments[0].number = 74;
+        assignments[1].type = InstrumentParams::MidiOutMessageType::ProgramChange;
+        assignments[2].type = InstrumentParams::MidiOutMessageType::ChannelPressure;
+        assignments[3].type = InstrumentParams::MidiOutMessageType::PolyPressure;
+        assignments[3].number = 61;
+
+        struct AssignedMidiOutCase
+        {
+            char letter;
+            int value;
+        };
+
+        const std::array<AssignedMidiOutCase, 4> assignedCases = {{
+            { 'a', 64 },
+            { 'b', 65 },
+            { 'c', 66 },
+            { 'd', 67 },
+        }};
+
+        for (const auto& tc : assignedCases)
+        {
+            FxSlot slot;
+            slot.setSymbolicCommand (tc.letter, tc.value);
+
+            juce::MidiMessageSequence sequence;
+            PatternMidiBuilder::appendSymbolicTrackFx (sequence, slot, 2.0, 9, &assignments);
+
+            if (sequence.getNumEvents() != 1)
+            {
+                std::cerr << "assigned MIDI Out FX should emit one MIDI event for lane " << tc.letter << "\n";
+                return false;
+            }
+
+            const auto* event = sequence.getEventPointer (0);
+            if (event == nullptr || event->message.getChannel() != 9)
+            {
+                std::cerr << "assigned MIDI Out FX emitted on wrong channel\n";
+                return false;
+            }
+
+            const auto& msg = event->message;
+            if (tc.letter == 'a'
+                && (! msg.isController() || msg.getControllerNumber() != 74 || msg.getControllerValue() != 64))
+            {
+                std::cerr << "assigned MIDI Out CC lane mapped incorrectly\n";
+                return false;
+            }
+            if (tc.letter == 'b'
+                && (! msg.isProgramChange() || msg.getProgramChangeNumber() != 65))
+            {
+                std::cerr << "assigned MIDI Out PC lane mapped incorrectly\n";
+                return false;
+            }
+            if (tc.letter == 'c'
+                && (! msg.isChannelPressure() || msg.getChannelPressureValue() != 66))
+            {
+                std::cerr << "assigned MIDI Out channel pressure lane mapped incorrectly\n";
+                return false;
+            }
+            if (tc.letter == 'd'
+                && (! msg.isAftertouch() || msg.getNoteNumber() != 61 || msg.getAfterTouchValue() != 67))
+            {
+                std::cerr << "assigned MIDI Out poly pressure lane mapped incorrectly\n";
+                return false;
+            }
+        }
+    }
+
+    {
+        FxSlot slot;
+        slot.setSymbolicCommand ('!', 0);
+
+        juce::MidiMessageSequence sequence;
+        PatternMidiBuilder::appendSymbolicTrackFx (sequence, slot, 2.0);
+
+        if (sequence.getNumEvents() != 1)
+        {
+            std::cerr << "off FX should emit one row-reset CC event\n";
+            return false;
+        }
+
+        const auto* event = sequence.getEventPointer (0);
+        if (event == nullptr
+            || ! event->message.isController()
+            || event->message.getControllerNumber() != PatternMidiBuilder::kCcFxNoteReset
+            || event->message.getControllerValue() != 0)
+        {
+            std::cerr << "off FX should map to note-reset CC\n";
+            return false;
+        }
+    }
+
+    for (const char schedulerCommand : { 'm', 'q', 'C', 'T', 'x', 'X' })
+    {
+        FxSlot slot;
+        slot.setSymbolicCommand (schedulerCommand, 0x40);
+
+        juce::MidiMessageSequence sequence;
+        PatternMidiBuilder::appendSymbolicTrackFx (sequence, slot, 2.0);
+        if (sequence.getNumEvents() != 0)
+        {
+            std::cerr << "scheduler-only FX emitted MIDI CC: " << schedulerCommand << "\n";
+            return false;
+        }
+    }
+
+    Pattern pattern;
+    pattern.getMasterFxSlot (0, 0).setSymbolicCommand ('T', 4);
+    pattern.getMasterFxSlot (1, 0).setSymbolicCommand ('F', 140);
+    pattern.getMasterFxSlot (2, 0).setSymbolicCommand ('T', 250);
+    pattern.getMasterFxSlot (3, 0).setSymbolicCommand ('T', 500);
+    pattern.getMasterFxSlot (4, 0).setSymbolicCommand ('T', 0);
+    if (PatternMidiBuilder::getRowTempoCommand (pattern, 0) != 10
+        || PatternMidiBuilder::getRowTempoCommand (pattern, 1) != -1
+        || PatternMidiBuilder::getRowTempoCommand (pattern, 2) != 250
+        || PatternMidiBuilder::getRowTempoCommand (pattern, 3) != 400
+        || PatternMidiBuilder::getRowTempoCommand (pattern, 4) != 0
+        || PatternMidiBuilder::getRowTempoCommand (pattern, pattern.numRows) != -1)
+    {
+        std::cerr << "master tempo FX percent mapping mismatch\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testStepFxResolverRandomValueAndNoteModifiers()
+{
+    Cell cell;
+    cell.note = 60;
+    cell.instrument = 12;
+    cell.volume = 64;
+    cell.ensureFxSlots (5);
+    cell.getFxSlot (0).setSymbolicCommand ('x', 20);
+    cell.getFxSlot (1).setSymbolicCommand ('q', 70);
+    cell.getFxSlot (2).setSymbolicCommand ('n', 5);
+    cell.getFxSlot (3).setSymbolicCommand ('i', 2);
+    cell.getFxSlot (4).setSymbolicCommand ('v', 10);
+
+    const auto resolvedA = StepFxResolver::resolveFxSlots (cell, 3, 2, 1, 0);
+    const auto resolvedB = StepFxResolver::resolveFxSlots (cell, 3, 2, 1, 0);
+
+    if (resolvedA.size() != resolvedB.size() || resolvedA.size() < 5)
+    {
+        std::cerr << "resolved FX slot count mismatch\n";
+        return false;
+    }
+
+    for (size_t i = 0; i < resolvedA.size(); ++i)
+    {
+        if (resolvedA[i].getCommandLetter() != resolvedB[i].getCommandLetter()
+            || resolvedA[i].fxParam != resolvedB[i].fxParam)
+        {
+            std::cerr << "resolved FX randomization should be stable for the same pass\n";
+            return false;
+        }
+    }
+
+    if (resolvedA[1].getCommandLetter() != 'q'
+        || resolvedA[1].fxParam < 50
+        || resolvedA[1].fxParam > 90)
+    {
+        std::cerr << "xxx should randomize the other FX value inside the requested range\n";
+        return false;
+    }
+
+    Cell randomTempoCell;
+    randomTempoCell.ensureFxSlots (2);
+    randomTempoCell.getFxSlot (0).setSymbolicCommand ('x', 255);
+    randomTempoCell.getFxSlot (1).setSymbolicCommand ('T', 1);
+    const auto randomTempoSlots = StepFxResolver::resolveFxSlots (randomTempoCell, 1, 0, 0, 0);
+    if (randomTempoSlots.size() < 2
+        || randomTempoSlots[1].getCommandLetter() != 'T'
+        || randomTempoSlots[1].fxParam <= 0
+        || decodeTempoPercentFxParam (randomTempoSlots[1].fxParam) == 0)
+    {
+        std::cerr << "random FX must not generate TSTP when targeting tempo\n";
+        return false;
+    }
+
+    const auto noteSlot = StepFxResolver::resolveNoteSlot (cell.getNoteLane (0), resolvedA, 3, 2, 1, 0);
+    if (noteSlot.note < 55 || noteSlot.note > 65
+        || noteSlot.instrument < 10 || noteSlot.instrument > 14
+        || noteSlot.volume < 54 || noteSlot.volume > 74)
+    {
+        std::cerr << "random note/instrument/volume FX resolved outside expected ranges\n";
+        return false;
+    }
+
+    Cell chordCell;
+    chordCell.note = 60;
+    chordCell.getFxSlot (0).setSymbolicCommand ('0', 0x47);
+    const auto chordSlots = StepFxResolver::resolveFxSlots (chordCell, 0, 0, 0, 0);
+    const auto chordNotes = StepFxResolver::resolveChordNotes (60, chordSlots);
+    if (chordNotes != std::vector<int> ({ 60, 64, 67 }))
+    {
+        std::cerr << "0xx chord FX should resolve root plus two interval nibbles\n";
+        return false;
+    }
+
+    chordCell.getFxSlot (0).setSymbolicCommand ('0', 0x479);
+    const auto extendedChordSlots = StepFxResolver::resolveFxSlots (chordCell, 0, 0, 0, 0);
+    const auto extendedChordNotes = StepFxResolver::resolveChordNotes (60, extendedChordSlots);
+    if (extendedChordNotes != std::vector<int> ({ 60, 64, 67, 69 }))
+    {
+        std::cerr << "0xxx chord FX should resolve four-note Polyend chord interval sets\n";
+        return false;
+    }
+
+    chordCell.getFxSlot (0).setSymbolicCommand ('0', 0x47);
+    chordCell.ensureFxSlots (2);
+    chordCell.getFxSlot (1).setSymbolicCommand ('A', 0x04);
+    const auto arpSlots = StepFxResolver::resolveFxSlots (chordCell, 0, 0, 0, 0);
+    const auto arpNotes = StepFxResolver::resolveArpNotes (60, arpSlots, 0, 0, 0, 0);
+    if (arpNotes != std::vector<int> ({ 60, 64, 67, 60 }))
+    {
+        std::cerr << "Axx arp FX should cycle chord notes for the requested subdivision count\n";
+        return false;
+    }
+
+    chordCell.getFxSlot (1).setSymbolicCommand ('A',
+                                                StepFxResolver::encodeArpFx (
+                                                    StepFxResolver::ArpDirection::Falling, 4, false));
+    const auto fallingArpNotes = StepFxResolver::resolveArpNotes (
+        60, StepFxResolver::resolveFxSlots (chordCell, 0, 0, 0, 0), 0, 0, 0, 0);
+    if (fallingArpNotes != std::vector<int> ({ 67, 64, 60, 67 }))
+    {
+        std::cerr << "A\\4 arp FX should cycle chord notes downward\n";
+        return false;
+    }
+
+    const auto multiplierArp = StepFxResolver::decodeArpFx (
+        StepFxResolver::encodeArpFx (StepFxResolver::ArpDirection::Random, 6, true));
+    if (multiplierArp.direction != StepFxResolver::ArpDirection::Random
+        || multiplierArp.timingValue != 6
+        || ! multiplierArp.multiplier)
+    {
+        std::cerr << "A. multiplier arp encoding should preserve Polyend direction and timing\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testSampleFxCommandsEnterAndRoundTrip()
 {
     struct FxExample
@@ -2216,24 +2642,53 @@ bool testSampleFxCommandsEnterAndRoundTrip()
         bool masterLane;
     };
 
-    const std::array<FxExample, 13> examples = {{
-        { 'B', 0x01, false },
-        { 'P', 0x80, false },
-        { 'T', 0x0C, false },
+    const std::array<FxExample, 42> examples = {{
+        { '!', 0x00, false },
+        { 'r', 0x01, false },
+        { 'p', 0x80, false },
+        { 'P', 0x40, false },
+        { 'M', 0x63, false },
+        { 'U', 0x0C, false },
         { 'G', 0x04, false },
-        { 'Y', 0x7F, false },
-        { 'R', 0x40, false },
-        { 'S', 0x37, false },
-        { 'D', 0x24, false },
-        { 'F', 0x82, true  },
+        { 's', 0x7F, false },
+        { 't', 0x40, false },
+        { 'F', 0x37, false },
+        { 'J', 0x24, false },
+        { 'T', 0x82, true  },
         { 'V', 0x7F, false },
-        { 'L', 0x03, false },
-        { 'N', 0xFB, false },
-        { 'M', 0x01, false },
+        { 'S', 0x03, false },
+        { 'm', 0xFB, false },
+        { 'X', 0x01, false },
+        { 'R', 0x04, false },
+        { 'D', 0x80, false },
+        { 'L', 0x90, false },
+        { 'B', 0x70, false },
+        { 'H', 0x50, false },
+        { 'E', 0x30, false },
+        { 'I', 0x32, false },
+        { 'q', 0x50, false },
+        { 'C', 0x64, false },
+        { 'A', 0x12, false },
+        { 'n', 0x08, false },
+        { 'i', 0x02, false },
+        { 'x', 0x20, false },
+        { 'v', 0x10, false },
+        { 'g', 0x18, false },
+        { 'h', 0x19, false },
+        { 'j', 0x1A, false },
+        { 'k', 0x1B, false },
+        { 'l', 0x1C, false },
+        { 'a', 0x40, false },
+        { 'b', 0x41, false },
+        { 'c', 0x42, false },
+        { 'd', 0x43, false },
+        { 'e', 0x44, false },
+        { 'f', 0x45, false },
+        { '0', 0x37, false },
     }};
 
     const auto& commandList = getFxCommandList();
-    if (commandList.size() != examples.size())
+    if (commandList.size() < 37)
     {
         std::cerr << "sample FX command count mismatch\n";
         return false;
@@ -2343,6 +2798,259 @@ bool testSampleFxCommandsEnterAndRoundTrip()
             std::cerr << "sample FX command round-trip mismatch: " << entry.example.letter << "\n";
             return false;
         }
+    }
+
+    PatternData chordSource;
+    TrackLayout chordTrackLayout;
+    TrackerGrid chordGrid (chordSource, lnf, chordTrackLayout);
+    chordGrid.setEditStep (0);
+    chordGrid.setCursorPosition (0, 0);
+
+    if (! moveCursorToFxColumn (chordGrid) || ! enterExtendedChordFxCommand (chordGrid, 0x479))
+    {
+        std::cerr << "failed to enter extended 0xxx MIDI chord command\n";
+        return false;
+    }
+
+    const auto extendedChordSlot = chordSource.getPattern (0).getCell (0, 0).getFxSlot (0);
+    if (extendedChordSlot.getCommandLetter() != '0' || extendedChordSlot.fxParam != 0x479)
+    {
+        std::cerr << "extended 0xxx MIDI chord command stored incorrectly\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testPolyendFxCommandCatalogAndLegacyMigration()
+{
+    const auto& commands = getFxCommandList();
+    constexpr std::array<char, 43> expectedOrderedLetters = {{
+        '-', '!', 'V', 'P', 'M', 'G', 'T', 'I', 'm', 'q',
+        'C', 'R', 'A', 'n', 'i', 'x', 'S', 'v', 'r', 'p',
+        'g', 'h', 'j', 'k', 'l', 'D', 'L', 'B', 'H', 's',
+        't', 'E', 'U', 'a', 'b', 'c', 'd', 'e', 'f', 'F',
+        'J', '0', 'X'
+    }};
+
+    if (commands.size() != expectedOrderedLetters.size())
+    {
+        std::cerr << "Polyend FX catalog size drifted: expected "
+                  << expectedOrderedLetters.size() << ", got " << commands.size() << "\n";
+        return false;
+    }
+
+    for (size_t i = 0; i < expectedOrderedLetters.size(); ++i)
+    {
+        if (commands[i].letter != expectedOrderedLetters[i])
+        {
+            std::cerr << "Polyend FX catalog order drifted at " << i
+                      << ": expected " << expectedOrderedLetters[i]
+                      << ", got " << commands[i].letter << "\n";
+            return false;
+        }
+    }
+
+    auto requireCommand = [&commands] (char letter, int expectedCommand) -> bool
+    {
+        if (fxLetterToCommand (letter) != expectedCommand)
+            return false;
+
+        for (const auto& command : commands)
+            if (command.letter == letter && command.command == expectedCommand)
+                return true;
+
+        return false;
+    };
+
+    if (! requireCommand ('P', 3) || ! requireCommand ('p', 18)
+        || ! requireCommand ('R', 11) || ! requireCommand ('r', 17)
+        || ! requireCommand ('S', 37) || ! requireCommand ('s', 28)
+        || ! requireCommand ('T', 6) || ! requireCommand ('t', 29)
+        || ! requireCommand ('M', 4) || ! requireCommand ('m', 8)
+        || ! requireCommand ('x', 15)
+        || ! requireCommand ('a', 32) || ! requireCommand ('b', 32)
+        || ! requireCommand ('c', 32) || ! requireCommand ('d', 32)
+        || ! requireCommand ('e', 32) || ! requireCommand ('f', 32))
+    {
+        std::cerr << "Polyend FX commands should be case-sensitive\n";
+        return false;
+    }
+
+    FxSlot slot;
+    slot.setSymbolicCommand ('p', 0x80);
+    if (slot.getCommandLetter() != 'p' || slot.getCommand() != 18)
+    {
+        std::cerr << "FX slot should preserve lowercase command tags\n";
+        return false;
+    }
+
+    slot.setSymbolicCommand ('0', 0x479);
+    if (slot.getCommandLetter() != '0' || slot.fxParam != 0x479)
+    {
+        std::cerr << "MIDI chord FX should preserve extended Polyend chord values\n";
+        return false;
+    }
+
+    slot.setParam (0xFFFF);
+    if (slot.fxParam != 0x0FFF)
+    {
+        std::cerr << "MIDI chord FX edited params should clamp to 0xxx\n";
+        return false;
+    }
+
+    slot.setSymbolicCommand ('T', 500);
+    if (slot.fxParam != 400)
+    {
+        std::cerr << "tempo FX should clamp programmatic params to 400 percent\n";
+        return false;
+    }
+
+    slot.setParam (500);
+    if (slot.fxParam != 400)
+    {
+        std::cerr << "tempo FX should clamp edited params to 400 percent\n";
+        return false;
+    }
+
+    slot.setSymbolicCommand ('P', 255);
+    if (slot.fxParam != 100)
+    {
+        std::cerr << "panning FX should clamp to Polyend 0-100 range\n";
+        return false;
+    }
+
+    slot.setSymbolicCommand ('M', 255);
+    if (slot.fxParam != 198)
+    {
+        std::cerr << "micro-tune FX should clamp to -99..+99 cent encoding\n";
+        return false;
+    }
+
+    slot.setSymbolicCommand ('q', 255);
+    if (slot.fxParam != 100)
+    {
+        std::cerr << "gate length FX should clamp to percent range\n";
+        return false;
+    }
+
+    slot.setSymbolicCommand ('a', 255);
+    if (slot.fxParam != 127)
+    {
+        std::cerr << "MIDI Out FX should clamp to MIDI 7-bit value range\n";
+        return false;
+    }
+
+    slot.setSymbolicCommand ('g', 255);
+    if (slot.fxParam != 128)
+    {
+        std::cerr << "LFO rate FX should clamp to Polyend step-rate range\n";
+        return false;
+    }
+
+    FxSlot displaySlot;
+    if (formatFxSlotForDisplay (displaySlot) != "...")
+    {
+        std::cerr << "empty FX display should match tracker empty slot\n";
+        return false;
+    }
+
+    displaySlot.setSymbolicCommand ('!', 0);
+    if (formatFxSlotForDisplay (displaySlot) != "!OFF")
+    {
+        std::cerr << "Off FX display should use Polyend !OFF label\n";
+        return false;
+    }
+
+    displaySlot.setSymbolicCommand ('P', 25);
+    if (formatFxSlotForDisplay (displaySlot) != "P-25")
+    {
+        std::cerr << "panning display should use signed Polyend values\n";
+        return false;
+    }
+
+    displaySlot.setSymbolicCommand ('M', 0);
+    if (formatFxSlotForDisplay (displaySlot) != "M-99")
+    {
+        std::cerr << "micro-tune display should use signed cent values\n";
+        return false;
+    }
+
+    displaySlot.setSymbolicCommand ('m', 0xFB);
+    if (formatFxSlotForDisplay (displaySlot) != "m-5")
+    {
+        std::cerr << "micro move display should use signed timing values\n";
+        return false;
+    }
+
+    displaySlot.setSymbolicCommand ('T', 0);
+    if (formatFxSlotForDisplay (displaySlot) != "TSTP")
+    {
+        std::cerr << "tempo stop display should use TSTP\n";
+        return false;
+    }
+
+    displaySlot.setSymbolicCommand ('g', 48);
+    if (formatFxSlotForDisplay (displaySlot) != "g48")
+    {
+        std::cerr << "LFO rate display should use decimal step values\n";
+        return false;
+    }
+
+    displaySlot.setSymbolicCommand ('0', 0x479);
+    if (formatFxSlotForDisplay (displaySlot) != "0479")
+    {
+        std::cerr << "MIDI chord display should use 0xxx format\n";
+        return false;
+    }
+
+    setFxSlotFromSerializedCommand (slot, 'P', 0x80, 10);
+    if (slot.getCommandLetter() != 'p' || slot.getCommand() != 18)
+    {
+        std::cerr << "legacy P should migrate to Polyend p position\n";
+        return false;
+    }
+
+    setFxSlotFromSerializedCommand (slot, 'M', 0x01, 10);
+    if (slot.getCommandLetter() != 'X' || slot.getCommand() != 36)
+    {
+        std::cerr << "legacy plugin mod M should migrate to VC X command\n";
+        return false;
+    }
+
+    setFxSlotFromSerializedCommand (slot, 'M', 0x63, 11);
+    if (slot.getCommandLetter() != 'M' || slot.getCommand() != 4)
+    {
+        std::cerr << "version 11 M should remain Polyend micro-tune\n";
+        return false;
+    }
+
+    setFxSlotFromSerializedCommand (slot, 'f', 0x20, 11);
+    if (slot.getCommandLetter() != 'x' || slot.getCommand() != 15)
+    {
+        std::cerr << "version 11 Random FX f should migrate to current Polyend x\n";
+        return false;
+    }
+
+    setFxSlotFromSerializedCommand (slot, 'f', 0x45, 12);
+    if (slot.getCommandLetter() != 'f' || slot.getCommand() != 32)
+    {
+        std::cerr << "version 12 f should remain Polyend MIDI Out F\n";
+        return false;
+    }
+
+    setFxSlotFromSerializedCommand (slot, 'S', 0x00, 11);
+    if (slot.getCommandLetter() != 'S' || slot.fxParam != 0x01)
+    {
+        std::cerr << "version 11 zero-based slice FX should migrate to current Polyend one-based S01\n";
+        return false;
+    }
+
+    setFxSlotFromSerializedCommand (slot, 'S', 0x01, 12);
+    if (slot.getCommandLetter() != 'S' || slot.fxParam != 0x01)
+    {
+        std::cerr << "version 12 slice FX should remain one-based\n";
+        return false;
     }
 
     return true;
@@ -2724,7 +3432,7 @@ bool testSymbolicFxTokenRoundTrip()
     Cell cell;
     cell.note = 60;
     cell.instrument = 1;
-    cell.getFxSlot (0).setSymbolicCommand ('T', 0xF8);
+    cell.getFxSlot (0).setSymbolicCommand ('U', 0xF8);
     cell.getFxSlot (1).setSymbolicCommand ('G', 0x14);
     source.getPattern (0).setCell (1, 0, cell);
 
@@ -2768,7 +3476,7 @@ bool testSymbolicFxTokenRoundTrip()
         return false;
     }
 
-    if (loadedCell.getFxSlot (0).fxCommand != 'T' || loadedCell.getFxSlot (0).fxParam != 0xF8
+    if (loadedCell.getFxSlot (0).fxCommand != 'U' || loadedCell.getFxSlot (0).fxParam != 0xF8
         || loadedCell.getFxSlot (1).fxCommand != 'G' || loadedCell.getFxSlot (1).fxParam != 0x14)
     {
         std::cerr << "symbolic FX token mismatch after round-trip\n";
@@ -2783,8 +3491,8 @@ bool testMasterLaneRoundTrip()
     PatternData source;
     source.getPattern (0).resize (16);
     source.getPattern (0).ensureMasterFxSlots (3);
-    source.getPattern (0).getMasterFxSlot (0, 0).setSymbolicCommand ('F', 130);
-    source.getPattern (0).getMasterFxSlot (4, 2).setSymbolicCommand ('F', 176);
+    source.getPattern (0).getMasterFxSlot (0, 0).setSymbolicCommand ('T', 130);
+    source.getPattern (0).getMasterFxSlot (4, 2).setSymbolicCommand ('T', 176);
 
     TrackLayout trackLayout;
     trackLayout.setMasterFxLaneCount (3);
@@ -2829,8 +3537,8 @@ bool testMasterLaneRoundTrip()
     }
 
     const auto& pat = loaded.getPattern (0);
-    if (pat.getMasterFxSlot (0, 0).fxCommand != 'F' || pat.getMasterFxSlot (0, 0).fxParam != 130
-        || pat.getMasterFxSlot (4, 2).fxCommand != 'F' || pat.getMasterFxSlot (4, 2).fxParam != 176)
+    if (pat.getMasterFxSlot (0, 0).fxCommand != 'T' || pat.getMasterFxSlot (0, 0).fxParam != 130
+        || pat.getMasterFxSlot (4, 2).fxCommand != 'T' || pat.getMasterFxSlot (4, 2).fxParam != 176)
     {
         std::cerr << "master FX content mismatch after round-trip\n";
         return false;
@@ -3008,6 +3716,70 @@ bool testGranularStepLengthUsesHalfStepMultiples()
     return true;
 }
 
+bool testRetriggerStepDenominatorInterval()
+{
+    if (SamplePlaybackLayout::decodeRetriggerStepDenominator (-1) != 0
+        || SamplePlaybackLayout::decodeRetriggerStepDenominator (0x04) != 0x04
+        || SamplePlaybackLayout::decodeRetriggerStepDenominator (300) != 16)
+    {
+        std::cerr << "retrigger denominator should decode the Polyend roll divider range\n";
+        return false;
+    }
+
+    const auto regular = SamplePlaybackLayout::decodeRollFx (0x04);
+    const auto volumeDown = SamplePlaybackLayout::decodeRollFx (0x11);
+    const auto volumeUp = SamplePlaybackLayout::decodeRollFx (0x22);
+    const auto noteDown = SamplePlaybackLayout::decodeRollFx (0x33);
+    const auto noteUp = SamplePlaybackLayout::decodeRollFx (0x44);
+    const auto noteRandom = SamplePlaybackLayout::decodeRollFx (0x55);
+    if (regular.type != SamplePlaybackLayout::RollType::Regular || regular.divider != 4
+        || volumeDown.type != SamplePlaybackLayout::RollType::VolumeDown || volumeDown.divider != 0
+        || volumeUp.type != SamplePlaybackLayout::RollType::VolumeUp || volumeUp.divider != 0
+        || noteDown.type != SamplePlaybackLayout::RollType::NoteDown || noteDown.divider != 0
+        || noteUp.type != SamplePlaybackLayout::RollType::NoteUp || noteUp.divider != 0
+        || noteRandom.type != SamplePlaybackLayout::RollType::NoteRandom || noteRandom.divider != 0)
+    {
+        std::cerr << "Polyend roll type ranges should decode in 17-value banks\n";
+        return false;
+    }
+
+    if (StepFxResolver::resolveRollVelocity (100, SamplePlaybackLayout::RollType::VolumeDown, 0, 4) != 100
+        || StepFxResolver::resolveRollVelocity (100, SamplePlaybackLayout::RollType::VolumeDown, 3, 4) != 0
+        || StepFxResolver::resolveRollVelocity (100, SamplePlaybackLayout::RollType::VolumeUp, 0, 4) != 0
+        || StepFxResolver::resolveRollVelocity (100, SamplePlaybackLayout::RollType::VolumeUp, 3, 4) != 100
+        || StepFxResolver::resolveRollNoteOffset (SamplePlaybackLayout::RollType::NoteDown, 3, 4, 0, 0, 0, 0) != -3
+        || StepFxResolver::resolveRollNoteOffset (SamplePlaybackLayout::RollType::NoteUp, 3, 4, 0, 0, 0, 0) != 3)
+    {
+        std::cerr << "Polyend roll ramps should resolve volume and note offsets\n";
+        return false;
+    }
+
+    const double quarterStep = SamplePlaybackLayout::getRetriggerIntervalSamples (4, 48000.0, 120.0, 4);
+    const double expected = 48000.0 * 60.0 / 120.0 / 4.0 / 4.0;
+    if (! doublesClose (quarterStep, expected))
+    {
+        std::cerr << "R04 should retrigger at a quarter-step interval, got "
+                  << quarterStep << "\n";
+        return false;
+    }
+
+    const double volumeDownQuarterStep = SamplePlaybackLayout::getRetriggerIntervalSamples (
+        SamplePlaybackLayout::decodeRetriggerStepDenominator (0x15), 48000.0, 120.0, 4);
+    if (! doublesClose (volumeDownQuarterStep, expected))
+    {
+        std::cerr << "Rv04 should use the same quarter-step interval as R04\n";
+        return false;
+    }
+
+    if (! doublesClose (SamplePlaybackLayout::getRetriggerIntervalSamples (0, 48000.0, 120.0, 4), 0.0))
+    {
+        std::cerr << "Q00 should disable retrigger interval generation\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool testKillModeSustainsUntilNextTrigger()
 {
     const double endBeat = InstrumentPlaybackTiming::chooseNoteEndBeat (
@@ -3121,6 +3893,65 @@ bool testTimingOffsetUsesSignedMilliseconds()
         || ! doublesClose (InstrumentPlaybackTiming::applyTimingOffsetSeconds (0.001, -5), 0.0))
     {
         std::cerr << "note timing offset should shift seconds and clamp at zero\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testGateLengthShortensNoteWithinRow()
+{
+    const double gated = InstrumentPlaybackTiming::applyGateLengthSeconds (
+        1.0, 1.25, 4.0, 4.0, 50);
+
+    if (! doublesClose (gated, 1.125))
+    {
+        std::cerr << "gate length 50 should end halfway through remaining row, got "
+                  << gated << "\n";
+        return false;
+    }
+
+    const double fullStepGate = InstrumentPlaybackTiming::applyGateLengthSeconds (
+        1.0, 1.25, 4.0, 4.0, 100);
+    if (! doublesClose (fullStepGate, 1.25))
+    {
+        std::cerr << "gate length 100 should end at row end, got " << fullStepGate << "\n";
+        return false;
+    }
+
+    const double minimumGate = InstrumentPlaybackTiming::applyGateLengthSeconds (
+        1.0, 1.25, 4.0, 4.0, 0);
+    if (! doublesClose (minimumGate, 1.001))
+    {
+        std::cerr << "gate length 0 should retain a minimal event duration, got "
+                  << minimumGate << "\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool testSwingOffsetMovesOnlyOffbeats()
+{
+    if (! doublesClose (InstrumentPlaybackTiming::getSwingOffsetSeconds (0, 0.25, 75), 0.0)
+        || ! doublesClose (InstrumentPlaybackTiming::getSwingOffsetSeconds (2, 0.25, 25), 0.0))
+    {
+        std::cerr << "swing should keep odd-numbered tracker steps on the grid\n";
+        return false;
+    }
+
+    const double late = InstrumentPlaybackTiming::getSwingOffsetSeconds (1, 0.25, 75);
+    const double early = InstrumentPlaybackTiming::getSwingOffsetSeconds (1, 0.25, 25);
+    if (! doublesClose (late, 0.0625) || ! doublesClose (early, -0.0625))
+    {
+        std::cerr << "swing should move offbeats symmetrically around 50%, got "
+                  << early << " / " << late << "\n";
+        return false;
+    }
+
+    if (! doublesClose (InstrumentPlaybackTiming::getSwingOffsetSeconds (1, 0.25, 50), 0.0))
+    {
+        std::cerr << "swing 50 should be neutral\n";
         return false;
     }
 
@@ -5154,7 +5985,7 @@ bool testCombinedNoteLaneAutomationInsertRoundTrip()
         lane1.instrument = 2;
         lane1.volume = 80;
         cell.setNoteLane (1, lane1);
-        cell.getFxSlot (0).setSymbolicCommand ('T', 0x04);
+        cell.getFxSlot (0).setSymbolicCommand ('U', 0x04);
         source.getPattern (0).setCell (0, 0, cell);
     }
 
@@ -5310,7 +6141,7 @@ bool testCombinedNoteLaneAutomationInsertRoundTrip()
             std::cerr << "Combined: track 0 row 0 lane 1 mismatch\n";
             return false;
         }
-        if (cell.getFxSlot (0).fxCommand != 'T' || cell.getFxSlot (0).fxParam != 0x04)
+        if (cell.getFxSlot (0).fxCommand != 'U' || cell.getFxSlot (0).fxParam != 0x04)
         {
             std::cerr << "Combined: track 0 row 0 FX mismatch\n";
             return false;
@@ -5566,7 +6397,7 @@ bool testVersionMigrationPreV6LoadsSafely()
         std::cerr << "V4 migration: cell data mismatch\n";
         return false;
     }
-    if (cell.getFxSlot (0).fxCommand != 'T' || cell.getFxSlot (0).fxParam != 0x04)
+    if (cell.getFxSlot (0).fxCommand != 'U' || cell.getFxSlot (0).fxParam != 0x04)
     {
         std::cerr << "V4 migration: FX data mismatch\n";
         return false;
@@ -5621,6 +6452,12 @@ bool testVersionMigrationPreV6LoadsSafely()
         || std::abs (reverbParams.roomSize - 60.0) > 1.0e-6)
     {
         std::cerr << "V4 migration: send effects params mismatch\n";
+        return false;
+    }
+    if (std::abs (delayParams.wet - 100.0) > 1.0e-6
+        || std::abs (reverbParams.wet - 100.0) > 1.0e-6)
+    {
+        std::cerr << "V4 migration: send effects wet levels should be fixed at 100%\n";
         return false;
     }
 
@@ -6979,7 +7816,10 @@ int main()
         { "FxParamTransportByteRoundTrip", &testFxParamTransportByteRoundTrip },
         { "FxParamTransportSequenceOrdering", &testFxParamTransportSequenceOrdering },
         { "FxParamTransportIndependentHighBits", &testFxParamTransportIndependentHighBits },
+        { "PatternMidiBuilderPolyendFxMapping", &testPatternMidiBuilderPolyendFxMapping },
+        { "StepFxResolverRandomValueAndNoteModifiers", &testStepFxResolverRandomValueAndNoteModifiers },
         { "SampleFxCommandsEnterAndRoundTrip", &testSampleFxCommandsEnterAndRoundTrip },
+        { "PolyendFxCommandCatalogAndLegacyMigration", &testPolyendFxCommandCatalogAndLegacyMigration },
         { "EmptyArrangementRoundTrip", &testEmptyArrangementRoundTrip },
         { "PatternMultiFxSlotRoundTrip", &testPatternMultiFxSlotRoundTrip },
         { "TrackLayoutFxLaneCountRoundTrip", &testTrackLayoutFxLaneCountRoundTrip },
@@ -6993,6 +7833,7 @@ int main()
         { "GranularCenterClampsToRegion", &testGranularCenterClampsToRegion },
         { "GranularCenterOffsetClampsToRegion", &testGranularCenterOffsetClampsToRegion },
         { "GranularStepLengthUsesHalfStepMultiples", &testGranularStepLengthUsesHalfStepMultiples },
+        { "RetriggerStepDenominatorInterval", &testRetriggerStepDenominatorInterval },
         { "GranularStepLengthTracksPitch", &testGranularStepLengthTracksPitch },
         { "GranularMsLengthIgnoresPitch", &testGranularMsLengthIgnoresPitch },
         { "KillModeSustainsUntilNextTrigger", &testKillModeSustainsUntilNextTrigger },
@@ -7000,6 +7841,8 @@ int main()
         { "KillModeClampsAtSegmentEnd", &testKillModeClampsAtSegmentEnd },
         { "KillModeDoesNotUseRowEndWhenNoNextTrigger", &testKillModeDoesNotUseRowEndWhenNoNextTrigger },
         { "TimingOffsetUsesSignedMilliseconds", &testTimingOffsetUsesSignedMilliseconds },
+        { "GateLengthShortensNoteWithinRow", &testGateLengthShortensNoteWithinRow },
+        { "SwingOffsetMovesOnlyOffbeats", &testSwingOffsetMovesOnlyOffbeats },
         { "NegativeTimingOffsetCutsPreviousNoteEarly", &testNegativeTimingOffsetCutsPreviousNoteEarly },
         { "PositiveTimingOffsetKeepsKillAndReleaseSustain", &testPositiveTimingOffsetKeepsKillAndReleaseSustain },
         { "HardCutOnlyForSampleKillHandoff", &testHardCutOnlyForSampleKillHandoff },

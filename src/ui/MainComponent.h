@@ -134,6 +134,7 @@ private:
     void restoreAutomationSelection (int trackIndex);
     bool arrangementVisible = false;
     bool instrumentPanelVisible = true;
+    bool manualInstrumentSelectionPinned = false;
     bool showAudioUnitEquivalents = false;
     bool instrumentColourTrailsEnabled = true;
     int colourSchemeIndex = 0;
@@ -192,6 +193,9 @@ private:
     void removePatternAndRepairArrangement (int index);
     int resolveInstrumentForTrackDrop (int track) const;
     void resyncPlaybackForCurrentMode();
+    double getCursorPlaybackStartBeat() const;
+    void startPlaybackFromCursorRow();
+    bool startFocusLoopFromSelection();
     void updateMuteSoloState();
     void doCopy();
     void doPaste();
